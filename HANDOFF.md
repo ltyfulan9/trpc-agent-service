@@ -1,4 +1,4 @@
-# tRPC-Agent Enterprise V14 Handoff
+# Enterprise Multi-Tenant Agent Platform Handoff
 
 当前源码目录：`work/trpc-agent-enterprise-v14`  
 当前最终交接：`TRPC_AGENT_ENTERPRISE_HANDOFF_V14_FINAL.md`  

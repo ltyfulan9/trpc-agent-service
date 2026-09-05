@@ -80,7 +80,7 @@ jobs:
     - run: ./scripts/static_verify.sh
     - run: docker compose -f deploy/docker-compose.yml config >/dev/null
     - run: docker compose -f deploy/docker-compose.yml build
-    - run: docker run --rm -v "$PWD/deploy:/work:ro" prom/prometheus:v2.54.1 promtool check rules /work/prometheus-rules.yml
+    - run: docker run --rm --entrypoint /bin/promtool -v "$PWD/deploy:/work:ro" prom/prometheus:v2.54.1 check rules /work/prometheus-rules.yml
 
   go-1-25-compatibility:
     runs-on: ubuntu-latest

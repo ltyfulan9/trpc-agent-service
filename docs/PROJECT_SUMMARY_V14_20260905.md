@@ -1,4 +1,4 @@
-# tRPC-Agent Enterprise V14 项目总结
+# Enterprise Multi-Tenant Agent Platform 项目总结
 
 更新日期：2026-09-05（Asia/Shanghai）  
 项目：基于 tRPC-Agent-Go 的多租户节点化 Agent 平台  

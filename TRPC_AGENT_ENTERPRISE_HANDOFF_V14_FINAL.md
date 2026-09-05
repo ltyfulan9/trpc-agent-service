@@ -1,4 +1,4 @@
-# tRPC-Agent Enterprise V14 最终交接
+# Enterprise Multi-Tenant Agent Platform 最终交接
 
 更新日期：2026-09-05（Asia/Shanghai）  
 作者：王子龙

@@ -1,4 +1,4 @@
-# tRPC-Agent-Go 多租户节点化 Agent 平台（决赛强化版 V14）
+# Enterprise Multi-Tenant Agent Platform
 
 [![verify](https://github.com/ltyfulan9/trpc-agent-service/actions/workflows/verify.yml/badge.svg?branch=main)](https://github.com/ltyfulan9/trpc-agent-service/actions/workflows/verify.yml)
 
