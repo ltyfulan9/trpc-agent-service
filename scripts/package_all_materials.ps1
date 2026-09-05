@@ -71,14 +71,15 @@ function Copy-SafeFile([string]$Source,[string]$Destination,[string]$Label) {
     $included.Add([pscustomobject]@{Path=$Label.Replace('\','/');Source=$Source;Kind='material'})
 }
 
-Copy-SafeTree $repo (Join-Path $staging 'v14-source') 'v14-source'
+Copy-SafeTree $repo (Join-Path $staging 'platform-source') 'platform-source'
 
 $evidenceDestination = Join-Path $staging 'verification-evidence'
 foreach ($file in Get-ChildItem -LiteralPath (Join-Path $workspace 'outputs') -Filter '*.log' -File -ErrorAction SilentlyContinue) {
-    $evidenceTarget = Join-Path $evidenceDestination $file.Name
+    $safeName = ($file.Name -replace '(?i)-v14(?=-|\.)','')
+    $evidenceTarget = Join-Path $evidenceDestination $safeName
     New-Item -ItemType Directory -Force -Path $evidenceDestination | Out-Null
     Copy-Item -LiteralPath $file.FullName -Destination $evidenceTarget -Force
-    $included.Add([pscustomobject]@{Path=("verification-evidence/$($file.Name)");Source=$file.FullName;Kind='evidence'})
+    $included.Add([pscustomobject]@{Path=("verification-evidence/$safeName");Source=$file.FullName;Kind='evidence'})
 }
 Copy-SafeFile (Join-Path $workspace 'outputs\PROJECT_COMPLETION_SUMMARY_20260905.md') (Join-Path $staging 'delivery-summary\PROJECT_COMPLETION_SUMMARY_20260905.md') 'delivery-summary/PROJECT_COMPLETION_SUMMARY_20260905.md'
 
@@ -109,7 +110,7 @@ $inventory = @(
     '',
     '## 包含内容',
     '',
-    '- `v14-source/`：C 盘权威平台源码、测试、迁移、Compose/Kubernetes、验证脚本和当前文档。',
+    '- `platform-source/`：C 盘权威平台源码、测试、迁移、Compose/Kubernetes、验证脚本和当前文档。',
     '- `verification-evidence/`：本轮脱敏验证日志（只含退出状态、拓扑和公开地址，不含凭据）。',
     '',
     '## 排除内容',

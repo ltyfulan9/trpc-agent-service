@@ -8,7 +8,7 @@
 
 ## 1. 一句话结论
 
-V14 是一套以 PostgreSQL 可靠队列和控制面为权威、以 Redis/PostgreSQL Session/Memory 为共享运行态、以无状态 Worker 执行 tRPC Runner、并把 Summary、Knowledge、Artifact、MCP、治理、审计和部署安全边界接入生产组合根的候选生产实现。源码、自动化回归和本地后端纵切已形成闭环；真实企业微信/Telegram 账号、目标集群、正式 KMS/Vault、HA/灾备和业务 MCP 仍必须在目标环境完成外部验收，不能把本包称为生产认证。
+Enterprise Multi-Tenant Agent Platform 是一套以 PostgreSQL 可靠队列和控制面为权威、以 Redis/PostgreSQL Session/Memory 为共享运行态、以无状态 Worker 执行 tRPC Runner，并把 Summary、Knowledge、Artifact、MCP、治理、审计和部署安全边界接入生产组合根的候选生产实现。源码、自动化回归和本地后端纵切已形成闭环；真实企业微信/Telegram 账号、目标集群、正式 KMS/Vault、HA/灾备和业务 MCP 仍必须在目标环境完成外部验收，不能把本包称为生产认证。
 
 ## 2. 当前源码范围
 
@@ -89,7 +89,7 @@ V14 是一套以 PostgreSQL 可靠队列和控制面为权威、以 Redis/Postgr
 
 ## 8. 交付和外部验收边界
 
-可交付表述应为：**“V14 生产级候选实现，源码与本地实测证据随包提供。”**
+可交付表述应为：**“Enterprise Multi-Tenant Agent Platform 候选生产实现，源码与本地实测证据随包提供。”**
 
 在以下证据写入目标环境记录前，不得表述为“已生产上线/生产认证”：
 
@@ -101,7 +101,7 @@ V14 是一套以 PostgreSQL 可靠队列和控制面为权威、以 Redis/Postgr
 
 ## 9. 归档策略
 
-本次总包覆盖当前 V14 源码树的全部可提交文件，并纳入 V13 源码、参考 `trpc-agent-service-wangzilong` 源码（去除 `.git`）、V13/V14 验收/竞赛/架构/风险/安全/原创性文本和交接材料。为避免把凭据扩散到压缩包，明确排除：真实 `.env`/`.env.*`（包括 `deploy/.env.wecom.local`）、Docker volume/image、运行时数据库、日志/缓存、二进制、临时工作目录、E 盘实验室缓存/数据库/证书/私钥/工具以及未审核的嵌套归档。排除项、来源路径、文件计数和 SHA-256 会在包内的 `PACKAGE_INVENTORY_20260905.md` 与 `SHA256SUMS_20260905.txt` 中逐项记录。
+本次精简包覆盖当前平台源码、当前评审文档和脱敏验证证据。为避免把凭据扩散到压缩包，明确排除：真实 `.env`/`.env.*`（包括 `deploy/.env.wecom.local`）、Docker volume/image、运行时数据库、日志/缓存、二进制、临时工作目录、E 盘实验室缓存/数据库/证书/私钥/工具、历史源码和未审核的嵌套归档。排除项、来源路径、文件计数和 SHA-256 会在包内的 `PACKAGE_INVENTORY_20260905.md` 与 `SHA256SUMS_20260905.txt` 中逐项记录。
 
 推荐阅读顺序：
 
