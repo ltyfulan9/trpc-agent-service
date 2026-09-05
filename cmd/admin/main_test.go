@@ -24,9 +24,12 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/governance"
 	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/modelcatalog"
 	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/platformtool"
+	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/reliable"
 	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/tenant"
 	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/worker"
 )
+
+type legacyReplayStore struct{ reliable.Store }
 
 type conflictTenantService struct{}
 
@@ -115,6 +118,23 @@ func TestValidateVersionSnapshotPinsOperatorModelLimits(t *testing.T) {
 	}
 	if want := worker.NewRuntimeAgentRegistry().Fingerprint(); snapshot.RuntimeCapabilityFingerprint != want {
 		t.Fatalf("snapshot runtime fingerprint=%q, want %q", snapshot.RuntimeCapabilityFingerprint, want)
+	}
+}
+
+func TestValidateVersionSnapshotWithCatalogRejectsUnknownProductionModel(t *testing.T) {
+	tenantConfig := sampleTenant()
+	tenantConfig.Models = []tenant.ModelConfig{{
+		Provider: "openai", ModelName: "unreviewed-model", APIKey: "test-only-key", MaxTokens: 256,
+	}}
+	service := &countingTenantService{tenant: tenantConfig}
+	snapshot := controlplane.VersionSnapshot{
+		Agent: tenant.AgentConfig{Name: "support", Type: tenant.AgentTypeLLM, DefaultModel: "unreviewed-model", MaxLLMCalls: 1},
+		Model: tenant.ModelConfig{Provider: "openai", ModelName: "unreviewed-model", MaxTokens: 256},
+	}
+	if err := validateVersionSnapshotWithCatalog(
+		context.Background(), service, platformtool.NewBuiltinCatalog(), worker.NewRuntimeAgentRegistry(), "t1", &snapshot, true,
+	); err == nil {
+		t.Fatal("production validation accepted a model outside the operator catalog")
 	}
 }
 
@@ -592,6 +612,20 @@ func TestReconciliationRouteRequiresPlatformPermissionAndRecorder(t *testing.T) 
 				t.Fatalf("status = %d, want %d; body=%s", response.Code, test.want, response.Body.String())
 			}
 		})
+	}
+}
+
+func TestOutboxReplayRouteFailsClosedWithoutTenantScopedCapability(t *testing.T) {
+	mux := http.NewServeMux()
+	legacy := legacyReplayStore{Store: reliable.NewMemoryStore()}
+	registerControlPlaneRoutes(mux, nil, nil, nil, legacy)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/outbox-replays", strings.NewReader(`{"tenantId":"tenant-a","outboxId":1,"reason":"reconcile"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(adminauth.ContextWithPrincipal(req.Context(), adminauth.Principal{ID: "operator", Role: adminauth.RolePlatformAdmin}))
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, req)
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("unscoped replay route status=%d body=%s, want 503", response.Code, response.Body.String())
 	}
 }
 

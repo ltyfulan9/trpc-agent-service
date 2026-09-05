@@ -1,6 +1,7 @@
 package reliable
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -44,6 +45,20 @@ func TestOutboxTransitions(t *testing.T) {
 	}
 	if err := ValidateOutboxTransition(OutboxDelivered, OutboxDelivering); !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("expected terminal-state transition to fail, got %v", err)
+	}
+}
+
+func TestMemoryReplayOutboxForTenantRejectsCrossTenantID(t *testing.T) {
+	store := NewMemoryStore()
+	store.outbox[42] = &OutboxMessage{ID: 42, TenantID: "tenant-a", Status: OutboxDeadLetter}
+	if err := store.ReplayOutboxForTenant(context.Background(), "tenant-b", 42, "operator", "scope check"); err == nil {
+		t.Fatal("cross-tenant replay unexpectedly succeeded")
+	}
+	if got := store.outbox[42].Status; got != OutboxDeadLetter {
+		t.Fatalf("cross-tenant replay changed status to %s", got)
+	}
+	if err := store.ReplayOutboxForTenant(context.Background(), "tenant-a", 42, "operator", "scope check"); err != nil {
+		t.Fatalf("same-tenant replay failed: %v", err)
 	}
 }
 

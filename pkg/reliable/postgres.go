@@ -1484,14 +1484,25 @@ func (s *PostgresStore) BlockOutbox(ctx context.Context, id int64, lease Lease, 
 }
 
 func (s *PostgresStore) ReplayOutbox(ctx context.Context, id int64, actor, reason string) error {
-	return s.replayOutbox(ctx, id, actor, reason, OutboxReplayResume)
+	return s.replayOutbox(ctx, "", id, actor, reason, OutboxReplayResume)
+}
+
+// ReplayOutboxForTenant atomically verifies that the message belongs to the
+// requested tenant before changing its delivery state and writing the audit.
+// Administrative callers must use this scoped entry point.
+func (s *PostgresStore) ReplayOutboxForTenant(ctx context.Context, tenantID string, id int64, actor, reason string) error {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		return fmt.Errorf("replay outbox: tenant id is required")
+	}
+	return s.replayOutbox(ctx, tenantID, id, actor, reason, OutboxReplayResume)
 }
 
 func (s *PostgresStore) RestartOutbox(ctx context.Context, id int64, actor, reason string) error {
-	return s.replayOutbox(ctx, id, actor, reason, OutboxReplayRestart)
+	return s.replayOutbox(ctx, "", id, actor, reason, OutboxReplayRestart)
 }
 
-func (s *PostgresStore) replayOutbox(ctx context.Context, id int64, actor, reason string, mode OutboxReplayMode) error {
+func (s *PostgresStore) replayOutbox(ctx context.Context, expectedTenant string, id int64, actor, reason string, mode OutboxReplayMode) error {
 	if actor == "" || reason == "" {
 		return fmt.Errorf("replay outbox: actor and reason are required")
 	}
@@ -1514,9 +1525,10 @@ func (s *PostgresStore) replayOutbox(ctx context.Context, id int64, actor, reaso
 		FROM outbox_messages o
 		JOIN tenants t ON t.id=o.tenant_id
 		WHERE o.id=$1
+		  AND ($2='' OR o.tenant_id=$2)
 		  AND o.status IN ('DEAD_LETTERED','WAITING_RECONCILIATION')
 		  AND t.status='active'
-		FOR UPDATE OF o, t`, id).Scan(&tenantID); err != nil {
+		FOR UPDATE OF o, t`, id, expectedTenant).Scan(&tenantID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("replay outbox: message is not dead-lettered or awaiting reconciliation")
 		}
@@ -1528,7 +1540,8 @@ func (s *PostgresStore) replayOutbox(ctx context.Context, id int64, actor, reaso
 		    delivery_cursor=CASE WHEN $2='restart' THEN 0 ELSE delivery_cursor END,
 		    lease_owner=NULL, lease_version=lease_version+1, lease_until=NULL,
 		    last_error='', updated_at=now()
-		WHERE id=$1 AND status IN ('DEAD_LETTERED','WAITING_RECONCILIATION')`, id, mode)
+		WHERE id=$1 AND ($3='' OR tenant_id=$3)
+		  AND status IN ('DEAD_LETTERED','WAITING_RECONCILIATION')`, id, mode, expectedTenant)
 	if err != nil {
 		return fmt.Errorf("replay outbox: %w", err)
 	}

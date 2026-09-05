@@ -26,6 +26,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/governance"
 	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/health"
 	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/platformtool"
+	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/reliable"
 	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/runtimeplane"
 	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/storage"
 	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/telemetry"
@@ -109,6 +110,11 @@ func main() {
 		log.Fatalf("ping control-plane database: error=%s", telemetry.StableErrorCode(err))
 	}
 	shutdown.OnShutdown("control-plane-database", func(context.Context) error { return controlDB.Close() })
+	inboxStore, err := reliable.OpenPostgresStore(context.Background(), dbURL)
+	if err != nil {
+		log.Fatalf("open reliable message store: error=%s", telemetry.StableErrorCode(err))
+	}
+	shutdown.OnShutdown("reliable-message-store", func(context.Context) error { return inboxStore.Close() })
 	toolCatalog, err := platformtool.NewMCPAdmissionResolver(os.Getenv("MCP_PROFILES"))
 	if err != nil {
 		log.Fatalf("configure MCP admission catalog: error=%s", telemetry.StableErrorCode(err))
@@ -123,7 +129,7 @@ func main() {
 		tenantID string,
 		snapshot *controlplane.VersionSnapshot,
 	) error {
-		return validateVersionSnapshot(ctx, tenantService, toolCatalog, runtimeFactories, tenantID, snapshot)
+		return validateVersionSnapshotWithCatalog(ctx, tenantService, toolCatalog, runtimeFactories, tenantID, snapshot, true)
 	})
 	// Admin reconciliation shares the same advisory-fencing authority as the
 	// strict Worker. Using the compatibility recorder here would let an
@@ -164,7 +170,7 @@ func main() {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
 	})
-	registerControlPlaneRoutes(mux, controlService, executionRecorder, approvalStore)
+	registerControlPlaneRoutes(mux, controlService, executionRecorder, approvalStore, inboxStore)
 
 	healthChecker := health.New(
 		health.WithDatabase(tenantRepo),
@@ -213,6 +219,9 @@ func main() {
 	}))
 	handler.Handle("/api/v1/execution-reconciliations", protect("admin.execution-reconciliations", map[string]adminauth.Permission{
 		http.MethodPost: adminauth.PermissionExecutionReconcile,
+	}))
+	handler.Handle("/api/v1/outbox-replays", protect("admin.outbox-replays", map[string]adminauth.Permission{
+		http.MethodPost: adminauth.PermissionOutboxReplay,
 	}))
 	handler.Handle("/api/v1/tool-approvals/", protect("admin.tool-approvals", map[string]adminauth.Permission{
 		http.MethodGet:  adminauth.PermissionToolApprovalRead,

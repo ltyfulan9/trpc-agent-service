@@ -20,7 +20,7 @@
 | Inbox/Outbox 幂等与乱序 | `pkg/reliable`, migrations 002/013–016/033–036 | 重复、payload conflict、分段 cursor、过期接管、fair queue 测试 | LOCAL_VERIFIED |
 | 企业微信 | `pkg/channel/wework_adapter.go`、Gateway/Delivery composition | URL verify、签名、AES、CorpID、分段契约自动化 | IMPLEMENTED |
 | Telegram | `pkg/channel/telegram_adapter.go`、Gateway/Delivery composition | secret header、消息规范化、429/retry 契约自动化 | IMPLEMENTED |
-| 真实 IM sandbox | `docs/EXTERNAL_ACCEPTANCE_RUNBOOK.md` | 需讲师/目标账号 webhook、token 与回调网络 | EXTERNAL_REQUIRED |
+| 真实 IM sandbox | `docs/EXTERNAL_ACCEPTANCE_RUNBOOK.md` | 需讲师/目标账号 webhook、token 与回调网络；Outbox 未知结果可通过受保护的 `/api/v1/outbox-replays` 审计恢复 | EXTERNAL_REQUIRED |
 | PostgreSQL 控制面/队列 | migrations、`pkg/reliable/postgres*` | 本地 PostgreSQL 15.8 全量 integration | LOCAL_VERIFIED |
 | Redis Session/Memory/coordination | `pkg/storage`, budget/nonce/session lease | 本地 Redis 7.4 integration；无 InMemory 生产回退 | LOCAL_VERIFIED |
 | 生产 Summary Generator | `pkg/summary`, `pkg/summaryruntime`, `cmd/summary-worker`, migration 042 | 真实 PG/Redis + 捕获模型：enqueue→freeze→generate→fenced checkpoint→下一次 Runner 请求；断言摘要/新消息存在且旧历史被裁剪 | LOCAL_VERIFIED |
@@ -107,6 +107,7 @@ Docker Desktop 因 `Docker\run\sailor-ingest.sock`、`dockerInference` 等损坏
 | Prometheus | 6/6 active targets 为 `up`；规则 API 返回 15 条，全部 `health=ok` |
 | 稳定性 | 本轮所有 V14 临时容器 restart count `0`；容器日志未发现 `panic` 或 `fatal` |
 | Admin 纵切 | 未认证 `401`；创建租户、脱敏 GET、Agent App、Version、Publish、stable Deployment、列表和删除全部通过 |
+| Admin 身份与发布门 | `pkg/adminauth` `PrincipalResolver` 与 `cmd/admin` publish admission 已做源代码/单测验证：外部主体经服务端 ID、角色、tenant scope 归一化；发布拒绝不在 operator-approved model catalog 的模型。外部 OIDC/IAP/mTLS 组合仍需目标环境接线。 |
 | 外部 preflight | 合法形状的假值运行，`provider_calls=0`；不发送真实 Provider 请求 |
 | 集成 | `go test -buildvcs=false -tags=integration -count=1 -p 1 ./test/integration` PASS（9.775 秒） |
 | 镜像 | Compose 配置 PASS；7 个应用镜像构建 PASS |

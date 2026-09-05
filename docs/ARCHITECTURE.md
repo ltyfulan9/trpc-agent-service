@@ -6,13 +6,15 @@
 
 本实现不是“所有后端与 IM 的全集”。它实现企业微信与 Telegram 主路径、OpenAI 模型工厂、Redis/PostgreSQL Session/Memory 生产选择；InMemory 仅用于测试/显式单进程组合，Admin 与生产 Worker 会拒绝它。其他 provider/backend 通过接口扩展，不能仅凭枚举值视为已实现。
 
+模型治理分为两层：本地零预算 fixture 可使用占位模型名以便测试工厂与治理流程；不可变 AgentVersion 的 publish admission 必须命中本构建绑定的 operator-approved model catalog，并记录 revision/context window。这样未知模型会在发布前失败，而不是进入队列后才在 Worker 中失败。
+
 ## 2. 组件职责
 
 - Gateway：使用非密钥 `webhookKey` 查租户，恢复并解析所选 channel 的加密凭据/SecretRef，验签/解密，限制 body/JSON 深度/内容长度，生成租户作用域 session，提交 Inbox 后才回复 200。缺少 scoped tenant reader 时直接拒绝，不加载完整租户配置。
 - Consumer：只领取 session 流中不存在未完成前序的 Inbox，再用 `SKIP LOCKED` 和 fence 竞争所有权；租约短于最大处理窗口时拒绝配置；调用 Worker；在同一数据库事务中把 Inbox 置为 COMPLETED 并插入唯一 Outbox。
 - Worker：验证 Consumer HMAC 与 nonce，解析 Channel 绑定的 Agent App，将幂等请求固定到不可变版本，连接租户 Session/Memory，运行 Runner 与治理 Plugin，持久化 execution/audit/result；没有 active stable deployment 时拒绝执行。不可变 Runner 由带容量和空闲 TTL 的并发安全缓存复用，key 包含 tenant/config/app/version/deployment；引用计数确保使用中实例不被关闭。Worker 在构造/执行前校验 immutable snapshot 中的 runtime capability fingerprint，拒绝 Admin 与 Worker 安装集不一致的执行；生产 strict Worker 与 Admin admission 对非内置 runtime 拒绝 type-only 注册，自定义 runtime 必须提供稳定 capability identity。
 - Delivery：领取 Outbox，按 tenant/channel/account 恢复并解析单个 Channel 密钥，调用 Adapter；区分永久错误、普通重试和 provider Retry-After。分段消息每次只发送一段并 fenced 持久化 `delivery_cursor`，永久错误直接 DLQ，完整成功后更新 REPLIED。缺少 scoped tenant reader 时 fail-closed。
-- Admin：管理 Tenant 与 Agent App/Version/Deployment。bootstrap token 和可选 scoped token 均解析为 Principal；角色权限和 tenant allowlist 在数据访问前校验，审计 actor 不接受客户端 header。响应永不回显模型、IM 或存储凭据；遮盖值 PUT 回来不会覆盖原密钥。
+- Admin：管理 Tenant 与 Agent App/Version/Deployment。bootstrap token 和可选 scoped token 均解析为 Principal；角色权限和 tenant allowlist 在数据访问前校验，审计 actor 不接受客户端 header。`pkg/adminauth` 同时提供 `PrincipalResolver` seam，供已在 Ingress 验证 OIDC/IAP/mTLS 的部署注入短期主体；解析器返回的 Principal 仍经过服务端 ID、角色与租户范围归一化校验。当前二进制默认组合仍是 bootstrap bearer，外部身份接管属于部署组合根的 `EXTERNAL_REQUIRED`。响应永不回显模型、IM 或存储凭据；遮盖值 PUT 回来不会覆盖原密钥。
 - Storage Adapter：按租户 StorageConfig 选择官方 Session/Memory Service。生产 Worker 把共享 SessionService 与 MemoryService 都注入 Runner，不使用进程内 sticky session，也不以手工 prompt 拼接冒充框架记忆接线。
 - Memory 工具从租户实际 `memory.Service.Tools()` 动态解析；只有同时进入 Agent 版本快照和租户 whitelist 的工具才暴露，并继续经过 Runner governance plugin。默认 recall 预算为 10，避免无界上下文增长；不会无条件把每条原始输入保存成长期记忆。
 - Telemetry：Prometheus 指标、PostgreSQL 审计、OTLP trace。异步边界把 traceparent 写入 Inbox/Outbox，再由下游恢复。
@@ -104,7 +106,7 @@ Consumer 发送 `inbox:{id}` 与 payload hash。Worker 在模型完成后、HTTP
 
 ### 4.4 重放
 
-`DEAD_LETTERED` 和 `WAITING_RECONCILIATION` 可在完成外部核对且租户恢复 active 后审计重放；attempt 清零、fence 递增，actor/reason/mode 进入 `message_replay_audit`。Inbox 重放恒为 restart。Outbox 默认 resume 并保留 `delivery_cursor`；可选 `OutboxRestartStore` 只供显式 `--restart` 使用，它把 cursor 清零并可能重发已确认片段。基础 `Store` 不暴露这个破坏性操作，普通 Adapter 无需为了运维命令扩展接口。重放是受控变更，不是 UPDATE status 的随意脚本。
+`DEAD_LETTERED` 和 `WAITING_RECONCILIATION` 可在完成外部核对且租户恢复 active 后审计重放；attempt 清零、fence 递增，actor/reason/mode 进入 `message_replay_audit`。Inbox 重放恒为 restart。Outbox 默认 resume 并保留 `delivery_cursor`；可选 `OutboxRestartStore` 只供显式 `--restart` 使用，它把 cursor 清零并可能重发已确认片段。生产 Admin 通过受保护的 `POST /api/v1/outbox-replays` 入口提交 `tenantId`、`outboxId` 和审计 `reason`，服务端复用可靠 Store 的租约/fence 和租户 scope 校验。基础 `Store` 不暴露破坏性操作，普通 Adapter 无需为了运维命令扩展接口。重放是受控变更，不是 UPDATE status 的随意脚本。
 
 ## 5. 租户与安全边界
 

@@ -411,6 +411,24 @@ func ValidateAgentModelBudget(agent AgentConfig, modelConfig ModelConfig, budget
 	return nil
 }
 
+// ValidateProductionModelCatalog rejects model IDs that are not present in
+// the immutable operator catalog. Local, zero-budget unit fixtures may use a
+// placeholder model name, but an immutable version entering the publish path
+// must be executable by this composition and have reviewed provider limits.
+func ValidateProductionModelCatalog(agent AgentConfig, modelConfig ModelConfig) error {
+	if err := ValidateAgentModel(agent, modelConfig); err != nil {
+		return err
+	}
+	profile, ok := modelcatalog.Resolve(modelConfig.Provider, modelConfig.ModelName)
+	if !ok {
+		return fmt.Errorf("model %q is not present in the operator-approved model catalog", modelConfig.ModelName)
+	}
+	if modelConfig.MaxTokens > profile.MaxOutputTokens {
+		return fmt.Errorf("model %q completion limit exceeds the operator-approved provider cap", modelConfig.ModelName)
+	}
+	return nil
+}
+
 // ValidatePinnedAgentModelBudget additionally proves that the immutable
 // version carries the same catalog revision and context window as this binary.
 func ValidatePinnedAgentModelBudget(

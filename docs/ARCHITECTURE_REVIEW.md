@@ -1,5 +1,12 @@
 # Production Architecture Review
 
+> Status: historical review record. The current implementation and acceptance
+> state are authoritative in `docs/ACCEPTANCE_EVIDENCE_V14.md`,
+> `docs/PROJECT_SUMMARY_V14_20260905.md` and `docs/ARCHITECTURE.md`. Statements
+> below describing missing adapters or unexecuted scenarios refer to the
+> review checkpoint at the time this file was written and must not override
+> newer evidence.
+
 ## Scope and evidence
 
 This review follows one durable request path:
@@ -25,6 +32,16 @@ The decision labels have a precise meaning:
 - **Missing**: the requirement is valid, but this source snapshot has no
   end-to-end evidence for it.
 
+## Current implementation reconciliation
+
+This document is a design review, not a historical implementation snapshot.
+The current source has since closed the Summary, Knowledge, Artifact, and
+projection paths described below: the corresponding PostgreSQL/Redis/Qdrant/
+MinIO vertical slices are `LOCAL_VERIFIED` in the acceptance matrix. The
+remaining gates are deployment-specific (external IM sandboxes, production
+KMS/Vault, HA/DR, capacity, and service-mesh rollout) and must not be confused
+with missing source modules.
+
 ## Layer-by-layer decision record
 
 | Layer | Retain | Simplify or remove | Missing / production acceptance gate |
@@ -33,8 +50,8 @@ The decision labels have a precise meaning:
 | Inbox | PostgreSQL is authoritative for idempotency, per-session ordering, leases, fences, DLQ, and replay. `CompleteInbox` plus unique Outbox insertion remains one transaction. A bounded `ReapExpired` CTE with partial indexes and `SKIP LOCKED` now terminalizes final attempts and approval expiry outside Claim. Queue inspection uses dedicated partial `(created_at, id)` indexes for automatic states. Optional migration 035 adds operator-owned schedule rows, atomic `max_queued` ingress admission, and a transactional weighted virtual-runtime fair claimer with `MaxInflight`; expired processing leases are excluded from the active count, and deleting an override resets the default rather than removing the schedule row. | Do not restore global expiry updates to Claim. Consumer and Delivery each run one maintenance loop per process, not one loop per claim worker. Keep fair scheduling opt-in until every Consumer/Gateway has migration 035 and a capability rollout. | `QueueInspector` remains global by design. Built-in Postgres/Memory admission is covered by unit/sqlmock tests; real multi-replica PostgreSQL fairness, lock contention, and quota-storm evidence remain required. |
 | Consumer | Keep it as orchestration only: claim, validate authoritative Inbox identity, call Worker, then complete Inbox. Retain HMAC/nonce protection and error classification. | Do not place Agent runtime, routing authority, or direct provider delivery here. | Consumer-to-Worker needs a verified confidential transport in the real deployment. HMAC authenticates bytes but does not encrypt `http://` traffic. Startup must also fail before claims if the Worker endpoint is malformed or unavailable. |
 | Worker | Immutable agent/deployment resolution, idempotency result storage, execution fencing, tenant storage checks, group Session owner versus actor Memory scope, bounded Runner caching, and a finite execution deadline are all justified. The deadline distinguishes retry-safe pre-Runner admission from a post-`Runner.Run` outcome that may have side effects. | Reject a runtime type at version admission when the Admin/Worker composition lacks its factory. Do not publish `graph`, `chain`, `parallel`, or `cycle` and hope a later Worker error explains it. | A Go Tool that ignores cancellation additionally needs a killable process/container boundary; a context alone cannot force-stop it. Production still needs kill/recovery evidence that the deadline releases leases and routes post-Runner timeouts to reconciliation. |
-| Runner and governance | Native tRPC Runner with injected shared Session/Memory services, Plugin interception, audit, whitelist, content policy, masking, budget reservation, and durable approval are correct seams. | Keep the Plugin as the only tool-enforcement seam. Delete inactive static-tool wrappers: they are not on the Runner path and can drift from approval/audit semantics. | Summary is not operational until a real Session-event reader, sequence-aware enqueue adapter, fenced checkpoint publisher, and Runner-visible summary reader are composed in production. The current coordinator is useful but is not that proof. |
-| Session and Memory | Tenant-scoped app names, group Session owner, actor-scoped Memory, backend-profile ownership, Redis coordination, and PostgreSQL execution fences should remain. | Tenant JSON must not carry DSNs or provider URLs. Keep it to operator-owned profile identifiers. | Artifact, Knowledge/vector, and concrete backend-migration adapters are not implemented data-plane services. Do not call enum values or migration phases completed adapters. Real backend migration needs copy, dual-write, validation, cutover, and rollback tests against the selected systems. |
+| Runner and governance | Native tRPC Runner with injected shared Session/Memory services, Plugin interception, audit, whitelist, content policy, masking, budget reservation, and durable approval are correct seams. Summary now has a real Session-event reader, sequence-aware enqueue, fenced checkpoint, and Runner-visible overlay in the local vertical slice. | Keep the Plugin as the only tool-enforcement seam. Delete inactive static-tool wrappers: they are not on the Runner path and can drift from approval/audit semantics. | Production deployment still needs external model/SLO evidence; this is an acceptance gate, not an absent Summary implementation. |
+| Session and Memory | Tenant-scoped app names, group Session owner, actor-scoped Memory, backend-profile ownership, Redis coordination, and PostgreSQL execution fences should remain. Artifact and Knowledge have concrete PostgreSQL/MinIO/Qdrant adapters with tenant scope and hash/tombstone checks; Redis-to-PostgreSQL Session migration and projection cutover are covered by local vertical tests. | Tenant JSON must not carry DSNs or provider URLs. Keep it to operator-owned profile identifiers. | HA migration, cloud IAM, and production data-volume rehearsals remain external acceptance gates. |
 | Outbox and Delivery | Retain atomic Inbox-to-Outbox creation, at-least-once semantics, cursor-based segmented replies, provider retry classification, pre-dispatch `DISPATCH_STARTED` fence, fenced state changes, DLQ, audited replay, and the shared bounded expiry reaper. Success mutations now reject `DELIVERING` and require `DISPATCH_STARTED` in both built-in stores. | Keep the contract honest: a provider-success/cursor-commit failure now parks the row for reconciliation; an explicit audited resume can still duplicate without provider idempotency. | Add provider sandbox contract tests and tenant backlog admission before declaring delivery SLOs. Fair Inbox claiming does not itself bound Outbox delivery or provider quota. Dead-letter metrics count only successful state transitions; expiry reaper distinguishes final-attempt and dispatch-unknown outcomes. |
 
 ## Cross-cutting security and operations decisions
@@ -106,6 +123,15 @@ The decision labels have a precise meaning:
   set one shared process pool and role-specific maxima from measured load.
 - Capacity data with workload, environment, command, p50/p95/p99, queue lag,
   DB/Redis QPS, connection wait, CPU/memory, error rate, and token cost.
+
+The Admin authentication package also exposes an explicit
+`PrincipalResolver` seam for an operator-owned OIDC/IAP/mTLS verifier. The
+built-in bootstrap/scoped bearer credentials remain intentionally available
+for local and emergency operation; production deployments should inject a
+verifier through this seam and disable long-lived bootstrap access after
+provisioning. The resolver must validate signature/issuer/audience/expiry and
+the mTLS identity before returning a server-side Principal. No client-supplied
+identity header is trusted by the platform.
 
 ## Changes made in this review pass
 
@@ -195,18 +221,12 @@ The decision labels have a precise meaning:
 
 ## Production exit criteria
 
-The architecture is suitable as an enterprise platform foundation, but it is
-not production-certified until every Missing acceptance gate above has a
-reproducible artifact. The next implementation increment should be one bounded
-vertical slice, not another framework layer:
-
-1. Choose the first supported production backend pair (for example,
-   PostgreSQL Session/Memory plus Redis coordination).
-2. Build a disposable integration environment with separate service database
-   roles and confidential Consumer-to-Worker transport.
-3. Run the named kill/retry/fence scenarios and retain the raw results.
-4. Only then add the production Summary adapter or a concrete Artifact/Knowledge
-   adapter, each with the same failure and tenant-isolation evidence.
+The source-level platform foundation is implemented and locally verified. It is
+not production-certified until the deployment owner supplies reproducible
+evidence for the remaining external gates above: confidential service
+identity, HA/DR and capacity, KMS/Vault workload identity, and real IM
+sandboxes. Those gates validate environment and operations; they do not imply
+that the Summary, Artifact, Knowledge, or migration source paths are absent.
 
 The Fable design was used as a review input, not as implementation evidence.
 Its Organization/Project hierarchy, external SecretRef resolver, replica-aware

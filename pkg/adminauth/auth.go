@@ -1,6 +1,7 @@
 // Package adminauth provides authenticated, route-scoped control-plane
 // principals. It intentionally does not trust caller-supplied actor headers:
-// the audit identity is derived only from the bearer credential.
+// the audit identity is derived from a bootstrap bearer credential or an
+// operator-owned external PrincipalResolver.
 package adminauth
 
 import (
@@ -33,6 +34,7 @@ const (
 	// effect. Keep it platform-admin-only until an independently audited
 	// operator workflow exists for narrower roles.
 	PermissionExecutionReconcile Permission = "execution.reconcile"
+	PermissionOutboxReplay       Permission = "outbox.replay"
 )
 
 // Role is an operator-owned permission bundle.
@@ -54,7 +56,7 @@ var rolePermissions = map[Role]map[Permission]struct{}{
 	RolePlatformAdmin: {
 		PermissionTenantRead: {}, PermissionTenantCreate: {}, PermissionTenantWrite: {},
 		PermissionTenantDelete: {}, PermissionAgentWrite: {}, PermissionAgentPublish: {},
-		PermissionAgentDeploy: {}, PermissionExecutionReconcile: {},
+		PermissionAgentDeploy: {}, PermissionExecutionReconcile: {}, PermissionOutboxReplay: {},
 		PermissionToolApprovalRead: {}, PermissionToolApprovalGrant: {},
 	},
 	RoleTenantAdmin: {
@@ -126,6 +128,31 @@ type CredentialConfig struct {
 	TenantIDs []string `json:"tenantIds,omitempty"`
 }
 
+// NewPrincipal constructs a validated server-side Principal for an external
+// identity provider adapter. Callers cannot set the internal tenant map
+// directly; all role and scope invariants are applied here.
+func NewPrincipal(id string, role Role, tenantIDs []string) (Principal, error) {
+	id = strings.TrimSpace(id)
+	if id == "" || len(id) > 256 || strings.ContainsAny(id, "\r\n\x00") {
+		return Principal{}, fmt.Errorf("admin principal id is required and must be safe")
+	}
+	if rolePermissions[role] == nil {
+		return Principal{}, fmt.Errorf("admin principal %q has unsupported role %q", id, role)
+	}
+	if role == RolePlatformAdmin && len(tenantIDs) != 0 {
+		return Principal{}, fmt.Errorf("platform_admin %q must not carry a tenant allowlist", id)
+	}
+	tenants := make(map[string]struct{}, len(tenantIDs))
+	for _, raw := range tenantIDs {
+		tenantID := strings.TrimSpace(raw)
+		if tenantID == "" || tenantID == "*" || len(tenantID) > 64 || strings.ContainsAny(tenantID, "/\\\r\n\x00") {
+			return Principal{}, fmt.Errorf("admin principal %q has invalid tenant scope", id)
+		}
+		tenants[tenantID] = struct{}{}
+	}
+	return Principal{ID: id, Role: role, tenants: tenants}, nil
+}
+
 type credential struct {
 	tokenHash [sha256.Size]byte
 	principal Principal
@@ -134,6 +161,40 @@ type credential struct {
 // Authenticator authenticates bootstrap and optional scoped principals.
 type Authenticator struct {
 	credentials []credential
+	// resolver is an operator-owned identity boundary for deployments that
+	// terminate OIDC/IAP or mTLS before the Admin service. The resolver must
+	// validate the external assertion and return a server-side Principal; the
+	// Admin package never trusts identity headers by itself.
+	resolver PrincipalResolver
+}
+
+// PrincipalResolver authenticates an externally asserted operator identity.
+// Implementations must verify the provider signature, issuer/audience,
+// expiry, and any mTLS identity before returning a Principal. Returning a
+// Principal with an unknown role or empty ID is rejected by Middleware.
+type PrincipalResolver interface {
+	ResolvePrincipal(context.Context, *http.Request) (Principal, error)
+}
+
+// PrincipalResolverFunc adapts a function to PrincipalResolver.
+type PrincipalResolverFunc func(context.Context, *http.Request) (Principal, error)
+
+func (f PrincipalResolverFunc) ResolvePrincipal(ctx context.Context, request *http.Request) (Principal, error) {
+	if f == nil {
+		return Principal{}, ErrUnauthenticated
+	}
+	return f(ctx, request)
+}
+
+// NewExternalAuthenticator creates an Admin authenticator backed by an
+// operator-owned OIDC/IAP/mTLS verifier. The verifier is intentionally
+// injected instead of implemented here so the platform does not pretend to
+// validate provider-specific tokens or client certificates itself.
+func NewExternalAuthenticator(resolver PrincipalResolver) (*Authenticator, error) {
+	if resolver == nil {
+		return nil, fmt.Errorf("external admin principal resolver is required")
+	}
+	return &Authenticator{resolver: resolver}, nil
 }
 
 // NewAuthenticator maps bootstrapToken to an internal platform administrator
@@ -182,31 +243,39 @@ func NewAuthenticator(bootstrapToken, optionalJSON string) (*Authenticator, erro
 func validateCredential(config CredentialConfig) (Principal, [sha256.Size]byte, error) {
 	var zero [sha256.Size]byte
 	id := strings.TrimSpace(config.ID)
-	if id == "" || len(id) > 256 || strings.ContainsAny(id, "\r\n\x00") {
-		return Principal{}, zero, fmt.Errorf("admin principal id is required and must be safe")
-	}
 	if len(config.Token) < 32 {
 		return Principal{}, zero, fmt.Errorf("admin principal %q token must contain at least 32 characters", id)
 	}
-	if rolePermissions[config.Role] == nil {
-		return Principal{}, zero, fmt.Errorf("admin principal %q has unsupported role %q", id, config.Role)
+	principal, err := NewPrincipal(id, config.Role, config.TenantIDs)
+	if err != nil {
+		return Principal{}, zero, err
 	}
-	if config.Role == RolePlatformAdmin && len(config.TenantIDs) != 0 {
-		return Principal{}, zero, fmt.Errorf("platform_admin %q must not carry a tenant allowlist", id)
-	}
-	tenants := make(map[string]struct{}, len(config.TenantIDs))
-	for _, raw := range config.TenantIDs {
-		tenantID := strings.TrimSpace(raw)
-		if tenantID == "" || tenantID == "*" || len(tenantID) > 64 || strings.ContainsAny(tenantID, "/\\\r\n\x00") {
-			return Principal{}, zero, fmt.Errorf("admin principal %q has invalid tenant scope", id)
-		}
-		tenants[tenantID] = struct{}{}
-	}
-	return Principal{ID: id, Role: config.Role, tenants: tenants}, sha256.Sum256([]byte(config.Token)), nil
+	return principal, sha256.Sum256([]byte(config.Token)), nil
 }
 
 func (a *Authenticator) authenticate(request *http.Request) (Principal, error) {
-	if a == nil || len(a.credentials) == 0 || request == nil {
+	if a == nil || request == nil {
+		return Principal{}, ErrUnauthenticated
+	}
+	if a.resolver != nil {
+		principal, err := a.resolver.ResolvePrincipal(request.Context(), request)
+		if err != nil {
+			return Principal{}, ErrUnauthenticated
+		}
+		// Normalize through the same constructor used for bearer credentials.
+		// External resolvers are an authentication boundary, not an authority to
+		// bypass ID, role, or tenant-scope invariants.
+		tenantIDs := make([]string, 0, len(principal.tenants))
+		for tenantID := range principal.tenants {
+			tenantIDs = append(tenantIDs, tenantID)
+		}
+		validated, validationErr := NewPrincipal(principal.ID, principal.Role, tenantIDs)
+		if validationErr != nil {
+			return Principal{}, ErrUnauthenticated
+		}
+		return validated, nil
+	}
+	if len(a.credentials) == 0 {
 		return Principal{}, ErrUnauthenticated
 	}
 	values := request.Header.Values("Authorization")

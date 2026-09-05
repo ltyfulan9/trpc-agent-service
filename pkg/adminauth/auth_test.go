@@ -1,6 +1,7 @@
 package adminauth
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -107,5 +108,94 @@ func TestExecutionReconcilePermissionIsPlatformAdminOnly(t *testing.T) {
 		if (Principal{ID: "operator", Role: role}).Has(PermissionExecutionReconcile) {
 			t.Fatalf("role %q must not reconcile executions", role)
 		}
+	}
+}
+
+func TestExternalAuthenticatorUsesVerifiedPrincipalResolver(t *testing.T) {
+	// The fixture header stands in for a cryptographically verified assertion;
+	// production resolvers must validate the provider token/certificate.
+	resolver := PrincipalResolverFunc(func(_ context.Context, request *http.Request) (Principal, error) {
+		if request.Header.Get("X-External-Assertion") != "verified" {
+			return Principal{}, ErrUnauthenticated
+		}
+		return NewPrincipal("oidc:alice", RoleAuditor, []string{"tenant-a"})
+	})
+	authenticator, err := NewExternalAuthenticator(resolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		principal, err := PrincipalFromContext(request.Context())
+		if err != nil || principal.ID != "oidc:alice" {
+			t.Fatalf("principal = %#v, err=%v", principal, err)
+		}
+		writer.WriteHeader(http.StatusNoContent)
+	})
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.Header.Set("X-External-Assertion", "verified")
+	response := httptest.NewRecorder()
+	authenticator.Middleware(next).ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("verified assertion status = %d", response.Code)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/", nil)
+	request.Header.Set("X-External-Assertion", "forged")
+	response = httptest.NewRecorder()
+	authenticator.Middleware(next).ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("unverified assertion status = %d", response.Code)
+	}
+}
+
+func TestExternalAuthenticatorRejectsInvalidResolvedPrincipal(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		principal Principal
+	}{
+		{name: "empty id", principal: Principal{ID: "", Role: RoleAuditor}},
+		{name: "unsafe id", principal: Principal{ID: "alice\nforged", Role: RoleAuditor}},
+		{name: "wildcard tenant", principal: Principal{ID: "alice", Role: RoleAuditor, tenants: map[string]struct{}{"*": {}}}},
+		{name: "platform tenant allowlist", principal: Principal{ID: "root", Role: RolePlatformAdmin, tenants: map[string]struct{}{"tenant-a": {}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			authenticator, err := NewExternalAuthenticator(PrincipalResolverFunc(func(context.Context, *http.Request) (Principal, error) {
+				return tc.principal, nil
+			}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequest(http.MethodGet, "/", nil)
+			response := httptest.NewRecorder()
+			authenticator.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("handler must not run")
+			})).ServeHTTP(response, request)
+			if response.Code != http.StatusUnauthorized {
+				t.Fatalf("invalid principal status = %d", response.Code)
+			}
+		})
+	}
+}
+
+func TestNewPrincipalAppliesRoleAndTenantInvariants(t *testing.T) {
+	principal, err := NewPrincipal("oidc:alice", RoleTenantAdmin, []string{"tenant-a"})
+	if err != nil || !principal.AllowsTenant("tenant-a") || principal.AllowsTenant("tenant-b") {
+		t.Fatalf("principal = %#v, err=%v", principal, err)
+	}
+	for _, tc := range []struct {
+		name string
+		id   string
+		role Role
+		tids []string
+	}{
+		{name: "unknown role", id: "alice", role: Role("unknown")},
+		{name: "platform scope", id: "root", role: RolePlatformAdmin, tids: []string{"tenant-a"}},
+		{name: "wildcard scope", id: "alice", role: RoleAuditor, tids: []string{"*"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := NewPrincipal(tc.id, tc.role, tc.tids); err == nil {
+				t.Fatal("invalid principal accepted")
+			}
+		})
 	}
 }

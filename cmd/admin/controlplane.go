@@ -17,6 +17,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/governance"
 	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/modelcatalog"
 	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/platformtool"
+	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/reliable"
 	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/telemetry"
 	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/tenant"
 	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/worker"
@@ -27,6 +28,7 @@ func registerControlPlaneRoutes(
 	service *controlplane.Service,
 	recorder *controlplane.ExecutionRecorder,
 	approvalStore governance.ApprovalStore,
+	stores ...reliable.Store,
 ) {
 	mux.HandleFunc("/api/v1/tool-approvals", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -187,6 +189,41 @@ func registerControlPlaneRoutes(
 		)
 		writeReconciliationResult(w, err)
 	})
+	if len(stores) > 0 && stores[0] != nil {
+		mux.HandleFunc("/api/v1/outbox-replays", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			var request struct {
+				TenantID string `json:"tenantId"`
+				OutboxID int64  `json:"outboxId"`
+				Reason   string `json:"reason"`
+			}
+			if !decodeJSON(w, r, &request) {
+				return
+			}
+			actor, ok := requireControlPlaneActor(w, r, request.TenantID)
+			if !ok {
+				return
+			}
+			if request.OutboxID <= 0 || strings.TrimSpace(request.Reason) == "" {
+				http.Error(w, "outboxId and reason are required", http.StatusBadRequest)
+				return
+			}
+			replayer, ok := stores[0].(reliable.TenantScopedOutboxReplayer)
+			if !ok {
+				http.Error(w, "tenant-scoped outbox replay is unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			if err := replayer.ReplayOutboxForTenant(r.Context(), request.TenantID, request.OutboxID, actor, request.Reason); err != nil {
+				log.Printf("outbox replay failed: error=%s", telemetry.StableErrorCode(err))
+				http.Error(w, "outbox replay unavailable", http.StatusConflict)
+				return
+			}
+			writeControlResult(w, map[string]string{"status": "replayed"}, nil, http.StatusOK)
+		})
+	}
 	mux.HandleFunc("/api/v1/tool-approvals/", func(w http.ResponseWriter, r *http.Request) {
 		challengeID, action, ok := approvalPath(r.URL.Path)
 		if !ok {
@@ -376,6 +413,18 @@ func validateVersionSnapshot(
 	tenantID string,
 	snapshot *controlplane.VersionSnapshot,
 ) error {
+	return validateVersionSnapshotWithCatalog(ctx, tenants, toolCatalog, runtimeFactories, tenantID, snapshot, false)
+}
+
+func validateVersionSnapshotWithCatalog(
+	ctx context.Context,
+	tenants tenant.Service,
+	toolCatalog worker.ToolResolver,
+	runtimeFactories *worker.RuntimeAgentRegistry,
+	tenantID string,
+	snapshot *controlplane.VersionSnapshot,
+	requireCatalog bool,
+) error {
 	if snapshot == nil {
 		return fmt.Errorf("version snapshot is required")
 	}
@@ -400,6 +449,11 @@ func validateVersionSnapshot(
 	}
 	if configuredModel == nil {
 		return fmt.Errorf("version references a model not configured for this tenant")
+	}
+	if requireCatalog {
+		if err := tenant.ValidateProductionModelCatalog(snapshot.Agent, snapshot.Model); err != nil {
+			return fmt.Errorf("version model is not publishable: %w", err)
+		}
 	}
 	if configuredModel.MaxTokens > 0 && snapshot.Model.MaxTokens > configuredModel.MaxTokens {
 		return fmt.Errorf("version completion limit exceeds the tenant model limit")

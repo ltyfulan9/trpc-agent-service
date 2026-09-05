@@ -312,6 +312,13 @@ type Store interface {
 	Close() error
 }
 
+// TenantScopedOutboxReplayer performs replay with an atomic tenant predicate.
+// Administrative callers must use this capability to prevent cross-tenant ID
+// substitution between authorization and the durable state transition.
+type TenantScopedOutboxReplayer interface {
+	ReplayOutboxForTenant(ctx context.Context, tenantID string, id int64, actor, reason string) error
+}
+
 // SummaryInboxCompleter atomically commits a successful Inbox transition, its
 // Outbox reply and the derived Summary job. A Consumer must fail closed when a
 // Worker returns a summary receipt but the configured store lacks this seam.

@@ -523,6 +523,19 @@ func TestValidatePinnedAgentModelBudgetRequiresOperatorCatalogBinding(t *testing
 	}
 }
 
+func TestValidateProductionModelCatalogRejectsUnknownModel(t *testing.T) {
+	agent := AgentConfig{Name: "support", Type: "llm", DefaultModel: "not-reviewed", MaxLLMCalls: 1}
+	model := ModelConfig{Provider: "openai", ModelName: "not-reviewed", MaxTokens: 256}
+	if err := ValidateProductionModelCatalog(agent, model); err == nil {
+		t.Fatal("unknown model accepted by production catalog validation")
+	}
+	known := ModelConfig{Provider: "openai", ModelName: "gpt-4o-mini", MaxTokens: 256}
+	agent.DefaultModel = known.ModelName
+	if err := ValidateProductionModelCatalog(agent, known); err != nil {
+		t.Fatalf("catalogued model rejected: %v", err)
+	}
+}
+
 func TestValidateAgentModelRejectsProviderOutputLimit(t *testing.T) {
 	agent := AgentConfig{Name: "support", Type: "llm", DefaultModel: "gpt-4o-mini", MaxLLMCalls: 1}
 	modelConfig := ModelConfig{Provider: "openai", ModelName: "gpt-4o-mini", MaxTokens: 16_385}

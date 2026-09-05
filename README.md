@@ -152,7 +152,9 @@ curl -X POST http://localhost:8081/api/v1/tenants \
 
 ### 创建与发布 Agent 版本
 
-`ADMIN_API_TOKEN` 只映射到应急/bootstrap `platform_admin`。日常操作者应通过 `ADMIN_PRINCIPALS_JSON` 配置独立 token、`tenant_admin` / `release_manager` / `auditor` 角色和 tenant allowlist。路由权限与 tenant scope 在读取租户数据前校验，审计 actor 只来自认证 Principal；伪造 `X-Admin-Actor` 不会改变审计身份。Tenant/Agent 变更与 `control_plane_audit` 在同一数据库事务提交。生产应进一步把凭证发行替换为 OIDC/IAP，但不能再回退到可信请求头。
+`ADMIN_API_TOKEN` 只映射到应急/bootstrap `platform_admin`。日常操作者应通过 `ADMIN_PRINCIPALS_JSON` 配置独立 token、`tenant_admin` / `release_manager` / `auditor` 角色和 tenant allowlist。路由权限与 tenant scope 在读取租户数据前校验，审计 actor 只来自认证 Principal；伪造 `X-Admin-Actor` 不会改变审计身份。Tenant/Agent 变更与 `control_plane_audit` 在同一数据库事务提交。
+
+生产网关可在 Ingress 完成 OIDC/IAP 或 mTLS 验证后，通过 `pkg/adminauth.NewExternalAuthenticator` 注入 operator-owned `PrincipalResolver`。解析器必须验证签名、issuer/audience、过期时间和客户端证书身份，再返回平台角色与 tenant allowlist；Admin 会再次归一化并校验 ID、角色和租户范围，不直接信任身份请求头。内置 bearer 模式仅用于本地和应急 bootstrap，生产完成外部身份接管后应撤销长期 bootstrap token。当前 `cmd/admin` 默认组合仍使用 bootstrap bearer；接入外部解析器属于部署组合根的 `EXTERNAL_REQUIRED` 验收项。
 
 ```text
 POST /api/v1/agent-apps
@@ -164,7 +166,7 @@ GET  /api/v1/tool-approvals/{challenge_id}?tenantId={tenant_id}
 POST /api/v1/tool-approvals/{challenge_id}/grant?tenantId={tenant_id}
 ```
 
-版本快照禁止包含 API Key；Worker 在执行时从加密租户配置注入同 provider/model 的凭据。`POST /deployments` 不传 canary 即为稳定版本切换/回滚；传 canary 时 `canaryBps` 为 1–9999。
+版本快照禁止包含 API Key；Worker 在执行时从加密租户配置注入同 provider/model 的凭据。发布入口还会强制校验模型必须存在于本构建绑定的 operator-approved catalog；未知模型名只允许出现在零预算的本地测试 fixture 中，不能进入 immutable AgentVersion。`POST /deployments` 不传 canary 即为稳定版本切换/回滚；传 canary 时 `canaryBps` 为 1–9999。
 
 生产 Worker 强制要求 `AgentApp` 存在 active stable deployment。不会退回可变的 `Tenant.Agents[0]`，也不会在版本切换后的 Inbox 重试中重新抽签。默认工具目录注册无副作用的 `current_time`；此外支持 operator-owned `MCP_PROFILES`：Admin 只校验 `mcp_<profile>_<remote>` 的公开声明，Worker 按 AgentVersion 实际使用的 profile 延迟连接官方 tRPC-Agent-Go MCP ToolSet，并以 `env://TRPC_SECRET_*` 在执行进程内解析 Header。租户 JSON 不能提交 MCP URL、Header 或凭据，只能引用已发布的精确工具名；`stdio`、HTTP 明文（非显式隔离开发）、URL userinfo/query/fragment、危险 Header、未知字段和未列入 profile 的远端工具均 fail-closed。
 

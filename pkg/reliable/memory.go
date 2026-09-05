@@ -3,6 +3,7 @@ package reliable
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -734,14 +735,25 @@ func (s *MemoryStore) BlockOutbox(_ context.Context, id int64, lease Lease, caus
 }
 
 func (s *MemoryStore) ReplayOutbox(ctx context.Context, id int64, actor, reason string) error {
-	return s.replayOutbox(ctx, id, actor, reason, OutboxReplayResume)
+	return s.replayOutbox(ctx, "", id, actor, reason, OutboxReplayResume)
+}
+
+// ReplayOutboxForTenant performs the replay only when the persisted message
+// belongs to the requested tenant. The check and state transition share the
+// store mutex, matching the transactional PostgreSQL implementation.
+func (s *MemoryStore) ReplayOutboxForTenant(ctx context.Context, tenantID string, id int64, actor, reason string) error {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		return fmt.Errorf("replay outbox: tenant id is required")
+	}
+	return s.replayOutbox(ctx, tenantID, id, actor, reason, OutboxReplayResume)
 }
 
 func (s *MemoryStore) RestartOutbox(ctx context.Context, id int64, actor, reason string) error {
-	return s.replayOutbox(ctx, id, actor, reason, OutboxReplayRestart)
+	return s.replayOutbox(ctx, "", id, actor, reason, OutboxReplayRestart)
 }
 
-func (s *MemoryStore) replayOutbox(_ context.Context, id int64, actor, reason string, mode OutboxReplayMode) error {
+func (s *MemoryStore) replayOutbox(_ context.Context, expectedTenant string, id int64, actor, reason string, mode OutboxReplayMode) error {
 	if actor == "" || reason == "" {
 		return fmt.Errorf("replay outbox: actor and reason are required")
 	}
@@ -751,7 +763,7 @@ func (s *MemoryStore) replayOutbox(_ context.Context, id int64, actor, reason st
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	msg := s.outbox[id]
-	if msg == nil || (msg.Status != OutboxDeadLetter && msg.Status != OutboxWaitingReconciliation) {
+	if msg == nil || (expectedTenant != "" && msg.TenantID != expectedTenant) || (msg.Status != OutboxDeadLetter && msg.Status != OutboxWaitingReconciliation) {
 		return fmt.Errorf("replay outbox: message is not dead-lettered or awaiting reconciliation")
 	}
 	msg.Status = OutboxPending
