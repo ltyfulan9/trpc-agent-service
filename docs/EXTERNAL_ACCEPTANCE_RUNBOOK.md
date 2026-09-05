@@ -40,6 +40,8 @@ Windows 本地企微沙箱已有一条不覆盖 V13、且不把秘密写入源�
 # 2. 交互采集 CorpID/AgentID/UserID/Secret/Token/AES；输入隐藏，文件 ACL 收紧
 & .\scripts\wecom_sandbox_setup.ps1
 
+Windows setup 的 UserID 可以直接填写通讯录“账号”；如果通讯录列表不显示账号，UserID 留空，随后按提示输入该成员手机号。脚本会在本机用 App Secret 调用企业微信 `getuserid`，只保存解析结果，不输出手机号、Token 或 Secret。
+
 # 3. 在独立端口启动 trpc-v14-wecom Compose 项目，创建租户、发布版本并复检公网入口
 & .\scripts\wecom_sandbox_bootstrap.ps1
 ```

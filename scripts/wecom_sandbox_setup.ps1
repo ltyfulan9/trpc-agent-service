@@ -105,6 +105,32 @@ function Assert-WeComAESKey {
     }
 }
 
+function Resolve-WeComUserID {
+    param([string]$CorpId, [string]$CorpSecret, [string]$Mobile)
+    try {
+        $tokenUri = 'https://qyapi.weixin.qq.com/cgi-bin/gettoken?corpid={0}&corpsecret={1}' -f `
+            [uri]::EscapeDataString($CorpId), [uri]::EscapeDataString($CorpSecret)
+        $tokenResponse = Invoke-RestMethod -Method Get -Uri $tokenUri -ErrorAction Stop
+        if ($null -eq $tokenResponse -or $tokenResponse.errcode -ne 0 -or [string]::IsNullOrWhiteSpace([string]$tokenResponse.access_token)) {
+            Fail-Setup 'WeCom token lookup failed; check CorpID/App Secret and contact-read permission'
+        }
+        $body = @{ mobile = $Mobile } | ConvertTo-Json -Compress
+        $lookupUri = 'https://qyapi.weixin.qq.com/cgi-bin/user/getuserid?access_token={0}' -f `
+            [uri]::EscapeDataString([string]$tokenResponse.access_token)
+        $lookupResponse = Invoke-RestMethod -Method Post -Uri $lookupUri -ContentType 'application/json; charset=utf-8' `
+            -Body ([Text.Encoding]::UTF8.GetBytes($body)) -ErrorAction Stop
+        if ($null -eq $lookupResponse -or $lookupResponse.errcode -ne 0 -or [string]::IsNullOrWhiteSpace([string]$lookupResponse.userid)) {
+            Fail-Setup 'WeCom UserID lookup failed; verify the member mobile and contact-read permission'
+        }
+        return [string]$lookupResponse.userid
+    } catch {
+        if ($_.Exception.Message -like 'WeCom *lookup failed*') {
+            throw
+        }
+        Fail-Setup 'WeCom UserID lookup could not reach the API'
+    }
+}
+
 function Existing-OrRandom {
     param([System.Collections.IDictionary]$Values, [string]$Key)
     if ($Values.Contains($Key) -and -not [string]::IsNullOrWhiteSpace([string]$Values[$Key])) {
@@ -138,10 +164,12 @@ Start-Process 'https://work.weixin.qq.com/wework_admin/frame'
 Write-Host '1/4  Log in, open My Enterprise and the dedicated self-built test app.' -ForegroundColor Cyan
 $corpID = Read-VisibleValue 'Corp ID (ww + 16 lowercase hex)' ([string]$values['WECOM_CORP_ID'])
 $agentID = Read-VisibleValue 'AgentId (positive decimal)' ([string]$values['WECOM_AGENT_ID'])
-$allowedUser = Read-VisibleValue 'Allowed test member UserID' ([string]$values['WECOM_ALLOWED_USER_ID'])
+$allowedUser = Read-VisibleValue 'Allowed test member UserID (leave blank to resolve by mobile)' ([string]$values['WECOM_ALLOWED_USER_ID'])
 Assert-Match $corpID '^ww[0-9a-f]{16}$' 'Corp ID has an invalid shape'
 Assert-WeComAgentID $agentID
-Assert-Match $allowedUser '^[A-Za-z0-9_.@-]{1,128}$' 'test member UserID has an invalid shape'
+if ($allowedUser) {
+    Assert-Match $allowedUser '^[A-Za-z0-9_.@-]{1,128}$' 'test member UserID has an invalid shape'
+}
 
 Write-Host '2/4  Copy the app Secret and callback Token/EncodingAESKey.' -ForegroundColor Cyan
 $corpSecret = Read-HiddenValue 'App Secret (43 characters)' ([string]$values['TRPC_SECRET_WECOM_CORP_SECRET'])
@@ -150,6 +178,13 @@ $aesKey = Read-HiddenValue 'EncodingAESKey (43 characters)' ([string]$values['TR
 Assert-Match $corpSecret '^[A-Za-z0-9_-]{43}$' 'WeCom app Secret has an invalid shape'
 Assert-Match $callbackToken '^[A-Za-z0-9_-]{1,64}$' 'WeCom callback Token has an invalid shape'
 Assert-WeComAESKey $aesKey
+
+if (-not $allowedUser) {
+    $memberMobile = Read-VisibleValue 'Test member mobile (used only for one-time UserID lookup)'
+    Assert-Match $memberMobile '^\+?[0-9]{6,20}$' 'test member mobile has an invalid shape'
+    $allowedUser = Resolve-WeComUserID -CorpId $corpID -CorpSecret $corpSecret -Mobile $memberMobile
+    Write-Host 'Resolved the test member UserID through the WeCom API; the value will not be displayed.' -ForegroundColor Green
+}
 
 Write-Host '3/4  Enter the public HTTPS endpoint that forwards to Gateway :8080.' -ForegroundColor Cyan
 $callbackBase = Read-VisibleValue 'Callback base URL (https://host/webhook)' ([string]$values['WECOM_CALLBACK_BASE_URL'])
