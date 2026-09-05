@@ -1,4 +1,4 @@
-SHELL := /usr/bin/env bash
+SHELL := /bin/bash
 
 .PHONY: verify build test race integration compose-config compose-up compose-down
 
