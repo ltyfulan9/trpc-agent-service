@@ -1,8 +1,8 @@
 # Production Architecture Review
 
 > Status: historical review record. The current implementation and acceptance
-> state are authoritative in `docs/ACCEPTANCE_EVIDENCE_V14.md`,
-> `docs/PROJECT_SUMMARY_V14_20260905.md` and `docs/ARCHITECTURE.md`. Statements
+> state are authoritative in `docs/ACCEPTANCE_EVIDENCE.md`,
+> `docs/PROJECT_SUMMARY_20260905.md` and `docs/ARCHITECTURE.md`. Statements
 > below describing missing adapters or unexecuted scenarios refer to the
 > review checkpoint at the time this file was written and must not override
 > newer evidence.

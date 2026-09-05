@@ -251,7 +251,7 @@ func run() error {
 	})
 
 	checker := health.New(
-		health.WithRedis(redisClient), health.WithDatabase(db), health.WithStorage(adapter), health.WithDrainState(shutdown),
+		health.WithRedis(redisClient), health.WithDatabase(db), health.WithDrainState(shutdown),
 	)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {

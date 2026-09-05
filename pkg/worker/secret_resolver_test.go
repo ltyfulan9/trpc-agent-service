@@ -64,3 +64,11 @@ func TestNewModelForTenantResolvesPinnedSecretWithoutMutatingSnapshot(t *testing
 		t.Fatal("model construction mutated immutable version snapshot")
 	}
 }
+
+func TestResolveModelCredentialRequiresTenantScopedAuthorization(t *testing.T) {
+	config := &tenant.ModelConfig{Provider: "openai", ModelName: "gpt-4", APIKeyRef: "env://TRPC_SECRET_OPENAI"}
+	tenantValue := &tenant.Tenant{ID: "tenant-a"}
+	if _, err := resolveModelCredential(context.Background(), config, tenantValue, testSecretResolver{value: []byte("key")}); err == nil {
+		t.Fatal("tenant-scoped model credential resolved through unscoped resolver")
+	}
+}

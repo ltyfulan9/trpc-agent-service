@@ -10,6 +10,16 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/session"
 )
 
+const (
+	transcriptReadPage = 2048
+	transcriptReadMax  = 131072
+	// session/redis and session/postgres v1.11 default to this window. A
+	// response of exactly the default while requesting a larger page is
+	// ambiguous: it may be a truncated long session. Never turn it into a
+	// false absolute sequence.
+	upstreamDefaultEventWindow = 1000
+)
+
 // Transcript carries a filtered immutable Session view together with the
 // unfiltered append sequence it covers. Branch filtering can reduce the number
 // of visible events without changing that durable checkpoint.
@@ -70,7 +80,7 @@ func (r *TRPCSessionTargetResolver) ResolveTarget(ctx context.Context, job Job) 
 	if err != nil || !validScopedText(appName, 255, false) {
 		return 0, ErrTranscriptIncomplete
 	}
-	value, err := r.sessions.GetSession(ctx, session.Key{
+	value, err := readCompleteSession(ctx, r.sessions, session.Key{
 		AppName: appName, UserID: job.SessionOwnerID, SessionID: job.SessionID,
 	})
 	if err != nil {
@@ -108,7 +118,7 @@ func (r *TRPCSessionTranscriptReader) ReadTranscript(ctx context.Context, key Ke
 	if err != nil || !validScopedText(appName, 255, false) {
 		return Transcript{}, ErrTranscriptIncomplete
 	}
-	value, err := r.sessions.GetSession(ctx, session.Key{
+	value, err := readCompleteSession(ctx, r.sessions, session.Key{
 		AppName: appName, UserID: key.SessionOwnerID, SessionID: key.SessionID,
 	})
 	if err != nil {
@@ -126,6 +136,35 @@ func (r *TRPCSessionTranscriptReader) ReadTranscript(ctx context.Context, key Ke
 	frozen := value.Clone()
 	frozen.Events = events
 	return Transcript{Session: frozen, CoveredEventSequence: sequence}, nil
+}
+
+// readCompleteSession requests progressively larger windows until the
+// backend proves that it returned the complete append history. A fixed
+// default window (the upstream default is 1000) is not an absolute sequence;
+// treating it as one silently shifts old summary boundaries after truncation.
+// If the bounded completeness proof cannot be made, fail closed.
+func readCompleteSession(ctx context.Context, sessions SessionGetter, key session.Key) (*session.Session, error) {
+	limit := transcriptReadPage
+	for {
+		value, err := sessions.GetSession(ctx, key, session.WithEventNum(limit))
+		if err != nil {
+			return nil, err
+		}
+		if value == nil {
+			return nil, ErrTranscriptIncomplete
+		}
+		events := value.GetEvents()
+		if limit > upstreamDefaultEventWindow && len(events) == upstreamDefaultEventWindow {
+			return nil, ErrTranscriptIncomplete
+		}
+		if len(events) < limit {
+			return value, nil
+		}
+		if limit >= transcriptReadMax {
+			return nil, ErrTranscriptIncomplete
+		}
+		limit *= 2
+	}
 }
 
 func filterTranscriptEvents(events []event.Event, filterKey string) []event.Event {

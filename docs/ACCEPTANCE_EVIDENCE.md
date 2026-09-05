@@ -2,11 +2,24 @@
 
 更新日期：2026-09-05（Asia/Shanghai）
 
-评委快速入口：先看 [评委快速摘要与验收执行清单](JUDGE_QUICKSTART_V14.md)，再按本表核对命令、容器后状态和外部验收边界。
+## 2026-09-06 纠偏复核
+
+本轮独立复核把四个可复现边界问题转为回归并完成修正。以下结论只表示源码和本机回归，不替代目标环境验收：
+
+| 复核项 | 当前结论 | 证据 |
+|---|---|---|
+| SecretRef 租户/用途授权 | IMPLEMENTED | `TenantSecretResolver` 通过带长度前缀的绑定摘要校验 tenant、provider、model、purpose；Admin 发布和 Worker 解析均拒绝未授权引用；`pkg/tenant`、`pkg/worker`、`cmd/admin` 回归通过 |
+| 租户后端探活与全局 readiness | IMPLEMENTED | Worker/Summary Worker readiness 只检查公共依赖；租户后端按租户获取时检查，129 个活跃租户不会因缓存容量摘除整节点；`pkg/storage` 回归通过 |
+| Summary 长会话边界 | IMPLEMENTED（保守拒绝） | 无法由上游 Session API 证明绝对事件序号时，读取达到上游窗口上限即 `ErrTranscriptIncomplete`，Worker 不生成伪造目标序号；不会把滑动窗口误当永久前缀 |
+| Projection ledger 目标复用 | IMPLEMENTED | migration 043 将 `migration_id` 纳入 ledger 主键及所有 marker 查询/更新；旧记录归入 `legacy`，A→B→C 每个目标独立投影；`pkg/dataprojection`、`pkg/datamigration` 回归通过 |
+
+Summary 的跨窗口“继续生成”仍需要上游提供绝对事件序号或严格分页能力；当前实现选择 fail-closed，不能把暂缓摘要描述为跨窗口已验收。
+
+评委快速入口：先看 [评委快速摘要与验收执行清单](JUDGE_QUICKSTART.md)，再按本表核对命令、容器后状态和外部验收边界。
 
 ## 状态定义
 
-- `LOCAL_VERIFIED`：本机对当前 V14 源码执行过对应命令或真实容器链路，退出码/后状态通过。
+- `LOCAL_VERIFIED`：本机对当前交付源码执行过对应命令或真实容器链路，退出码/后状态通过。
 - `IMPLEMENTED`：生产路径已有实现与自动化回归，但需要目标账号或目标基础设施才能完成最终验收。
 - `EXTERNAL_REQUIRED`：配置/Runbook 已提供，当前本机没有足够的外部授权或真实环境证据。
 - `DESIGNED`：明确保留的扩展面，不宣称已实现。
@@ -34,7 +47,7 @@
 | MCP 运行时 | `pkg/platformtool/mcp.go`, `pkg/worker/mcp_runtime_integration_test.go` | official MCP ToolSet + Streamable HTTP：Worker→Runner→治理→远端 Tool→模型回合；Header SecretRef、超时、精确工具过滤、错误脱敏和进程关闭 | LOCAL_VERIFIED |
 | Trace/metrics/audit | `pkg/telemetry`, `pkg/audit`, Prometheus rules | W3C trace propagation、指标鉴权/基数、15 条规则 promtool 解析 | LOCAL_VERIFIED |
 | Summary 告警 | `cmd/summary-worker`, `deploy/prometheus-rules.yml`, `docs/SLO.md` | 30/60/120/300s buckets，失败突增/失败率/高延迟规则 | LOCAL_VERIFIED |
-| Compose 最小部署 | `deploy/docker-compose.yml`, isolated overlay | V14 隔离栈应用健康、migrate=0、公开探针 200、restart=0 | LOCAL_VERIFIED |
+| Compose 最小部署 | `deploy/docker-compose.yml`, isolated overlay | 隔离栈应用健康、migrate=0、公开探针 200、restart=0 | LOCAL_VERIFIED |
 | Kubernetes 模板/发布门 | `deploy/kubernetes`, `pkg/releaseverify`, `scripts/k8s_apply.sh` | Secret 最小暴露、profile ConfigMap、egress policy、digest/rollout tests | LOCAL_VERIFIED |
 | 正式 Kubernetes/mesh rollout | 外部验收 Runbook | 需目标集群、正式 CA、供应商支持版本 | EXTERNAL_REQUIRED |
 | KMS/Vault workload identity | `tenant.SecretResolver` seam、K8s Secret 示例 | 本地只验证 resolver/fail-closed，不是正式 KMS/Vault | EXTERNAL_REQUIRED |
@@ -55,9 +68,9 @@ Knowledge 的真实数据面测试使用真实 Qdrant/MinIO，但 embedding 请�
 |---|---|---|
 | C 盘宿主 | Docker 29.7.2 恢复；safe-start 仅移动损坏 runtime 目录到可恢复备份，未删除 image/volume/database；C 盘仍约 35 GB 可用 | 仍需把 safe-start 纳入宿主机开机/重启运维流程 |
 | C-local Compose | `scripts/validate.sh` 10/10 全绿；7 个应用镜像逐个构建；真实 PG/Redis/Qdrant/MinIO integration 10.862s；Gateway/Admin 200、Prometheus 6/6、15 rules | 本地隔离验证，不是生产认证 |
-| K3d V14 bootstrap/compatible | `agent-platform-v14` migration complete；17 个应用 Pod 及 PostgreSQL/Redis Ready；compatible migration 重放成功；3-node HPA metrics valid | k3d-trpc-v13 lab，不是目标集群 |
+| K3d 本地 bootstrap/compatible | `agent-platform-v14` migration complete；17 个应用 Pod 及 PostgreSQL/Redis Ready；compatible migration 重放成功；3-node HPA metrics valid | `agent-platform-v14` 与 `k3d-trpc-v13` 是不可变实验室标识，仅用于复核，不是项目命名或目标集群 |
 | Linkerd identity | 带 identity 的 Consumer-labelled probe 到 Worker protected route 为应用 401；无 identity 的同请求为 Linkerd 403 | 本地 all-authenticated policy；不等于正式 strict mTLS/证书轮换 |
-| Gateway rollback | V14 digest → V13 digest → 原 V14 digest 真实 rollout/restore 成功，3 replicas Ready | 只覆盖 Gateway image rollback，不覆盖全平台 breaking schema rollback |
+| Gateway rollback | 当前镜像 digest → 历史镜像 digest → 原当前 digest 真实 rollout/restore 成功，3 replicas Ready | 只覆盖 Gateway image rollback，不覆盖全平台 breaking schema rollback |
 | Vault workload identity | 本地 dev Vault：绑定 `vault-client` 的 projected JWT 可读允许路径并被拒绝 forbidden path；错误 ServiceAccount 返回 403 | 不等于 HA/auto-unseal/cloud KMS |
 | Fair queue capacity | 干净隔离 PostgreSQL：2200 Inbox/Outbox 完成，errors=0，quiet claim first position=2，max consecutive noisy=1 | 单机实验室基线，不是目标容量承诺 |
 | External IM | callback public health 200；无 route key 的 `/webhook` 返回 400；企微/Telegram 凭据均未配置 | 真实控制台登录、URL verify、消息回路仍 EXTERNAL_REQUIRED |
@@ -93,7 +106,7 @@ Docker Desktop 因 `Docker\run\sailor-ingest.sock`、`dockerInference` 等损坏
 - `C:\Users\admin\AppData\Local\Docker\run.stale-20260903-234447`
 - `C:\Users\admin\AppData\Local\docker-secrets-engine.stale-20260903-234447`
 
-后状态为 Docker client/server 29.7.2 可响应，V13 容器仍健康，V14 PostgreSQL/Redis/Qdrant/MinIO 仍可访问。备份目录尚未删除。
+后状态为 Docker client/server 29.7.2 可响应，既有容器仍健康，PostgreSQL/Redis/Qdrant/MinIO 仍可访问。备份目录尚未删除。
 
 ## 2026-09-05 C 盘隔离栈复核
 
@@ -101,11 +114,11 @@ Docker Desktop 因 `Docker\run\sailor-ingest.sock`、`dockerInference` 等损坏
 
 | 检查 | 实际结果 |
 |---|---|
-| Compose 项目 | `trpc-v14-c-local-20260905`；配置来自 C 盘源码和 `docker-compose.isolated.yml` |
+| Compose 项目 | `trpc-platform-c-local-20260905`；配置来自 C 盘源码和 `docker-compose.isolated.yml` |
 | 容器后状态 | 12 个容器；11 个服务运行且健康，one-shot `migrate` 退出码 `0` |
 | HTTP 探针 | Gateway/Admin `/health` 均 HTTP `200`；Grafana `/api/health` HTTP `200`；Prometheus `/-/healthy` HTTP `200` |
 | Prometheus | 6/6 active targets 为 `up`；规则 API 返回 15 条，全部 `health=ok` |
-| 稳定性 | 本轮所有 V14 临时容器 restart count `0`；容器日志未发现 `panic` 或 `fatal` |
+| 稳定性 | 本轮所有临时容器 restart count `0`；容器日志未发现 `panic` 或 `fatal` |
 | Admin 纵切 | 未认证 `401`；创建租户、脱敏 GET、Agent App、Version、Publish、stable Deployment、列表和删除全部通过 |
 | Admin 身份与发布门 | `pkg/adminauth` `PrincipalResolver` 与 `cmd/admin` publish admission 已做源代码/单测验证：外部主体经服务端 ID、角色、tenant scope 归一化；发布拒绝不在 operator-approved model catalog 的模型。外部 OIDC/IAP/mTLS 组合仍需目标环境接线。 |
 | 外部 preflight | 合法形状的假值运行，`provider_calls=0`；不发送真实 Provider 请求 |

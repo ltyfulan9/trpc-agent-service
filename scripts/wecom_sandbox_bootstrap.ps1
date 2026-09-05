@@ -2,7 +2,7 @@
 param(
     [string]$EnvFile = (Join-Path $PSScriptRoot '..\deploy\.env.wecom.local'),
     [ValidatePattern('^[a-z0-9][a-z0-9_-]{0,62}$')]
-    [string]$ProjectName = 'trpc-v14-wecom',
+    [string]$ProjectName = 'trpc-platform-wecom',
     [switch]$SkipBuild
 )
 

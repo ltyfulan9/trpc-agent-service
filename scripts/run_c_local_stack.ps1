@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [ValidatePattern('^[a-z0-9][a-z0-9_-]{0,62}$')]
-    [string]$ProjectName = "trpc-v14-c-local-$([System.Diagnostics.Process]::GetCurrentProcess().Id)",
+    [string]$ProjectName = "trpc-platform-c-local-$([System.Diagnostics.Process]::GetCurrentProcess().Id)",
     [ValidateRange(1, 65535)]
     [int]$GatewayPort = 18080,
     [ValidateRange(1, 65535)]
@@ -29,7 +29,7 @@ $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $composeFile = Join-Path $repoRoot 'deploy\docker-compose.yml'
 $overlayFile = Join-Path $repoRoot 'deploy\docker-compose.isolated.yml'
 if (-not (Test-Path -LiteralPath (Join-Path $repoRoot 'go.mod'))) {
-    throw "V14 source root not found: $repoRoot"
+    throw "application source root not found: $repoRoot"
 }
 if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
     throw 'Docker CLI is required'
@@ -46,13 +46,13 @@ $validationEnv = [ordered]@{
     GRAFANA_PASSWORD = 'validation-only-grafana-password'
     DATA_PLANE_PROFILES = '[]'
     MCP_PROFILES = '[]'
-    V14_POSTGRES_PORT = [string]$PostgresPort
-    V14_OTLP_GRPC_PORT = [string]$OtelGrpcPort
-    V14_OTLP_HTTP_PORT = [string]$OtelHttpPort
-    V14_GATEWAY_PORT = [string]$GatewayPort
-    V14_ADMIN_PORT = [string]$AdminPort
-    V14_PROMETHEUS_PORT = [string]$PrometheusPort
-    V14_GRAFANA_PORT = [string]$GrafanaPort
+    PLATFORM_POSTGRES_PORT = [string]$PostgresPort
+    PLATFORM_OTLP_GRPC_PORT = [string]$OtelGrpcPort
+    PLATFORM_OTLP_HTTP_PORT = [string]$OtelHttpPort
+    PLATFORM_GATEWAY_PORT = [string]$GatewayPort
+    PLATFORM_ADMIN_PORT = [string]$AdminPort
+    PLATFORM_PROMETHEUS_PORT = [string]$PrometheusPort
+    PLATFORM_GRAFANA_PORT = [string]$GrafanaPort
 }
 
 $oldEnv = @{}

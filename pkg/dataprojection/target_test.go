@@ -33,10 +33,10 @@ func TestTargetProjectsFreshRecordOnlyUnderCurrentLeaseFence(t *testing.T) {
 		"migration-1", "worker-a", int64(7), "tenant-a", datamigration.DomainKnowledge,
 	).WillReturnRows(sqlmock.NewRows([]string{"marker"}).AddRow(1))
 	mock.ExpectExec("INSERT INTO data_migration_records").WithArgs(
-		"tenant-a", datamigration.DomainKnowledge, record.Key, record.Payload, record.Version, record.Hash, true,
+		"tenant-a", datamigration.DomainKnowledge, record.Key, "migration-1", record.Payload, record.Version, record.Hash, true,
 	).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`UPDATE data_migration_records SET projected_at=clock_timestamp\(\)`).WithArgs(
-		"tenant-a", datamigration.DomainKnowledge, record.Key, record.Version, record.Hash, true,
+		"tenant-a", datamigration.DomainKnowledge, record.Key, "migration-1", record.Version, record.Hash, true,
 	).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`UPDATE data_migrations SET updated_at=clock_timestamp\(\)`).WithArgs(
 		"migration-1", "worker-a", int64(7), "tenant-a", datamigration.DomainKnowledge,
@@ -48,6 +48,92 @@ func TestTargetProjectsFreshRecordOnlyUnderCurrentLeaseFence(t *testing.T) {
 	}
 	if len(projector.records) != 1 || projector.tenantID != "tenant-a" || projector.records[0].Key != record.Key {
 		t.Fatalf("projection = tenant %q records %#v", projector.tenantID, projector.records)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTargetKeepsProjectionMarkersSeparateAcrossMigrationTargets(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	projector := &recordingProjector{domain: datamigration.DomainKnowledge}
+	target, err := NewTarget(db, projector)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := NewKnowledgeTombstone("support", "faq-1", 18)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, migrationID := range []string{"migration-a-to-b", "migration-a-to-c"} {
+		fence := datamigration.LeaseFence{MigrationID: migrationID, Owner: "worker-a", Version: 1}
+		mock.ExpectBegin()
+		mock.ExpectQuery("SELECT 1 FROM data_migrations").WithArgs(
+			migrationID, "worker-a", int64(1), "tenant-a", datamigration.DomainKnowledge,
+		).WillReturnRows(sqlmock.NewRows([]string{"marker"}).AddRow(1))
+		mock.ExpectExec("INSERT INTO data_migration_records").WithArgs(
+			"tenant-a", datamigration.DomainKnowledge, record.Key, migrationID, record.Payload, record.Version, record.Hash, true,
+		).WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectExec(`UPDATE data_migration_records SET projected_at=clock_timestamp\(\)`).WithArgs(
+			"tenant-a", datamigration.DomainKnowledge, record.Key, migrationID, record.Version, record.Hash, true,
+		).WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectExec(`UPDATE data_migrations SET updated_at=clock_timestamp\(\)`).WithArgs(
+			migrationID, "worker-a", int64(1), "tenant-a", datamigration.DomainKnowledge,
+		).WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectCommit()
+		if err := target.Upsert(context.Background(), "tenant-a", datamigration.DomainKnowledge, fence, []datamigration.Record{record}); err != nil {
+			t.Fatalf("migration %s upsert: %v", migrationID, err)
+		}
+	}
+	if len(projector.records) != 2 {
+		t.Fatalf("target migration projections=%d, want 2", len(projector.records))
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTargetDoesNotReuseProjectionMarkerAcrossMigrationTargets(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	projector := &recordingProjector{domain: datamigration.DomainKnowledge}
+	target, err := NewTarget(db, projector)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := NewKnowledgeTombstone("support", "faq-1", 18)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, migrationID := range []string{"migration-a", "migration-b"} {
+		fence := datamigration.LeaseFence{MigrationID: migrationID, Owner: "worker-a", Version: 1}
+		mock.ExpectBegin()
+		mock.ExpectQuery("SELECT 1 FROM data_migrations").WithArgs(
+			migrationID, "worker-a", int64(1), "tenant-a", datamigration.DomainKnowledge,
+		).WillReturnRows(sqlmock.NewRows([]string{"marker"}).AddRow(1))
+		mock.ExpectExec("INSERT INTO data_migration_records").WithArgs(
+			"tenant-a", datamigration.DomainKnowledge, record.Key, migrationID, record.Payload, record.Version, record.Hash, true,
+		).WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectExec(`UPDATE data_migration_records SET projected_at=clock_timestamp\(\)`).WithArgs(
+			"tenant-a", datamigration.DomainKnowledge, record.Key, migrationID, record.Version, record.Hash, true,
+		).WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectExec(`UPDATE data_migrations SET updated_at=clock_timestamp\(\)`).WithArgs(
+			migrationID, "worker-a", int64(1), "tenant-a", datamigration.DomainKnowledge,
+		).WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectCommit()
+		if err := target.Upsert(context.Background(), "tenant-a", datamigration.DomainKnowledge, fence, []datamigration.Record{record}); err != nil {
+			t.Fatalf("migration %s upsert: %v", migrationID, err)
+		}
+	}
+	if len(projector.records) != 2 {
+		t.Fatalf("fresh target projection count=%d, want 2", len(projector.records))
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
@@ -100,10 +186,10 @@ func TestTargetSkipsAlreadyProjectedIdenticalRecord(t *testing.T) {
 		"migration-1", "worker-a", int64(7), "tenant-a", datamigration.DomainKnowledge,
 	).WillReturnRows(sqlmock.NewRows([]string{"marker"}).AddRow(1))
 	mock.ExpectExec("INSERT INTO data_migration_records").WithArgs(
-		"tenant-a", datamigration.DomainKnowledge, record.Key, record.Payload, record.Version, record.Hash, true,
+		"tenant-a", datamigration.DomainKnowledge, record.Key, "migration-1", record.Payload, record.Version, record.Hash, true,
 	).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT version,content_hash,deleted,projected_at FROM data_migration_records").WithArgs(
-		"tenant-a", datamigration.DomainKnowledge, record.Key,
+		"tenant-a", datamigration.DomainKnowledge, record.Key, "migration-1",
 	).WillReturnRows(sqlmock.NewRows([]string{"version", "content_hash", "deleted", "projected_at"}).AddRow(
 		record.Version, record.Hash, true, time.Now(),
 	))
@@ -180,10 +266,10 @@ func TestTargetRejectsSameVersionConflictBeforeExternalSideEffect(t *testing.T) 
 		"migration-1", "worker-a", int64(7), "tenant-a", datamigration.DomainArtifact,
 	).WillReturnRows(sqlmock.NewRows([]string{"marker"}).AddRow(1))
 	mock.ExpectExec("INSERT INTO data_migration_records").WithArgs(
-		"tenant-a", datamigration.DomainArtifact, record.Key, record.Payload, record.Version, record.Hash, true,
+		"tenant-a", datamigration.DomainArtifact, record.Key, "migration-1", record.Payload, record.Version, record.Hash, true,
 	).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT version,content_hash,deleted,projected_at FROM data_migration_records").WithArgs(
-		"tenant-a", datamigration.DomainArtifact, record.Key,
+		"tenant-a", datamigration.DomainArtifact, record.Key, "migration-1",
 	).WillReturnRows(sqlmock.NewRows([]string{"version", "content_hash", "deleted", "projected_at"}).AddRow(
 		record.Version, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", true, nil,
 	))
@@ -226,7 +312,7 @@ func TestTargetRollsBackLedgerWhenProjectorFails(t *testing.T) {
 		"migration-1", "worker-a", int64(7), "tenant-a", datamigration.DomainArtifact,
 	).WillReturnRows(sqlmock.NewRows([]string{"marker"}).AddRow(1))
 	mock.ExpectExec("INSERT INTO data_migration_records").WithArgs(
-		"tenant-a", datamigration.DomainArtifact, record.Key, record.Payload, record.Version, record.Hash, true,
+		"tenant-a", datamigration.DomainArtifact, record.Key, "migration-1", record.Payload, record.Version, record.Hash, true,
 	).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectRollback()
 
@@ -263,10 +349,10 @@ func TestTargetRollsBackMarkerWhenFinalFenceIsLost(t *testing.T) {
 		"migration-1", "worker-a", int64(7), "tenant-a", datamigration.DomainKnowledge,
 	).WillReturnRows(sqlmock.NewRows([]string{"marker"}).AddRow(1))
 	mock.ExpectExec("INSERT INTO data_migration_records").WithArgs(
-		"tenant-a", datamigration.DomainKnowledge, record.Key, record.Payload, record.Version, record.Hash, true,
+		"tenant-a", datamigration.DomainKnowledge, record.Key, "migration-1", record.Payload, record.Version, record.Hash, true,
 	).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`UPDATE data_migration_records SET projected_at=clock_timestamp\(\)`).WithArgs(
-		"tenant-a", datamigration.DomainKnowledge, record.Key, record.Version, record.Hash, true,
+		"tenant-a", datamigration.DomainKnowledge, record.Key, "migration-1", record.Version, record.Hash, true,
 	).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`UPDATE data_migrations SET updated_at=clock_timestamp\(\)`).WithArgs(
 		"migration-1", "worker-a", int64(7), "tenant-a", datamigration.DomainKnowledge,
@@ -306,15 +392,15 @@ func TestTargetReplaysSameVersionWhenProjectionMarkerIsMissing(t *testing.T) {
 		"migration-1", "worker-b", int64(8), "tenant-a", datamigration.DomainKnowledge,
 	).WillReturnRows(sqlmock.NewRows([]string{"marker"}).AddRow(1))
 	mock.ExpectExec("INSERT INTO data_migration_records").WithArgs(
-		"tenant-a", datamigration.DomainKnowledge, record.Key, record.Payload, record.Version, record.Hash, true,
+		"tenant-a", datamigration.DomainKnowledge, record.Key, "migration-1", record.Payload, record.Version, record.Hash, true,
 	).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT version,content_hash,deleted,projected_at FROM data_migration_records").WithArgs(
-		"tenant-a", datamigration.DomainKnowledge, record.Key,
+		"tenant-a", datamigration.DomainKnowledge, record.Key, "migration-1",
 	).WillReturnRows(sqlmock.NewRows([]string{"version", "content_hash", "deleted", "projected_at"}).AddRow(
 		record.Version, record.Hash, true, nil,
 	))
 	mock.ExpectExec(`UPDATE data_migration_records SET projected_at=clock_timestamp\(\)`).WithArgs(
-		"tenant-a", datamigration.DomainKnowledge, record.Key, record.Version, record.Hash, true,
+		"tenant-a", datamigration.DomainKnowledge, record.Key, "migration-1", record.Version, record.Hash, true,
 	).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`UPDATE data_migrations SET updated_at=clock_timestamp\(\)`).WithArgs(
 		"migration-1", "worker-b", int64(8), "tenant-a", datamigration.DomainKnowledge,

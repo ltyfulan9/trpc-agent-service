@@ -14,14 +14,12 @@
 
 ## 1.1 代码仓库与可复现入口
 
-以下入口固定到本次 V14 发布检查点；评委应从全新目录重新 clone 和校验，不把本地目录或压缩包当作 GitHub 仓库：
+以下入口固定到本次交付检查点；评委应从全新目录重新 clone 和校验，不把本地目录或压缩包当作 GitHub 仓库：
 
 ```text
 公开仓库：https://github.com/ltyfulan9/trpc-agent-service
-固定发布标签：v14.0.6-final
-固定提交校验：`git rev-parse v14.0.6-final^{}`
+提交校验：在评审 checkout 后执行 `git rev-parse HEAD`，并将结果记录到验收证据。
 仓库默认分支：main
-V14 发布分支：v14-final
 许可证：Apache-2.0（见 LICENSE）
 ```
 
@@ -30,13 +28,12 @@ V14 发布分支：v14-final
 ```bash
 git clone https://github.com/ltyfulan9/trpc-agent-service
 cd <repository>
-    git checkout v14.0.6-final
-    git rev-parse v14.0.6-final^{}
+    git rev-parse HEAD
 ./scripts/validate.sh
 docker compose -f deploy/docker-compose.yml config
 ```
 
-Windows C 盘无 E 盘依赖的验证入口是 `scripts/run_c_local_stack.ps1 -ProjectName trpc-v14-c-local-final -Build`。源码不携带真实 `.env`，首次直接启动出现缺少密码变量是预期的 fail-closed 行为；验证脚本只在当前进程注入一次性值。CI 门禁见 `.github/workflows/verify.yml`，本机命令、容器后状态和外部验收边界见 [评委快速摘要](JUDGE_QUICKSTART_V14.md) 与 [验收证据矩阵](ACCEPTANCE_EVIDENCE_V14.md)。
+Windows C 盘无 E 盘依赖的验证入口是 `scripts/run_c_local_stack.ps1 -ProjectName trpc-platform-c-local-final -Build`。源码不携带真实 `.env`，首次直接启动出现缺少密码变量是预期的 fail-closed 行为；验证脚本只在当前进程注入一次性值。CI 门禁见 `.github/workflows/verify.yml`，本机命令、容器后状态和外部验收边界见 [评委快速摘要](JUDGE_QUICKSTART.md) 与 [验收证据矩阵](ACCEPTANCE_EVIDENCE.md)。
 
 ## 2. 系统架构图
 
@@ -186,6 +183,6 @@ Plugin/Guardrail 在模型前做内容策略、IM 用户授权、预算 reservat
 
 ## 9. 验收边界
 
-本机已经用 Go 1.26.7 通过模块校验、全量 build/vet/unit/race、真实 PostgreSQL+Redis+Qdrant+MinIO 集成、Compose 六应用加 Summary 进程的隔离启动、健康探针、Prometheus 规则解析和生产镜像构建。详细证据见 [ACCEPTANCE_EVIDENCE_V14.md](ACCEPTANCE_EVIDENCE_V14.md)。
+本机已经用 Go 1.26.7 通过模块校验、全量 build/vet/unit/race、真实 PostgreSQL+Redis+Qdrant+MinIO 集成、Compose 六应用加 Summary 进程的隔离启动、健康探针、Prometheus 规则解析和生产镜像构建。详细证据见 [ACCEPTANCE_EVIDENCE.md](ACCEPTANCE_EVIDENCE.md)。
 
 仍必须在目标环境完成：真实企业微信/Telegram sandbox、正式 Kubernetes/mesh rollout 与 rollback、KMS/Vault workload identity、OTLP TLS/告警接收端、PostgreSQL/Redis HA 故障注入、正式容量/成本/备份恢复演练。这里明确列为外部验收，不用本地假模型或源码门禁替代。

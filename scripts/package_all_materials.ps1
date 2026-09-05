@@ -1,12 +1,14 @@
 [CmdletBinding()]
 param(
-    [string]$RepoRoot = (Join-Path $PSScriptRoot '..'),
+    [string]$RepoRoot,
     [Parameter(Mandatory)][string]$WorkspaceRoot,
     [Parameter(Mandatory)][string]$OutputRoot
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+if ([string]::IsNullOrWhiteSpace($RepoRoot)) { $RepoRoot = Join-Path $scriptRoot '..' }
 $repo = [IO.Path]::GetFullPath($RepoRoot)
 $workspace = [IO.Path]::GetFullPath($WorkspaceRoot)
 $output = [IO.Path]::GetFullPath($OutputRoot)
@@ -24,8 +26,8 @@ if (Test-Path -LiteralPath $zipPath) { Remove-Item -LiteralPath $zipPath -Force 
 
 $included = [Collections.Generic.List[object]]::new()
 $excluded = [Collections.Generic.List[string]]::new()
-$blockedDirectoryNames = @('.git','node_modules','runtime','volumes','cache','caches','tmp','temp','logs','bin','dist','coverage')
-$blockedExtensions = @('.log','.out','.db','.sqlite','.sqlite3','.pem','.key','.p12','.pfx','.crt','.cer','.der','.exe','.dll','.so')
+$blockedDirectoryNames = @('.git','node_modules','runtime','volumes','cache','caches','tmp','temp','logs','bin','dist','coverage','archive')
+$blockedExtensions = @('.log','.out','.db','.sqlite','.sqlite3','.pem','.key','.p12','.pfx','.crt','.cer','.der','.exe','.dll','.so','.zip','.7z','.tar','.gz','.tgz','.bz2','.xz')
 
 function Test-SkippedFile([IO.FileInfo]$File) {
     if ($blockedExtensions -contains $File.Extension.ToLowerInvariant()) { return $true }
@@ -46,10 +48,7 @@ function Copy-SafeTree([string]$Source,[string]$Destination,[string]$Label) {
         $relative = $file.FullName.Substring($sourceFull.Length).TrimStart('\','/')
         $normalized = $relative.Replace('\','/')
         $historical = @(
-            'docs/*_V13.md', 'docs/LOCAL_PRODUCTION_VALIDATION_20260830.md',
-            'docs/REFERENCE_SERVICE_AUDIT.md', 'docs/REFERENCE_SERVICE_RECHECK_20260824.md',
-            'docs/MERGE_NOTES.md', 'TRPC_AGENT_ENTERPRISE_HANDOFF_V13.md',
-            'TRPC_AGENT_ENTERPRISE_HANDOFF_V14_CURRENT.md'
+            'docs/archive/*', 'archive/*'
         ) | Where-Object { $normalized -like $_ }
         if ($historical) {
             $excluded.Add("$Label/$normalized")
@@ -74,8 +73,9 @@ function Copy-SafeFile([string]$Source,[string]$Destination,[string]$Label) {
 Copy-SafeTree $repo (Join-Path $staging 'platform-source') 'platform-source'
 
 $evidenceDestination = Join-Path $staging 'verification-evidence'
-foreach ($file in Get-ChildItem -LiteralPath (Join-Path $workspace 'outputs') -Filter '*.log' -File -ErrorAction SilentlyContinue) {
-    $safeName = ($file.Name -replace '(?i)-v14(?=-|\.)','')
+$evidenceNames = @('validation-*.log','integration-*.log','admin-*.log','capacity-*.log','k3d-*.log','mesh-*.log','vault-*.log','gateway-rollback-*.log','compose-postrestart-*.log')
+foreach ($file in Get-ChildItem -LiteralPath (Join-Path $workspace 'outputs') -File -ErrorAction SilentlyContinue | Where-Object { $name = $_.Name; @($evidenceNames | Where-Object { $name -like $_ }).Count -gt 0 }) {
+    $safeName = ($file.Name -replace '(?i)-(?:platform|v[0-9]+)(?=-|\.)','')
     $evidenceTarget = Join-Path $evidenceDestination $safeName
     New-Item -ItemType Directory -Force -Path $evidenceDestination | Out-Null
     Copy-Item -LiteralPath $file.FullName -Destination $evidenceTarget -Force
@@ -102,25 +102,25 @@ $sourceCount = $included.Count
 $sourceBytes = [long]0
 foreach ($item in $included) { $sourceBytes += (Get-Item -LiteralPath $item.Source).Length }
 $inventory = @(
-    '# Enterprise Multi-Tenant Agent Platform 交付包清单',
+    '# Enterprise Multi-Tenant Agent Platform Package Inventory',
     '',
-    "生成时间：$([DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss zzz'))",
-    "包名：$packageName",
-    "已纳入文件：$sourceCount（源材料字节数：$sourceBytes）",
+    "Generated: $([DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss zzz'))",
+    "Package: $packageName",
+    "Included files: $sourceCount (source bytes: $sourceBytes)",
     '',
-    '## 包含内容',
+    '## Included',
     '',
-    '- `platform-source/`：C 盘权威平台源码、测试、迁移、Compose/Kubernetes、验证脚本和当前文档。',
-    '- `verification-evidence/`：本轮脱敏验证日志（只含退出状态、拓扑和公开地址，不含凭据）。',
+    '- `platform-source/`: authoritative source, tests, migrations, deployment templates, scripts and current docs.',
+    '- `verification-evidence/`: redacted validation logs with exit states, topology and public endpoints only.',
     '',
-    '## 排除内容',
+    '## Excluded',
     '',
-    '- 所有真实 `.env`/`.env.*`（保留安全模板 `.env.example`），包括 `deploy/.env.wecom.local`。',
-    '- Docker Desktop image、volume、数据库、socket、运行时目录、缓存和临时工作目录。',
-    '- 私钥、证书/密钥文件、二进制、日志数据库和未审核的历史嵌套归档。',
-    '- E 盘实验室缓存、数据库 dump、证书、私钥、工具和运行时；平台没有 E 盘依赖。',
+    '- Real `.env`/`.env.*` files (except `.env.example`), including `deploy/.env.wecom.local`.',
+    '- Docker images, volumes, databases, sockets, runtime directories, caches and temporary workspaces.',
+    '- Private keys, certificates, binaries, log databases and unreviewed nested archives.',
+    '- E-drive lab caches, database dumps, certificates, keys, tools and runtimes.',
     '',
-    '排除是为了防止凭据和运行时数据扩散，不代表源码或提交文档缺失。包内 `SHA256SUMS_20260905.txt` 覆盖除其自身外的每个文件。'
+    'Exclusions prevent credential and runtime-data spread; they do not remove required source or submission docs. `SHA256SUMS_20260905.txt` covers every other file.'
 )
 [IO.File]::WriteAllLines((Join-Path $staging $inventoryName),$inventory,[Text.UTF8Encoding]::new($false))
 $sumLines = [Collections.Generic.List[string]]::new()

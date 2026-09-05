@@ -1,13 +1,13 @@
 # 验证报告与证据边界
 
-> 本文件保留 V12/V13 历史验证记录，不代表当前 V14 的完整验收状态。
-> V14 的逐项结论与可复现命令以
-> [`ACCEPTANCE_EVIDENCE_V14.md`](ACCEPTANCE_EVIDENCE_V14.md) 为准。
+> 本文件记录当前交付的验证证据，并附带少量按日期保留的历史记录；历史记录不代表当前验收状态。
+> 当前交付的逐项结论与可复现命令以
+> [`ACCEPTANCE_EVIDENCE.md`](ACCEPTANCE_EVIDENCE.md) 为准。
 
-## 2026-09-05 V14 latest continuation
+## 2026-09-05 当前交付复核
 
-This section is the latest source-and-runtime evidence for V14. Older sections
-below are retained as dated historical records and must not override this
+This section is the latest source-and-runtime evidence for the delivered platform.
+Older sections below are retained as dated historical records and must not override this
 section when they describe an earlier Docker-unavailable or source-only round.
 
 ### Path diagnosis and reproducible startup
@@ -49,11 +49,11 @@ isolated 2,200-message fair-queue capacity baseline.
 
 The source gate used Go 1.26.7 auto toolchain, `GOMAXPROCS=1` and serial
 package scheduling; the complete host round took about 199.82 seconds. The
-isolated Compose project `trpc-v14-c-local-20260905` contained 12 containers:
+isolated Compose project `trpc-platform-c-local-20260905` contained 12 containers:
 11 services plus the one-shot migration. Migration exited `0`; Gateway and
 Admin `/health`, Prometheus `/-/healthy`, and Grafana `/api/health` returned
 HTTP 200. Prometheus reported 6/6 active targets `up` and 15 rules with
-`health=ok`. All V14 temporary containers had restart count `0`, and a bounded
+`health=ok`. All temporary validation containers had restart count `0`, and a bounded
 log scan found no `panic` or `fatal` line.
 
 The Admin vertical slice passed unauthenticated `401`, tenant creation and
@@ -64,9 +64,9 @@ preflight used shape-valid placeholder values and reported
 real PostgreSQL 15.8, Redis 7.4, Qdrant 1.16.3 and MinIO containers and a local
 model stub.
 
-## 2026-08-29 V13 continuation
+## 2026-08-29 历史复核记录
 
-V13 separates the production security toolchain from source compatibility,
+This dated run separated the production security toolchain from source compatibility,
 replaces the migration integration's `miniredis` with a mandatory real Redis
 endpoint, and adds a two-pool PostgreSQL Worker-takeover test. The original
 continuation was blocked by Docker Desktop before live infrastructure could run;
@@ -149,10 +149,9 @@ Live infrastructure evidence after repair:
 The only structured error-level log lines after startup were two non-fatal
 Grafana messages for duplicate registration of its bundled `xychart` plugin.
 They did not affect Grafana health, its database, or Prometheus scraping and
-remain an explicit observability-image warning. Historical V12 evidence below
-remains historical; the bullets above are the distinct V13 live run. See the
-canonical `TRPC_AGENT_ENTERPRISE_HANDOFF_V13.md` and
-`docs/ACCEPTANCE_EVIDENCE_V13.md`.
+remain an explicit observability-image warning. The remaining dated evidence is
+historical and retained only for audit traceability; historical source snapshots
+and handoff files are intentionally excluded from the final delivery bundle.
 
 ## 2026-08-28 租户公平 Inbox 调度切片
 

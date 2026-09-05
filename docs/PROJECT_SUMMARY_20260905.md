@@ -6,6 +6,10 @@
 模块最低版本：Go 1.25.14  
 生产构建工具链：Go 1.26.7
 
+## 2026-09-06 纠偏结果
+
+针对独立严格审核发现的四个边界问题，本次已完成代码修复与回归：SecretRef 现在按租户、用途和模型绑定授权；租户后端探活不再污染节点级 readiness；Summary 在无法证明绝对事件序号时 fail-closed，避免长会话滑窗错位；projection ledger 按 migration identity 隔离目标，二次迁移不会复用旧 marker。详细证据见 `docs/ACCEPTANCE_EVIDENCE.md`。这些是本机源码门禁结果，不等同于真实 IM、正式 KMS/Vault、目标集群或 HA/DR 验收。
+
 ## 1. 一句话结论
 
 Enterprise Multi-Tenant Agent Platform 是一套以 PostgreSQL 可靠队列和控制面为权威、以 Redis/PostgreSQL Session/Memory 为共享运行态、以无状态 Worker 执行 tRPC Runner，并把 Summary、Knowledge、Artifact、MCP、治理、审计和部署安全边界接入生产组合根的候选生产实现。源码、自动化回归和本地后端纵切已形成闭环；真实企业微信/Telegram 账号、目标集群、正式 KMS/Vault、HA/灾备和业务 MCP 仍必须在目标环境完成外部验收，不能把本包称为生产认证。
@@ -18,7 +22,7 @@ Enterprise Multi-Tenant Agent Platform 是一套以 PostgreSQL 可靠队列和�
 - 9 个服务/作业入口：`gateway`、`consumer`、`worker`、`summary-worker`、`delivery`、`admin`、`migrate`、`replay`、`releaseverify`。
 - 42 个版本化数据库迁移；每个 `.up.sql` 都有对应 `.down.sql`。
 - `cmd/` 入口与测试、`pkg/` 平台实现与回归、`migrations/` schema、`deploy/` Compose/Kubernetes/监控、`scripts/` 验证和外部验收向导、`test/integration/` 真实后端纵切、`.github/workflows/` CI 门禁。
-- 顶层入口文档：`README.md`、`PACKAGE_MANIFEST.md`、`CODE_PACKAGE_CONTENTS.txt`、`HANDOFF.md`、`TRPC_AGENT_ENTERPRISE_HANDOFF_V14_FINAL.md`。
+- 顶层入口文档：`README.md`、`PACKAGE_MANIFEST.md`、`CODE_PACKAGE_CONTENTS.txt`、`HANDOFF.md`、`ENTERPRISE_PLATFORM_HANDOFF.md`。
 
 ## 3. 架构和职责
 
@@ -32,7 +36,7 @@ Enterprise Multi-Tenant Agent Platform 是一套以 PostgreSQL 可靠队列和�
 
 ## 4. 已实现能力和证据
 
-以下状态沿用 `docs/ACCEPTANCE_EVIDENCE_V14.md` 的定义：`LOCAL_VERIFIED` 表示有本机命令或真实容器链路证据，`IMPLEMENTED` 表示源码和自动化回归已具备但还需要目标环境，`EXTERNAL_REQUIRED` 表示必须由外部账号/基础设施完成。
+以下状态沿用 `docs/ACCEPTANCE_EVIDENCE.md` 的定义：`LOCAL_VERIFIED` 表示有本机命令或真实容器链路证据，`IMPLEMENTED` 表示源码和自动化回归已具备但还需要目标环境，`EXTERNAL_REQUIRED` 表示必须由外部账号/基础设施完成。
 
 | 能力 | 当前状态 | 主要入口 |
 |---|---|---|
@@ -50,7 +54,7 @@ Enterprise Multi-Tenant Agent Platform 是一套以 PostgreSQL 可靠队列和�
 | Trace、Metrics、Audit 和 Summary 告警 | LOCAL_VERIFIED | `pkg/telemetry`、`deploy/prometheus-rules.yml` |
 | Compose/Kubernetes 模板和 releaseverify | LOCAL_VERIFIED | `deploy/`、`pkg/releaseverify`、`scripts/k8s_apply.sh` |
 | 真实 IM sandbox | EXTERNAL_REQUIRED | `docs/EXTERNAL_ACCEPTANCE_RUNBOOK.md` |
-| 正式 Kubernetes/mesh、KMS/Vault、云 IAM、HA/DR、容量 | EXTERNAL_REQUIRED | `docs/EXTERNAL_ACCEPTANCE_RUNBOOK.md`、`docs/RISK_REGISTER_V14.md` |
+| 正式 Kubernetes/mesh、KMS/Vault、云 IAM、HA/DR、容量 | EXTERNAL_REQUIRED | `docs/EXTERNAL_ACCEPTANCE_RUNBOOK.md`、`docs/RISK_REGISTER.md` |
 | Graph/Chain/Parallel/Cycle concrete runtime | LOCAL_VERIFIED | 内置上游 Agent factory、实际拓扑执行、Worker composition；自定义 runtime 仍要求稳定 capability identity |
 
 ## 5. 重要一致性和安全决策
@@ -66,7 +70,7 @@ Enterprise Multi-Tenant Agent Platform 是一套以 PostgreSQL 可靠队列和�
 
 ## 6. 现有验证记录
 
-`docs/ACCEPTANCE_EVIDENCE_V14.md` 和 `docs/VERIFICATION.md` 记录了此前及本次复核的验证结果，包括：
+`docs/ACCEPTANCE_EVIDENCE.md` 和 `docs/VERIFICATION.md` 记录了此前及本次复核的验证结果，包括：
 
 - `go mod verify`、gofmt、build、vet、全量 unit test、全量 race test 和 integration-tag 编译门。
 - 真实 PostgreSQL、Redis、Qdrant、MinIO 纵切；Summary→Runner 请求捕获；Session migration；Knowledge/Artifact projection；MCP 本地 Streamable HTTP 纵切。
@@ -77,13 +81,13 @@ Enterprise Multi-Tenant Agent Platform 是一套以 PostgreSQL 可靠队列和�
 
 ## 7. 本次接续复核状态（2026-09-05）
 
-- 已确认权威源码目录、V14 最终交接文档、V14 验收/安全/风险/竞赛材料和历史 V13 材料均在工作区；源码树无 Git 元数据，构建使用 `-buildvcs=false`。
+- 已确认权威源码目录、最终交接文档、验收/安全/风险/竞赛材料和归档记录均在工作区；源码树无 Git 元数据，构建使用 `-buildvcs=false`。
 - C 盘权威树与本线程 C 盘副本除真实 `deploy/.env.wecom.local` 外一致；没有任何硬编码 `E:\` 路径。该环境文件含本地企微/运行时秘密，永不进入交付包。
 - 直接在新归档目录执行 Compose 时若没有 `.env` 会按设计返回必需变量错误；这不是 E 盘依赖。新增 `scripts/run_c_local_stack.ps1` 从 `$PSScriptRoot` 定位源码，用进程内一次性验证值和隔离端口启动，已用 C 盘副本验证配置与 7 个应用镜像构建。
-- 本次 C-local 运行项目为 `trpc-v14-c-local-20260905`：12 个容器（11 个服务加 one-shot migration），migration 退出码 0，Gateway/Admin `/health` 返回 200，所有应用健康，Prometheus 6/6 targets `up`、15 条规则健康，全部 restart count 为 0，日志未发现 panic/fatal。
+- 本次 C-local 运行项目为 `trpc-platform-c-local-20260905`：12 个容器（11 个服务加 one-shot migration），migration 退出码 0，Gateway/Admin `/health` 返回 200，所有应用健康，Prometheus 6/6 targets `up`、15 条规则健康，全部 restart count 为 0，日志未发现 panic/fatal。
 - C-local 真实后端集成 `go test -tags=integration -count=1 -p 1 ./test/integration` 通过（9.775 秒）；Admin 纵切 401 → tenant → 脱敏读取 → Agent App → Version → Publish → stable Deployment → list → delete 通过；外部验收 preflight 使用假值时 `provider_calls=0`。
 - 本次源码门禁在 Go 1.26.7 自动工具链、`GOMAXPROCS=1`、`-p 1` 下通过：module verify、gofmt、build、vet、全量 unit、全量 race（约 199.82 秒）。
-- 接续复核补充：`scripts/validate.sh` 10/10 通过（串行七镜像构建、15 条 Prometheus 规则、真实 PG/Redis/Qdrant/MinIO integration 10.862 秒）；K3d V14 bootstrap/compatible migration、Linkerd 401/403 identity probe、Gateway digest rollback、Vault dev workload identity、2200 条公平队列容量基线均有独立脱敏日志。
+- 接续复核补充：`scripts/validate.sh` 10/10 通过（串行七镜像构建、15 条 Prometheus 规则、真实 PG/Redis/Qdrant/MinIO integration 10.862 秒）；K3d bootstrap/compatible migration、Linkerd 401/403 identity probe、Gateway digest rollback、Vault dev workload identity、2200 条公平队列容量基线均有独立脱敏日志。
 - 当前企微/Telegram 所需 route key、provider secret、CorpID/AgentID 均未配置；公网 tunnel `/health` 为 200、无 route key 的 `/webhook` 为 400，但真实 IM 回路仍为 `EXTERNAL_REQUIRED`，不能把企微登录过期页当作已登录证据。
 - 打包后还会执行：精确文件清单、秘密模式扫描、归档成员复核、SHA-256、临时解包比对，以及只清理本轮两个临时 Compose 项目。
 
@@ -107,10 +111,10 @@ Enterprise Multi-Tenant Agent Platform 是一套以 PostgreSQL 可靠队列和�
 
 1. 本文件
 2. `README.md`
-3. `docs/COMPETITION_SUBMISSION_V14.md`
-4. `docs/ACCEPTANCE_EVIDENCE_V14.md`
+3. `docs/COMPETITION_SUBMISSION.md`
+4. `docs/ACCEPTANCE_EVIDENCE.md`
 5. `docs/DATA_MODEL.md`
-6. `docs/SECURITY_REVIEW_V14.md`
-7. `docs/RISK_REGISTER_V14.md`
-8. `TRPC_AGENT_ENTERPRISE_HANDOFF_V14_FINAL.md`
+6. `docs/SECURITY_REVIEW.md`
+7. `docs/RISK_REGISTER.md`
+8. `ENTERPRISE_PLATFORM_HANDOFF.md`
 9. `docs/EXTERNAL_ACCEPTANCE_RUNBOOK.md`

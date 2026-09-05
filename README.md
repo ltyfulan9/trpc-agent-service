@@ -6,7 +6,7 @@
 
 > 安全基线：当前模块最低要求 Go 1.25.14，生产 CI 与容器构建固定到官方 Go 1.26.7。此前 Go 1.21 验证记录已归档，不再构成当前兼容承诺。源码验证、真实基础设施验收和外部 Provider 验收必须严格区分；请在目标环境运行 `./scripts/validate.sh`，详见 [验证报告](docs/VERIFICATION.md)。
 
-评委建议阅读顺序：先看 [评委快速摘要](docs/JUDGE_QUICKSTART_V14.md)，再看 [决赛架构设计](docs/COMPETITION_SUBMISSION_V14.md)、[验收证据矩阵](docs/ACCEPTANCE_EVIDENCE_V14.md)、[核心数据模型](docs/DATA_MODEL.md)、[风险登记册](docs/RISK_REGISTER_V14.md)、[安全审计](docs/SECURITY_REVIEW_V14.md) 和 [最终交接](TRPC_AGENT_ENTERPRISE_HANDOFF_V14_FINAL.md)。每项能力明确区分本机实测、源码已闭环但待目标环境验收和外部依赖未验收，避免用单测或模拟器冒充生产证据。
+评委建议阅读顺序：先看 [评委快速摘要](docs/JUDGE_QUICKSTART.md)，再看 [决赛架构设计](docs/COMPETITION_SUBMISSION.md)、[验收证据矩阵](docs/ACCEPTANCE_EVIDENCE.md)、[核心数据模型](docs/DATA_MODEL.md)、[风险登记册](docs/RISK_REGISTER.md)、[安全审计](docs/SECURITY_REVIEW.md) 和 [最终交接](ENTERPRISE_PLATFORM_HANDOFF.md)。每项能力明确区分本机实测、源码已闭环但待目标环境验收和外部依赖未验收，避免用单测或模拟器冒充生产证据。
 
 ## 1. 运行架构
 
@@ -105,15 +105,17 @@ Windows 没有 GNU Make 时，使用等价的 `scripts\validate.sh`（Git Bash/W
 源码归档故意不包含 `.env` 或任何真实凭据。因而在一个刚解压的归档目录直接执行 `docker compose`，看到 `set POSTGRES_PASSWORD in .env` 是预期的 fail-closed 行为，不是代码缺失，也不依赖 E 盘。Windows 本地验证可从任意当前目录运行下面的路径无关脚本；它从 `$PSScriptRoot` 定位本源码，并只在当前进程中设置一次性验证值：
 
 ```powershell
-Set-Location <解压后的 V14 源码根目录>
-.\scripts\run_c_local_stack.ps1 -ProjectName trpc-v14-c-local-final -Build
+Set-Location <解压后的源码根目录>
+.\scripts\run_c_local_stack.ps1 -ProjectName trpc-platform-c-local-final -Build
 ```
 
-脚本默认使用隔离宿主端口（Gateway `18080`、Admin `18081`、Prometheus `19095`、Grafana `13000`），不会读取或写入 E 盘。显式使用同一个 `-ProjectName` 可重启既有验证栈；创建新项目应选择新名称和空闲端口。验证结束后执行 `.\scripts\run_c_local_stack.ps1 -ProjectName trpc-v14-c-local-final -Down`；该命令默认保留命名卷。真实部署应使用受 ACL 保护的 `.env` 和正式 Secret Manager，不得使用验证值。七个应用镜像逐个构建，构建前至少保留 8 GB。
+脚本默认使用隔离宿主端口（Gateway `18080`、Admin `18081`、Prometheus `19095`、Grafana `13000`），不会读取或写入 E 盘。显式使用同一个 `-ProjectName` 可重启既有验证栈；创建新项目应选择新名称和空闲端口。验证结束后执行 `.\scripts\run_c_local_stack.ps1 -ProjectName trpc-platform-c-local-final -Down`；该命令默认保留命名卷。真实部署应使用受 ACL 保护的 `.env` 和正式 Secret Manager，不得使用验证值。七个应用镜像逐个构建，构建前至少保留 8 GB。
 
 `STORAGE_BACKEND_PROFILES` 只保存 profile ID、后端类型与 secret 环境变量名；Gateway、Admin、Consumer、Delivery 仅校验这份非密钥目录，只有实际构造 Session/Memory 的 Worker 注入真实连接串或生产 Secret Manager resolver。生产 profile 和平台 `DATABASE_URL` 都要求 Redis TLS (`rediss`) 或 PostgreSQL `sslmode=verify-full`；`DATABASE_ALLOW_INSECURE=true` 与 profile 的 `allowInsecure:true` 仅用于隔离的本地开发网络，Kubernetes/生产环境不得设置。
 
 密钥加载支持 operator-owned `SecretRef` 组合根：`MASTER_KEY_RING_REF` 或 `MASTER_KEY_REF` 可以指向受限的 `env://TRPC_SECRET_*` 引用；`LoadKeyRingFromEnv` 会拒绝 inline 与未授权前缀，并将解析失败归一化为不含引用名或密钥值的稳定错误。该能力只提供安全的 resolver 边界，不冒充外部 KMS/Vault；生产应把 `SecretResolver` 实现接到实际的 KMS/Vault workload identity，并为每个服务配置最小读取范围。旧的 `MASTER_KEY_RING`/`MASTER_KEY` 仍可用于兼容迁移。
+
+模型和通道 SecretRef 还必须有租户作用域授权绑定。运维侧只记录绑定变量名，不记录密钥值：`pkg/tenant.SecretBindingEnvironmentName(tenantID, purpose, provider, model)` 返回 `TRPC_SECRET_BINDING_<SHA256>` 名称；模型用途使用 `model`，通道用途使用 `channel_token`、`channel_secret` 或 `channel_encoding_aes_key`，并将该变量值设为对应的 `env://TRPC_SECRET_*` 引用。Worker、Gateway 和 Delivery 在解析前都会校验绑定，撤销绑定后旧版本重试会 fail-closed。
 
 Consumer 到 Worker 的传输也有独立门禁：默认 `WORKER_TRANSPORT_MODE=production`，只接受 `https://`，并在启动时拒绝明文端点；HMAC 只提供完整性和防重放，不能替代加密。Compose 明确设置 `WORKER_TRANSPORT_MODE=development` 以适配本机隔离网络（开发模式仅接受 loopback 或单标签本地服务名）。Kubernetes 若由 service mesh 在应用外提供 mTLS，可在完成严格 peer-auth/身份授权验收后使用 `WORKER_TRANSPORT_MODE=mesh` 并显式设置 `WORKER_MESH_MTLS_ASSERTED=true`；该标记只是运维前置条件，不代表 Go Worker 已实现 TLS/mTLS。当前 Worker 仍使用普通 HTTP server，生产应通过已验证的 HTTPS terminator 或 service mesh 提供机密性。
 
@@ -187,9 +189,9 @@ DATABASE_URL='...' go run ./cmd/replay outbox 456 operator-a 'approved full rese
 ./scripts/validate.sh       # 安全 Go 门、build/vet/unit/race、镜像、真实 PostgreSQL+Redis integration
 ```
 
-真实基础设施集成与故障测试应在 CI 中启动 PostgreSQL/Redis 后执行。没有命令输出和退出码，不得声称测试通过。本次 C 盘复核的命令、端口、容器后状态和路径诊断见 [验收证据](docs/ACCEPTANCE_EVIDENCE_V14.md) 与 [验证报告](docs/VERIFICATION.md)；目标账号的低次数执行顺序见 [外部验收 Runbook](docs/EXTERNAL_ACCEPTANCE_RUNBOOK.md)。
+真实基础设施集成与故障测试应在 CI 中启动 PostgreSQL/Redis 后执行。没有命令输出和退出码，不得声称测试通过。本次 C 盘复核的命令、端口、容器后状态和路径诊断见 [验收证据](docs/ACCEPTANCE_EVIDENCE.md) 与 [验证报告](docs/VERIFICATION.md)；目标账号的低次数执行顺序见 [外部验收 Runbook](docs/EXTERNAL_ACCEPTANCE_RUNBOOK.md)。
 
-Windows 企微沙箱依次使用 `scripts/wecom_sandbox_tunnel.ps1`、`scripts/wecom_sandbox_setup.ps1`、`scripts/wecom_sandbox_bootstrap.ps1`。它会用独立 Compose project/端口保留现有 V13，凭据只写入 gitignore 的 `deploy/.env.wecom.local` 并以 SecretRef 注入；Bash 环境另提供模板一致、经 `bash -n` 与 ShellCheck 验证的 `scripts/wecom_sandbox_setup.sh`。这些脚本把 URL verify 前置条件自动化，但真实控制台保存和成员消息仍必须由企业管理员完成并留证。
+Windows 企微沙箱依次使用 `scripts/wecom_sandbox_tunnel.ps1`、`scripts/wecom_sandbox_setup.ps1`、`scripts/wecom_sandbox_bootstrap.ps1`。它会用独立 Compose project/端口隔离既有本地服务，凭据只写入 gitignore 的 `deploy/.env.wecom.local` 并以 SecretRef 注入；Bash 环境另提供模板一致、经 `bash -n` 与 ShellCheck 验证的 `scripts/wecom_sandbox_setup.sh`。这些脚本把 URL verify 前置条件自动化，但真实控制台保存和成员消息仍必须由企业管理员完成并留证。
 
 ## 6. 当前边界
 
@@ -224,4 +226,4 @@ Windows 企微沙箱依次使用 `scripts/wecom_sandbox_tunnel.ps1`、`scripts/w
 - 迁移 019 为每个 tenant/app/session 增加 execution admission guard；迁移 020 增加显式 reconciliation-wait 状态；迁移 021 让过期 reconciler 在迁移遗留的多个 stale attempt 场景下逐行、安全地排空。旧 `ExecutionRecorder.Start` 保留仅为源码兼容但会 fail-closed，所有新执行必须经过 `StartWithRequest` 获得 token 和 generation。
 - Compose 是开发/集成栈；其外部镜像已按 tag + Docker Hub digest 固定，七个 Go 服务/作业以 non-root、只读根文件系统、`cap_drop: ALL`、`no-new-privileges` 和有界 `/tmp` 运行。Kubernetes 清单另含 seccomp、PDB、拓扑分散、默认拒绝 NetworkPolicy 和迁移先行脚本。网络策略假设同 namespace 的 PostgreSQL/Redis；托管私网后端必须替换为精确 CIDR，不能直接套用。生产仍应使用 KMS/Vault、mTLS、签名的应用镜像 digest/SBOM 和真实 Trace/Alertmanager 后端。
 
-更多内容： [决赛方案](docs/COMPETITION_SUBMISSION_V14.md) · [验收证据](docs/ACCEPTANCE_EVIDENCE_V14.md) · [架构与一致性](docs/ARCHITECTURE.md) · [数据模型](docs/DATA_MODEL.md) · [SLO 与告警](docs/SLO.md) · [风险登记册](docs/RISK_REGISTER_V14.md) · [安全审计](docs/SECURITY_REVIEW_V14.md) · [外部低次数验收](docs/EXTERNAL_ACCEPTANCE_RUNBOOK.md) · [演示步骤](docs/DEMO.md)
+更多内容： [决赛方案](docs/COMPETITION_SUBMISSION.md) · [验收证据](docs/ACCEPTANCE_EVIDENCE.md) · [架构与一致性](docs/ARCHITECTURE.md) · [数据模型](docs/DATA_MODEL.md) · [SLO 与告警](docs/SLO.md) · [风险登记册](docs/RISK_REGISTER.md) · [安全审计](docs/SECURITY_REVIEW.md) · [外部低次数验收](docs/EXTERNAL_ACCEPTANCE_RUNBOOK.md) · [演示步骤](docs/DEMO.md)

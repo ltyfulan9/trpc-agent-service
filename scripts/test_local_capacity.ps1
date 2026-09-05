@@ -5,8 +5,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $harness = (Resolve-Path -LiteralPath $HarnessPath).Path
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-$name = "trpc-v14-capacity-$([DateTime]::UtcNow.ToString('yyyyMMddHHmmss'))-$PID"
-if ($name -notmatch '^trpc-v14-capacity-[0-9]{14}-[0-9]+$') { throw 'invalid fixture container name' }
+$name = "trpc-platform-capacity-$([DateTime]::UtcNow.ToString('yyyyMMddHHmmss'))-$PID"
+if ($name -notmatch '^trpc-platform-capacity-[0-9]{14}-[0-9]+$') { throw 'invalid fixture container name' }
 $keys = @('GOTOOLCHAIN','GOMAXPROCS','DATABASE_URL','DATABASE_ALLOW_INSECURE','CAPACITY_DATABASE_URL')
 $saved = @{}
 foreach ($key in $keys) { $saved[$key] = [Environment]::GetEnvironmentVariable($key,'Process') }

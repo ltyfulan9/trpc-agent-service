@@ -181,6 +181,19 @@ func WithSecretResolver(resolver SecretResolver) ServiceOption {
 	return func(service *TenantService) { service.secretResolver = resolver }
 }
 
+// AuthorizeModelSecretRef checks the operator binding used by an immutable
+// model version without resolving or exposing the credential itself.
+func (s *TenantService) AuthorizeModelSecretRef(ctx context.Context, tenantID, provider, model string, ref SecretRef) error {
+	if s == nil || s.secretResolver == nil {
+		return ErrSecretUnavailable
+	}
+	authorizer, ok := s.secretResolver.(TenantSecretBindingAuthorizer)
+	if !ok {
+		return ErrSecretUnavailable
+	}
+	return authorizer.AuthorizeForTenant(ctx, tenantID, provider, model, "model", ref)
+}
+
 // NewService creates a new tenant service.
 func NewService(repo Repository, masterKey string, options ...ServiceOption) *TenantService {
 	service, err := NewServiceWithKeyRing(repo, defaultEncryptionKeyID,
@@ -736,7 +749,7 @@ func (s *TenantService) decryptChannelSecrets(ctx context.Context, tenantID stri
 	}); err != nil {
 		return err
 	}
-	return s.resolveChannelSecretRefs(ctx, binding)
+	return s.resolveChannelSecretRefsForTenant(ctx, tenantID, binding)
 }
 
 // resolveChannelSecretRefs materializes only the selected channel's
@@ -744,6 +757,10 @@ func (s *TenantService) decryptChannelSecrets(ctx context.Context, tenantID stri
 // inline credentials remain compatible, while reference failures are stable
 // and never expose a resolver's provider-specific error text.
 func (s *TenantService) resolveChannelSecretRefs(ctx context.Context, binding *ChannelBinding) error {
+	return s.resolveChannelSecretRefsForTenant(ctx, "", binding)
+}
+
+func (s *TenantService) resolveChannelSecretRefsForTenant(ctx context.Context, tenantID string, binding *ChannelBinding) error {
 	if binding == nil {
 		return ErrTenantNotFound
 	}
@@ -751,10 +768,11 @@ func (s *TenantService) resolveChannelSecretRefs(ctx context.Context, binding *C
 		name    *string
 		ref     string
 		refDest *string
+		purpose string
 	}{
-		{name: &binding.Token, ref: binding.TokenRef, refDest: &binding.TokenRef},
-		{name: &binding.Secret, ref: binding.SecretRef, refDest: &binding.SecretRef},
-		{name: &binding.EncodingAESKey, ref: binding.EncodingAESKeyRef, refDest: &binding.EncodingAESKeyRef},
+		{name: &binding.Token, ref: binding.TokenRef, refDest: &binding.TokenRef, purpose: "token"},
+		{name: &binding.Secret, ref: binding.SecretRef, refDest: &binding.SecretRef, purpose: "secret"},
+		{name: &binding.EncodingAESKey, ref: binding.EncodingAESKeyRef, refDest: &binding.EncodingAESKeyRef, purpose: "encoding_aes_key"},
 	} {
 		if field.ref == "" {
 			continue
@@ -768,7 +786,20 @@ func (s *TenantService) resolveChannelSecretRefs(ctx context.Context, binding *C
 		if err := SecretRef(field.ref).Validate(); err != nil {
 			return ErrInvalidSecretRef
 		}
-		value, err := s.secretResolver.Resolve(ctx, SecretRef(field.ref))
+		ref := SecretRef(field.ref)
+		var value []byte
+		var err error
+		if scoped, ok := s.secretResolver.(TenantSecretResolver); ok && tenantID != "" {
+			// Channel credentials are bound to the tenant and stable channel
+			// identity. The purpose separates token, secret and AES material.
+			purpose := "channel_" + field.purpose
+			value, err = scoped.ResolveForTenant(ctx, tenantID, binding.Type, binding.EnsureAccountID(), purpose, ref)
+		} else {
+			// Preserve source compatibility for audited custom resolvers used by
+			// tests and legacy composition roots; production EnvSecretResolver is
+			// tenant-aware and takes the branch above.
+			value, err = s.secretResolver.Resolve(ctx, ref)
+		}
 		if err != nil {
 			if errors.Is(err, ErrInvalidSecretRef) {
 				return ErrInvalidSecretRef

@@ -138,6 +138,22 @@ func TestValidateVersionSnapshotWithCatalogRejectsUnknownProductionModel(t *test
 	}
 }
 
+func TestValidateVersionSnapshotRejectsCredentialReferenceSubstitution(t *testing.T) {
+	tenantConfig := sampleTenant()
+	tenantConfig.Models = []tenant.ModelConfig{{
+		Provider: "openai", ModelName: "gpt-4", APIKeyRef: "env://TRPC_SECRET_TENANT_A",
+		MaxTokens: 1_000,
+	}}
+	service := &countingTenantService{tenant: tenantConfig}
+	snapshot := controlplane.VersionSnapshot{
+		Agent: tenant.AgentConfig{Name: "support", Type: tenant.AgentTypeLLM, DefaultModel: "gpt-4", MaxLLMCalls: 1},
+		Model: tenant.ModelConfig{Provider: "openai", ModelName: "gpt-4", APIKeyRef: "env://TRPC_SECRET_TENANT_B", MaxTokens: 256},
+	}
+	if err := validateVersionSnapshot(context.Background(), service, platformtool.NewBuiltinCatalog(), worker.NewRuntimeAgentRegistry(), "t1", &snapshot); err == nil {
+		t.Fatal("version accepted a substituted credential reference")
+	}
+}
+
 func TestValidateVersionSnapshotTreatsKnowledgeSearchAsScopedRuntimeCapability(t *testing.T) {
 	tenantConfig := sampleTenant()
 	tenantConfig.Models = []tenant.ModelConfig{{
@@ -626,6 +642,20 @@ func TestOutboxReplayRouteFailsClosedWithoutTenantScopedCapability(t *testing.T)
 	mux.ServeHTTP(response, req)
 	if response.Code != http.StatusServiceUnavailable {
 		t.Fatalf("unscoped replay route status=%d body=%s, want 503", response.Code, response.Body.String())
+	}
+}
+
+func TestOutboxReplayRouteFailsClosedForTypedNilStore(t *testing.T) {
+	mux := http.NewServeMux()
+	var typedNil *reliable.MemoryStore
+	registerControlPlaneRoutes(mux, nil, nil, nil, typedNil)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/outbox-replays", strings.NewReader(`{"tenantId":"tenant-a","outboxId":1,"reason":"reconcile"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(adminauth.ContextWithPrincipal(req.Context(), adminauth.Principal{ID: "operator", Role: adminauth.RolePlatformAdmin}))
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, req)
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("typed-nil replay route status=%d body=%s, want 503", response.Code, response.Body.String())
 	}
 }
 

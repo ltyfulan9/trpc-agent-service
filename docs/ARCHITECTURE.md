@@ -147,7 +147,7 @@ Consumer→Worker 的应用层配置默认是 `WORKER_TRANSPORT_MODE=production`
 
 强制顺序是：Runner 把 Event/State 提交共享 SessionService → 提交 summary job（记录目标 max sequence）→ `summary.Processor` 领取带 lease 的 job → 注入的 Generator 重新从主存储读取 → 生成 → CAS 发布到 `summary.Sink` → 只有 checkpoint 已达到目标序号时才将 job 标记完成。Memory 在事务提交后对其他节点可见；若选向量后端，则元数据 SQL 成功与 embedding 成功通过 job 状态最终收敛。
 
-V14 已把通用协调器接到生产 `summaryruntime.Runtime`：它按 job 固定的 Agent 版本重新解析 tenant model 和 Session/Memory profile，在同一 Session lease 下冻结目标序号、重读稳定事件前缀，通过 tRPC-Agent-Go Summarizer 生成并进行预算 reservation/dispatch/settlement。migration 042 保存最后覆盖事件的 `cutoff_at` 与 `last_event_id`；PostgreSQL `FencedSink` 在同一事务锁定 job lease 后发布 checkpoint，旧 Worker 即使晚完成也不能写入。下一轮 Worker 在访问后端前校验 tenant/app/owner/session scope，把 checkpoint overlay 到克隆 Session 的 `Session.Summaries`，并显式启用 `WithAddSessionSummary(true)`；读取失败 fail-closed。独立 `cmd/summary-worker` 停止时先停止新 claim，再有界排空活跃 job，超时/取消后的 FAILED 状态使用独立短 deadline 持久化。
+通用协调器已接到生产 `summaryruntime.Runtime`：它按 job 固定的 Agent 版本重新解析 tenant model 和 Session/Memory profile，在同一 Session lease 下冻结目标序号、重读稳定事件前缀，通过 tRPC-Agent-Go Summarizer 生成并进行预算 reservation/dispatch/settlement。migration 042 保存最后覆盖事件的 `cutoff_at` 与 `last_event_id`；PostgreSQL `FencedSink` 在同一事务锁定 job lease 后发布 checkpoint，旧 Worker 即使晚完成也不能写入。下一轮 Worker 在访问后端前校验 tenant/app/owner/session scope，把 checkpoint overlay 到克隆 Session 的 `Session.Summaries`，并显式启用 `WithAddSessionSummary(true)`；读取失败 fail-closed。独立 `cmd/summary-worker` 停止时先停止新 claim，再有界排空活跃 job，超时/取消后的 FAILED 状态使用独立短 deadline 持久化。
 
 ## 8. 后端迁移状态机
 

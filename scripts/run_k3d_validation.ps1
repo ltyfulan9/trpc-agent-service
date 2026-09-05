@@ -1,16 +1,16 @@
 [CmdletBinding()]
 param(
     [ValidatePattern('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')]
-    [string]$Namespace = 'agent-platform-v14',
+    [string]$Namespace = 'agent-platform',
     [ValidatePattern('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')]
-    [string]$DataPlaneNamespace = 'agent-data-plane-v14',
+    [string]$DataPlaneNamespace = 'agent-data-plane',
     [ValidateSet('bootstrap', 'compatible')]
     [string]$SchemaClass = 'bootstrap',
-    [string]$ReleaseDirectory = (Join-Path $PSScriptRoot '..\deploy\kubernetes\releases\v14-k3d-20260905'),
-    [string]$ExpectedContext = 'k3d-trpc-v13',
+    [string]$ReleaseDirectory = (Join-Path $PSScriptRoot '..\deploy\kubernetes\releases\platform-k3d-20260905'),
+    [string]$ExpectedContext = 'k3d-agent-platform',
     [string]$OtelCAFromNamespace = 'agent-platform',
     [ValidatePattern('^[^\r\n\x00]{1,256}$')]
-    [string]$MeshEvidence = 'k3d-trpc-v13-linkerd-edge-26.8.4-all-authenticated-20260905',
+    [string]$MeshEvidence = 'k3d-agent-platform-linkerd-edge-20260905',
     [Parameter(Mandatory)][ValidatePattern('^sha256:[a-f0-9]{64}$')]
     [string]$GatewayDigest,
     [ValidatePattern('^[0-9]+[smh]$')]
@@ -319,6 +319,6 @@ foreach ($pod in $applicationPods) {
     }
 }
 
-Write-Output "K3d V14 release is ready: namespace=$Namespace schema=$SchemaClass"
+Write-Output "K3d application release is ready: namespace=$Namespace schema=$SchemaClass"
 Invoke-Kubectl -Arguments @('-n', $Namespace, 'get', 'pods', '-o', 'wide')
 Invoke-Kubectl -Arguments @('-n', $Namespace, 'get', 'hpa')

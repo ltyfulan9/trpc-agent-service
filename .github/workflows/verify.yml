@@ -2,8 +2,8 @@ name: verify
 on:
   pull_request:
   push:
-    branches: [main, v14-final]
-    tags: ["v*"]
+    branches: ["**"]
+    tags: ["platform-*"]
   workflow_dispatch:
 
 permissions:

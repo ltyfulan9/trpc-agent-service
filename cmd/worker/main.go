@@ -352,7 +352,6 @@ func main() {
 	healthChecker := health.New(
 		health.WithRedis(redisClient),
 		health.WithDatabase(controlDB),
-		health.WithStorage(baseAdapter),
 		health.WithDrainState(shutdown),
 	)
 

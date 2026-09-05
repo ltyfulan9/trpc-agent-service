@@ -70,6 +70,31 @@ func TestResolveChannelSecretRefsMaterializesOnlySelectedCredentials(t *testing.
 	}
 }
 
+func TestResolveChannelSecretRefsForTenantUsesScopedBinding(t *testing.T) {
+	const tenantID = "tenant-a"
+	resolver, err := NewEnvSecretResolver("TRPC_SECRET_")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver.lookupEnv = func(name string) (string, bool) {
+		if name == secretBindingName(tenantID, "channel_token", "telegram", "acct-1") {
+			return "env://TRPC_SECRET_TOKEN", true
+		}
+		if name == "TRPC_SECRET_TOKEN" {
+			return "scoped-token", true
+		}
+		return "", false
+	}
+	service := &TenantService{secretResolver: resolver}
+	binding := &ChannelBinding{Type: "telegram", AccountID: "acct-1", TokenRef: "env://TRPC_SECRET_TOKEN"}
+	if err := service.resolveChannelSecretRefsForTenant(context.Background(), tenantID, binding); err != nil {
+		t.Fatalf("resolve scoped channel reference: %v", err)
+	}
+	if binding.Token != "scoped-token" || binding.TokenRef != "" {
+		t.Fatalf("binding = %+v, want resolved scoped token", binding)
+	}
+}
+
 func TestResolveChannelSecretRefsFailsClosedWithoutResolver(t *testing.T) {
 	service := &TenantService{}
 	binding := &ChannelBinding{TokenRef: "env://TRPC_SECRET_TOKEN"}

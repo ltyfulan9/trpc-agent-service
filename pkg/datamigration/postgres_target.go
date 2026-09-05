@@ -67,10 +67,10 @@ func (t *PostgresTarget) Upsert(ctx context.Context, tenantID string, domain Dom
 		// during dual-write; ON CONFLICT DO NOTHING makes the loser re-read the
 		// committed row instead of surfacing a spurious unique-key failure.
 		result, err := tx.ExecContext(nonNilMigrationContext(ctx), `
-				INSERT INTO data_migration_records
-				(tenant_id,domain,record_key,payload,version,content_hash,deleted,updated_at)
-				VALUES ($1,$2,$3,$4,$5,$6,$7,clock_timestamp())
-				ON CONFLICT (tenant_id,domain,record_key) DO NOTHING`, tenantID, domain, record.Key, record.Payload, record.Version, record.Hash, record.Deleted)
+			INSERT INTO data_migration_records
+				(tenant_id,domain,record_key,migration_id,payload,version,content_hash,deleted,updated_at)
+				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,clock_timestamp())
+				ON CONFLICT (tenant_id,domain,record_key,migration_id) DO NOTHING`, tenantID, domain, record.Key, fence.MigrationID, record.Payload, record.Version, record.Hash, record.Deleted)
 		if err != nil {
 			return fmt.Errorf("insert postgres migration record %q: %w", record.Key, err)
 		}
@@ -86,8 +86,8 @@ func (t *PostgresTarget) Upsert(ctx context.Context, tenantID string, domain Dom
 		var existingDeleted bool
 		if err := tx.QueryRowContext(nonNilMigrationContext(ctx), `
 			SELECT version, content_hash, deleted FROM data_migration_records
-			WHERE tenant_id=$1 AND domain=$2 AND record_key=$3
-			FOR UPDATE`, tenantID, domain, record.Key).Scan(&existingVersion, &existingHash, &existingDeleted); err != nil {
+			WHERE tenant_id=$1 AND domain=$2 AND record_key=$3 AND migration_id=$4
+			FOR UPDATE`, tenantID, domain, record.Key, fence.MigrationID).Scan(&existingVersion, &existingHash, &existingDeleted); err != nil {
 			return fmt.Errorf("read postgres migration record %q after conflict: %w", record.Key, err)
 		}
 		switch {
@@ -101,8 +101,8 @@ func (t *PostgresTarget) Upsert(ctx context.Context, tenantID string, domain Dom
 		default:
 			_, err = tx.ExecContext(nonNilMigrationContext(ctx), `
 				UPDATE data_migration_records
-				SET payload=$4, version=$5, content_hash=$6, deleted=$7, projected_at=NULL, updated_at=clock_timestamp()
-				WHERE tenant_id=$1 AND domain=$2 AND record_key=$3`, tenantID, domain, record.Key, record.Payload, record.Version, record.Hash, record.Deleted)
+				SET payload=$5, version=$6, content_hash=$7, deleted=$8, projected_at=NULL, updated_at=clock_timestamp()
+				WHERE tenant_id=$1 AND domain=$2 AND record_key=$3 AND migration_id=$4`, tenantID, domain, record.Key, fence.MigrationID, record.Payload, record.Version, record.Hash, record.Deleted)
 		}
 		if err != nil {
 			return fmt.Errorf("write postgres migration record %q: %w", record.Key, err)

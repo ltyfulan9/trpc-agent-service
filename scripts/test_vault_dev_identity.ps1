@@ -1,11 +1,11 @@
 [CmdletBinding()]
-param([string]$ExpectedContext = 'k3d-trpc-v13')
+param([string]$ExpectedContext = 'k3d-agent-platform')
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 if ((kubectl config current-context) -ne $ExpectedContext) { throw 'unexpected Kubernetes context' }
-$namespace = 'vault-v14-validation'
-$mount = 'v14-validation'
+$namespace = 'vault-platform-validation'
+$mount = 'platform-validation'
 $run = [DateTime]::UtcNow.ToString('yyyyMMddHHmmss')
 $names = @()
 $image = 'hashicorp/vault@sha256:5be49781ecf78bfe775c5309c6a4d9f4e9e040b6c885c99eb2b12fb69855e1a2'
@@ -21,11 +21,11 @@ $setup = @'
 set -eu
 test -n "${VAULT_DEV_ROOT_TOKEN_ID:-}" || exit 90
 export VAULT_TOKEN="$VAULT_DEV_ROOT_TOKEN_ID"
-vault auth list -format=json | grep -q '"v14-validation/"' || vault auth enable -path=v14-validation kubernetes >/dev/null
-vault write auth/v14-validation/config kubernetes_host=https://kubernetes.default.svc kubernetes_ca_cert=@/var/run/secrets/kubernetes.io/serviceaccount/ca.crt >/dev/null
-printf '%s\n' 'path "secret/data/v14-validation/allowed" { capabilities = ["read"] }' | vault policy write v14-validation-reader - >/dev/null
-vault write auth/v14-validation/role/reader bound_service_account_names=vault-client bound_service_account_namespaces=vault-v14-validation audience=vault policies=v14-validation-reader ttl=2m >/dev/null
-vault kv put secret/v14-validation/allowed value=validation-only-not-a-production-secret >/dev/null
+vault auth list -format=json | grep -q '"platform-validation/"' || vault auth enable -path=platform-validation kubernetes >/dev/null
+vault write auth/platform-validation/config kubernetes_host=https://kubernetes.default.svc kubernetes_ca_cert=@/var/run/secrets/kubernetes.io/serviceaccount/ca.crt >/dev/null
+printf '%s\n' 'path "secret/data/platform-validation/allowed" { capabilities = ["read"] }' | vault policy write platform-validation-reader - >/dev/null
+vault write auth/platform-validation/role/reader bound_service_account_names=vault-client bound_service_account_namespaces=vault-platform-validation audience=vault policies=platform-validation-reader ttl=2m >/dev/null
+vault kv put secret/platform-validation/allowed value=validation-only-not-a-production-secret >/dev/null
 echo VAULT_DEV_FIXTURE_READY
 '@
 $setup | kubectl -n vault exec -i vault-0 -- sh -s
@@ -37,17 +37,17 @@ foreach ($sa in @('vault-client','vault-denied')) {
 
 $allowScript = @'
 set -eu
-export VAULT_TOKEN="$(vault write -field=token auth/v14-validation/login role=reader jwt=@/identity/token)"
-test "$(vault kv get -field=value secret/v14-validation/allowed)" = validation-only-not-a-production-secret
+export VAULT_TOKEN="$(vault write -field=token auth/platform-validation/login role=reader jwt=@/identity/token)"
+test "$(vault kv get -field=value secret/platform-validation/allowed)" = validation-only-not-a-production-secret
 echo PASS_AUTHORIZED_WORKLOAD_READ
-if vault kv get secret/v14-validation/forbidden >/tmp/denial 2>&1; then exit 71; fi
+if vault kv get secret/platform-validation/forbidden >/tmp/denial 2>&1; then exit 71; fi
 grep -q 'Code: 403' /tmp/denial
 echo PASS_FORBIDDEN_PATH_DENIED
 vault token revoke -self >/dev/null
 '@
 $denyScript = @'
 set -eu
-if vault write auth/v14-validation/login role=reader jwt=@/identity/token >/tmp/denial 2>&1; then exit 72; fi
+if vault write auth/platform-validation/login role=reader jwt=@/identity/token >/tmp/denial 2>&1; then exit 72; fi
 grep -q 'Code: 403' /tmp/denial
 echo PASS_WRONG_SERVICE_ACCOUNT_DENIED
 '@
@@ -55,7 +55,7 @@ try {
     foreach ($mode in @('allowed','denied')) {
         $sa = if ($mode -eq 'allowed') { 'vault-client' } else { 'vault-denied' }
         $body = if ($mode -eq 'allowed') { $allowScript } else { $denyScript }
-        $name = "vault-v14-$mode-$run"
+        $name = "vault-platform-$mode-$run"
         Apply-Object @{
             apiVersion='v1';kind='Pod';metadata=@{name=$name;namespace=$namespace;annotations=@{'linkerd.io/inject'='disabled'}}
             spec=@{

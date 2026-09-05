@@ -1,8 +1,8 @@
 [CmdletBinding()]
 param(
     [ValidatePattern('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')]
-    [string]$Namespace = 'agent-platform-v14',
-    [string]$ExpectedContext = 'k3d-trpc-v13'
+    [string]$Namespace = 'agent-platform',
+    [string]$ExpectedContext = 'k3d-agent-platform'
 )
 
 Set-StrictMode -Version Latest
@@ -15,7 +15,7 @@ $probeNames = @()
 $image = 'trpc-v13-registry:5000/v13/postgres@sha256:68c8f729caca8638396647002948c0ab753fda787cbee9e887f7166169c6b87e'
 try {
     foreach ($mode in @('authenticated', 'plaintext')) {
-        $name = "v14-mesh-$mode-$suffix"
+        $name = "platform-mesh-$mode-$suffix"
         $inject = if ($mode -eq 'authenticated') { 'enabled' } else { 'disabled' }
         $pod = @{
             apiVersion = 'v1'; kind = 'Pod'

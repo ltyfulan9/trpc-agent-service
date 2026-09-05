@@ -1,21 +1,21 @@
 [CmdletBinding()]
 param(
-    [string]$Namespace = 'agent-platform-v14',
-    [string]$ExpectedContext = 'k3d-trpc-v13',
+    [string]$Namespace = 'agent-platform',
+    [string]$ExpectedContext = 'k3d-agent-platform',
     [ValidatePattern('^[^\s]+@sha256:[a-f0-9]{64}$')]
     [string]$PreviousImage = 'trpc-v13-registry:5000/v13/gateway@sha256:aecc6b7adf5407862dcb90a6792e4504cb0747a31e856a307bbabc4f0385763c'
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-if ((kubectl config current-context) -ne $ExpectedContext -or $Namespace -ne 'agent-platform-v14') {
-    throw 'this drill is restricted to the dedicated local V14 namespace'
+if ((kubectl config current-context) -ne $ExpectedContext -or $Namespace -ne 'agent-platform') {
+    throw 'this drill is restricted to the dedicated local application namespace'
 }
 $deployment = kubectl -n $Namespace get deployment agent-gateway -o json | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0) { throw 'could not read Gateway deployment' }
 $originalImage = ($deployment.spec.template.spec.containers | Where-Object name -eq 'gateway').image
 $originalRevision = $deployment.metadata.annotations.'deployment.kubernetes.io/revision'
-if ($originalImage -notmatch '/v14/gateway@sha256:[a-f0-9]{64}$') { throw 'expected the digest-pinned V14 Gateway before this drill' }
+if ($originalImage -notmatch '/gateway@sha256:[a-f0-9]{64}$') { throw 'expected a digest-pinned Gateway image before this drill' }
 
 function Assert-GatewayReady {
     param([string]$ExpectedImage)
@@ -39,4 +39,4 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'RESTORATION REQUIRED: Gateway rollback failed' }
     Assert-GatewayReady $originalImage
 }
-Write-Output 'PASS: two real Gateway digests rolled out and original V14 revision restored; this is not a full-platform upgrade or database rollback certification.'
+Write-Output 'PASS: two real Gateway digests rolled out and original application revision restored; this is not a full-platform upgrade or database rollback certification.'

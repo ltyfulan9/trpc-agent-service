@@ -1,6 +1,6 @@
 # Enterprise Multi-Tenant Agent Platform Judge Quickstart
 
-本页是评委在 5–10 分钟内建立判断的入口。它把“源码已经实现”“本机已经验证”和“必须在目标环境完成”分开，不把架构设想、单元测试或本地模拟器包装成生产证据。完整设计见 [决赛方案](COMPETITION_SUBMISSION_V14.md)，逐项命令和后状态见 [验收证据矩阵](ACCEPTANCE_EVIDENCE_V14.md)。
+本页是评委在 5–10 分钟内建立判断的入口。它把“源码已经实现”“本机已经验证”和“必须在目标环境完成”分开，不把架构设想、单元测试或本地模拟器包装成生产证据。完整设计见 [决赛方案](COMPETITION_SUBMISSION.md)，逐项命令和后状态见 [验收证据矩阵](ACCEPTANCE_EVIDENCE.md)。
 
 ## 一、先看什么
 
@@ -26,10 +26,10 @@
 本机最短验证路径：
 
 ```powershell
-Set-Location <V14 源码根目录>
-.\scripts\run_c_local_stack.ps1 -ProjectName trpc-v14-c-local-final -Build
+Set-Location <源码根目录>
+.\scripts\run_c_local_stack.ps1 -ProjectName trpc-platform-c-local-final -Build
 .\scripts\validate.sh
-.\scripts\run_c_local_stack.ps1 -ProjectName trpc-v14-c-local-final -Down
+.\scripts\run_c_local_stack.ps1 -ProjectName trpc-platform-c-local-final -Down
 ```
 
 源码不携带真实 `.env`、Provider token 或数据库密码；普通 Compose 缺少密码变量是预期的 fail-closed。C 盘脚本只在当前进程注入一次性值，结果应保存退出码、容器健康和 trace 证据。
@@ -57,6 +57,6 @@ Set-Location <V14 源码根目录>
 
 ## 五、提交前硬门禁
 
-V14 已发布到 [GitHub](https://github.com/ltyfulan9/trpc-agent-service/tree/v14-final)，固定发布标签为 `v14.0.6-final`；仓库默认分支是 `main`，V14 发布分支是 `v14-final`。评委可在全新目录执行 `git clone`、`git checkout v14.0.6-final`、`git rev-parse v14.0.6-final^{}`、`./scripts/validate.sh`、Compose config 和镜像构建。仓库保留 Apache-2.0 LICENSE、`.github/workflows/verify.yml` 和不含秘密的测试配置；真实企微回调仍按本页 `EXTERNAL_REQUIRED` 边界验收。
+交付源码已发布到 [GitHub](https://github.com/ltyfulan9/trpc-agent-service)。评委应在全新目录执行 `git clone` 后记录 `git rev-parse HEAD`，再运行 `./scripts/validate.sh`、Compose config 和镜像构建。仓库保留 Apache-2.0 LICENSE、`.github/workflows/verify.yml` 和不含秘密的测试配置；真实企微回调仍按本页 `EXTERNAL_REQUIRED` 边界验收。
 
 最终评分时，应把实现质量和边界诚实同时纳入判断：本地可靠消息和治理链路是已验证优势；真实 IM、目标基础设施、跨后端迁移矩阵、正式容量与 GitHub 可复现入口是决定能否从“前列”升到“第一”的关键差距。任何未完成外部动作都应保持 `EXTERNAL_REQUIRED`，由证据而不是措辞决定状态。

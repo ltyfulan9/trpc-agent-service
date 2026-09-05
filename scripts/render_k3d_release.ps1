@@ -1,10 +1,10 @@
 [CmdletBinding()]
 param(
-    [string]$OutputDirectory = (Join-Path $PSScriptRoot '..\deploy\kubernetes\releases\v14-k3d-20260905'),
+    [string]$OutputDirectory = (Join-Path $PSScriptRoot '..\deploy\kubernetes\releases\platform-k3d-20260905'),
     [ValidateSet('bootstrap', 'compatible')]
     [string]$SchemaClass = 'bootstrap',
     [ValidatePattern('^[^\r\n\x00]{1,256}$')]
-    [string]$MeshEvidence = 'k3d-trpc-v13-linkerd-edge-26.8.4-all-authenticated-20260905',
+    [string]$MeshEvidence = 'k3d-agent-platform-linkerd-edge-20260905',
     [Parameter(Mandatory)][ValidatePattern('^sha256:[a-f0-9]{64}$')]
     [string]$GatewayDigest
 )
@@ -141,16 +141,16 @@ foreach ($supportFile in 'network-policies.yaml', 'k3d-validation-prerequisites.
 }
 
 $readme = @'
-# V14 K3d validation release
+# Enterprise Multi-Tenant Agent Platform K3d validation release
 
 Generated from the checked-in Kubernetes baselines by `scripts/render_k3d_release.ps1`.
 
 - Scope: local three-node K3d evidence only; this is not a production certification.
 - Schema class: `__SCHEMA_CLASS__`.
-- Images: immutable digests in the in-cluster `trpc-v13-registry:5000/v14` repository.
+- Images: immutable digests in the in-cluster repository; the recorded registry path is retained as historical lab evidence.
 - Transport: Linkerd mesh mode, bound to evidence `__MESH_EVIDENCE__`.
 - Storage: isolated in-namespace PostgreSQL and Redis with explicit local-only insecure transport flags.
-- Secrets: generated at runtime by `scripts/run_k3d_v14_validation.ps1`; no credential values are stored here.
+- Secrets: generated at runtime by `scripts/run_k3d_validation.ps1`; no credential values are stored here.
 
 The eight release inputs are `migration.yaml`, `profiles.yaml`,
 `availability-policies.yaml`, `worker.yaml`, `summary.yaml`, `pipeline.yaml`,

@@ -68,10 +68,10 @@ func (t *Target) Upsert(ctx context.Context, tenantID string, domain datamigrati
 	}
 	for _, record := range records {
 		result, err := tx.ExecContext(ctx, `INSERT INTO data_migration_records
-			(tenant_id,domain,record_key,payload,version,content_hash,deleted,projected_at,updated_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,NULL,clock_timestamp())
-			ON CONFLICT (tenant_id,domain,record_key) DO NOTHING`,
-			tenantID, domain, record.Key, record.Payload, record.Version, record.Hash, record.Deleted)
+			(tenant_id,domain,record_key,migration_id,payload,version,content_hash,deleted,projected_at,updated_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULL,clock_timestamp())
+			ON CONFLICT (tenant_id,domain,record_key,migration_id) DO NOTHING`,
+			tenantID, domain, record.Key, fence.MigrationID, record.Payload, record.Version, record.Hash, record.Deleted)
 		if err != nil {
 			return fmt.Errorf("reserve projection record %q: %w", record.Key, err)
 		}
@@ -86,8 +86,8 @@ func (t *Target) Upsert(ctx context.Context, tenantID string, domain datamigrati
 			var existingDeleted bool
 			var projectedAt sql.NullTime
 			if err := tx.QueryRowContext(ctx, `SELECT version,content_hash,deleted,projected_at FROM data_migration_records
-				WHERE tenant_id=$1 AND domain=$2 AND record_key=$3 FOR UPDATE`,
-				tenantID, domain, record.Key).Scan(&existingVersion, &existingHash, &existingDeleted, &projectedAt); err != nil {
+				WHERE tenant_id=$1 AND domain=$2 AND record_key=$3 AND migration_id=$4 FOR UPDATE`,
+				tenantID, domain, record.Key, fence.MigrationID).Scan(&existingVersion, &existingHash, &existingDeleted, &projectedAt); err != nil {
 				return fmt.Errorf("read existing projection record %q: %w", record.Key, err)
 			}
 			switch {
@@ -100,9 +100,9 @@ func (t *Target) Upsert(ctx context.Context, tenantID string, domain datamigrati
 				shouldApply = !projectedAt.Valid
 			default:
 				result, err = tx.ExecContext(ctx, `UPDATE data_migration_records
-					SET payload=$4,version=$5,content_hash=$6,deleted=$7,projected_at=NULL,updated_at=clock_timestamp()
-					WHERE tenant_id=$1 AND domain=$2 AND record_key=$3`,
-					tenantID, domain, record.Key, record.Payload, record.Version, record.Hash, record.Deleted)
+					SET payload=$5,version=$6,content_hash=$7,deleted=$8,projected_at=NULL,updated_at=clock_timestamp()
+					WHERE tenant_id=$1 AND domain=$2 AND record_key=$3 AND migration_id=$4`,
+					tenantID, domain, record.Key, fence.MigrationID, record.Payload, record.Version, record.Hash, record.Deleted)
 				if err != nil {
 					return fmt.Errorf("advance projection record %q: %w", record.Key, err)
 				}
@@ -120,8 +120,8 @@ func (t *Target) Upsert(ctx context.Context, tenantID string, domain datamigrati
 			return fmt.Errorf("apply %s projection %q: %w", domain, record.Key, err)
 		}
 		result, err = tx.ExecContext(ctx, `UPDATE data_migration_records SET projected_at=clock_timestamp(),updated_at=clock_timestamp()
-			WHERE tenant_id=$1 AND domain=$2 AND record_key=$3 AND version=$4 AND content_hash=$5 AND deleted=$6 AND projected_at IS NULL`,
-			tenantID, domain, record.Key, record.Version, record.Hash, record.Deleted)
+			WHERE tenant_id=$1 AND domain=$2 AND record_key=$3 AND migration_id=$4 AND version=$5 AND content_hash=$6 AND deleted=$7 AND projected_at IS NULL`,
+			tenantID, domain, record.Key, fence.MigrationID, record.Version, record.Hash, record.Deleted)
 		if err != nil {
 			return fmt.Errorf("mark projection record %q: %w", record.Key, err)
 		}

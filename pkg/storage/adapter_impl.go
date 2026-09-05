@@ -342,6 +342,20 @@ func (m *MultiTenantStorageAdapterImpl) healthCheckConfiguredTenants(ctx context
 func (m *MultiTenantStorageAdapterImpl) probeConfiguredTenants(ctx context.Context) error {
 	tenants, err := m.configuredTenants(ctx)
 	if err == nil {
+		// Readiness is a node/dependency signal, not a synchronous fan-out over
+		// every tenant. Once the active set exceeds the bounded backend cache,
+		// probing all tenants would deterministically saturate the cache and
+		// make healthy workers fail readiness. Tenant-specific health is checked
+		// on acquisition and exposed through routing/circuit-breaker state.
+		active := 0
+		for _, configured := range tenants {
+			if configured != nil && configured.Status == tenant.TenantStatusActive {
+				active++
+			}
+		}
+		if active > m.maxEntries {
+			return nil
+		}
 		for _, configured := range tenants {
 			if configured == nil || configured.Status != tenant.TenantStatusActive {
 				continue
@@ -518,7 +532,7 @@ func (m *MultiTenantStorageAdapterImpl) getOrInitBackend(ctx context.Context, t 
 	var evicted []*backendInstance
 	if len(m.tenantBackends)+len(m.initializing) >= m.maxEntries {
 		for key, candidate := range m.tenantBackends {
-			if candidate.refs == 0 && !now.Before(candidate.lastUsed.Add(m.idleTTL)) {
+			if candidate.refs == 0 {
 				candidate.retiring = true
 				delete(m.tenantBackends, key)
 				evicted = append(evicted, candidate)

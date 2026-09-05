@@ -31,7 +31,7 @@
 
 ## 3. 零调用 Preflight
 
-Windows 本地企微沙箱已有一条不覆盖 V13、且不把秘密写入源码的固定流程：
+Windows 本地企微沙箱已有一条与既有本地服务隔离、且不把秘密写入源码的固定流程：
 
 ```powershell
 # 1. 启动固定 digest 的临时 HTTPS Quick Tunnel，得到 .../webhook 基础 URL
@@ -42,11 +42,11 @@ Windows 本地企微沙箱已有一条不覆盖 V13、且不把秘密写入源�
 
 Windows setup 的 UserID 可以直接填写通讯录“账号”；如果通讯录列表不显示账号，UserID 留空，随后按提示输入该成员手机号。脚本会在本机用 App Secret 调用企业微信 `getuserid`，只保存解析结果，不输出手机号、Token 或 Secret。
 
-# 3. 在独立端口启动 trpc-v14-wecom Compose 项目，创建租户、发布版本并复检公网入口
+# 3. 在独立端口启动 trpc-platform-wecom Compose 项目，创建租户、发布版本并复检公网入口
 & .\scripts\wecom_sandbox_bootstrap.ps1
 ```
 
-第一步只启动临时 Tunnel。第二步不会调用模型 Provider；如果 UserID 留空，setup 会调用企业微信 `gettoken`/`getuserid` 仅解析一次测试成员账号。第三步会构建/启动本地服务并写本地控制面，但仍不发送模型请求。临时 Tunnel 只用于验收，URL 会随容器重建变化，不能当生产域名。三个脚本把真实值留在被 gitignore 排除的 `deploy/.env.wecom.local`；归档前必须再次确认该文件未被收集。V13 默认端口仍可保持运行，企微沙箱使用 15432/14317/14318/18080/18081/19095/13000。
+第一步只启动临时 Tunnel。第二步不会调用模型 Provider；如果 UserID 留空，setup 会调用企业微信 `gettoken`/`getuserid` 仅解析一次测试成员账号。第三步会构建/启动本地服务并写本地控制面，但仍不发送模型请求。临时 Tunnel 只用于验收，URL 会随容器重建变化，不能当生产域名。三个脚本把真实值留在被 gitignore 排除的 `deploy/.env.wecom.local`；归档前必须再次确认该文件未被收集。既有本地服务可保持运行，企微沙箱使用 15432/14317/14318/18080/18081/19095/13000。
 
 把真实凭据通过临时进程环境或 Secret Manager 注入；不要写入 `.env`、脚本参数、PowerShell 历史、CI 日志或截图。需要的变量名：
 

@@ -1482,7 +1482,7 @@ func (w *Worker) buildSummarySchedule(ctx context.Context, req *Request) *summar
 	if err != nil || value == nil || value.AppName != w.appName || value.UserID != req.SessionOwnerID || value.ID != req.SessionID {
 		return request
 	}
-	if count := value.GetEventCount(); count > 0 {
+	if count := value.GetEventCount(); count > 0 && count != 1000 {
 		request.TargetEventSequence = int64(count)
 	}
 	return request
@@ -1830,7 +1830,17 @@ func resolveModelCredential(ctx context.Context, config *tenant.ModelConfig, t *
 		if resolver == nil {
 			return nil, fmt.Errorf("model credential resolver is required")
 		}
-		credential, err := resolver.Resolve(ctx, tenant.SecretRef(config.APIKeyRef))
+		var credential []byte
+		var err error
+		if t != nil {
+			scoped, ok := resolver.(tenant.TenantSecretResolver)
+			if !ok {
+				return nil, fmt.Errorf("tenant-scoped model credential authorization is required")
+			}
+			credential, err = scoped.ResolveForTenant(ctx, t.ID, config.Provider, config.ModelName, "model", tenant.SecretRef(config.APIKeyRef))
+		} else {
+			credential, err = resolver.Resolve(ctx, tenant.SecretRef(config.APIKeyRef))
+		}
 		if err != nil {
 			return nil, fmt.Errorf("model credential resolution failed: %s", telemetry.StableErrorCode(err))
 		}

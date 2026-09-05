@@ -9,6 +9,7 @@ import (
 	"log"
 	"mime"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 
@@ -211,6 +212,13 @@ func registerControlPlaneRoutes(
 				http.Error(w, "outboxId and reason are required", http.StatusBadRequest)
 				return
 			}
+			// An interface containing a nil *PostgresStore/*MemoryStore is not
+			// itself nil. Reject it before the capability assertion/invocation so
+			// a bad startup wiring cannot turn an operator request into a panic.
+			if isNilReliableStore(stores[0]) {
+				http.Error(w, "tenant-scoped outbox replay is unavailable", http.StatusServiceUnavailable)
+				return
+			}
 			replayer, ok := stores[0].(reliable.TenantScopedOutboxReplayer)
 			if !ok {
 				http.Error(w, "tenant-scoped outbox replay is unavailable", http.StatusServiceUnavailable)
@@ -307,6 +315,19 @@ func registerControlPlaneRoutes(
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
 	})
+}
+
+func isNilReliableStore(store reliable.Store) bool {
+	if store == nil {
+		return true
+	}
+	v := reflect.ValueOf(store)
+	switch v.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Ptr, reflect.Slice:
+		return v.IsNil()
+	default:
+		return false
+	}
 }
 
 func safeApprovalChallengesForTenant(challenges []governance.ApprovalChallenge, tenantID string) []map[string]interface{} {
@@ -449,6 +470,22 @@ func validateVersionSnapshotWithCatalog(
 	}
 	if configuredModel == nil {
 		return fmt.Errorf("version references a model not configured for this tenant")
+	}
+	// The immutable snapshot may not substitute a different credential handle
+	// for the tenant's operator-selected model binding.
+	if snapshot.Model.APIKeyRef != configuredModel.APIKeyRef {
+		return fmt.Errorf("version model credential reference does not match tenant binding")
+	}
+	if configuredModel.APIKeyRef != "" {
+		authorizer, ok := tenants.(interface {
+			AuthorizeModelSecretRef(context.Context, string, string, string, tenant.SecretRef) error
+		})
+		if !ok {
+			return fmt.Errorf("version model credential binding authorization is unavailable")
+		}
+		if err := authorizer.AuthorizeModelSecretRef(ctx, tenantID, configuredModel.Provider, configuredModel.ModelName, tenant.SecretRef(configuredModel.APIKeyRef)); err != nil {
+			return fmt.Errorf("version model credential binding is not authorized")
+		}
 	}
 	if requireCatalog {
 		if err := tenant.ValidateProductionModelCatalog(snapshot.Agent, snapshot.Model); err != nil {

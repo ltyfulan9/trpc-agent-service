@@ -10,6 +10,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -348,6 +349,26 @@ func TestStorageHealthCheckProbesConfiguredColdTenants(t *testing.T) {
 	}
 	if got := builds.Load(); got != 1 {
 		t.Fatalf("readiness probe rebuilt backend inside TTL: builds=%d", got)
+	}
+}
+
+func TestStorageHealthCheckDoesNotFanOutBeyondCacheCapacity(t *testing.T) {
+	tenants := make([]*tenant.Tenant, 129)
+	for i := range tenants {
+		tenants[i] = testStorageTenant(fmt.Sprintf("tenant-%03d", i), "inmemory")
+		tenants[i].Status = tenant.TenantStatusActive
+	}
+	adapter := NewMultiTenantStorageAdapterImplWithOptions(StorageCacheOptions{
+		ConfiguredTenants: func(context.Context) ([]*tenant.Tenant, error) { return tenants, nil },
+	})
+	defer adapter.Close()
+	if err := adapter.HealthCheck(context.Background()); err != nil {
+		t.Fatalf("large tenant set poisoned node readiness: %v", err)
+	}
+	adapter.mu.RLock()
+	defer adapter.mu.RUnlock()
+	if len(adapter.tenantBackends) != 0 {
+		t.Fatalf("readiness fan-out initialized %d tenant backends", len(adapter.tenantBackends))
 	}
 }
 

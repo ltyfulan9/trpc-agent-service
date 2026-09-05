@@ -86,6 +86,37 @@ func TestNewEnvSecretResolverRequiresScopedPrefix(t *testing.T) {
 	}
 }
 
+func TestEnvSecretResolverAuthorizesExactTenantBinding(t *testing.T) {
+	resolver, err := NewEnvSecretResolver("TRPC_SECRET_")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := SecretRef("env://TRPC_SECRET_OPENAI_A")
+	binding := secretBindingName("tenant-a", "model", "openai", "gpt-4")
+	resolver.lookupEnv = func(name string) (string, bool) {
+		if name == binding {
+			return string(ref), true
+		}
+		if name == "TRPC_SECRET_OPENAI_A" {
+			return "operator-value", true
+		}
+		return "", false
+	}
+	if err := resolver.AuthorizeForTenant(context.Background(), "tenant-a", "openai", "gpt-4", "model", ref); err != nil {
+		t.Fatalf("authorized binding rejected: %v", err)
+	}
+	if got, err := resolver.ResolveForTenant(context.Background(), "tenant-a", "openai", "gpt-4", "model", ref); err != nil || string(got) != "operator-value" {
+		t.Fatalf("same-tenant resolve got %q err=%v", got, err)
+	}
+	if _, err := resolver.ResolveForTenant(context.Background(), "tenant-b", "openai", "gpt-4", "model", ref); !errors.Is(err, ErrSecretUnavailable) {
+		t.Fatalf("foreign tenant resolve error=%v, want unavailable", err)
+	}
+	// Punctuation variants must not share a binding key.
+	if secretBindingName("tenant-a", "model", "openai", "gpt-4") == secretBindingName("tenant_a", "model", "openai", "gpt-4") {
+		t.Fatal("binding key collides for punctuation variants")
+	}
+}
+
 func TestValidateConfigAcceptsAPIKeyRefAndRejectsBothForms(t *testing.T) {
 	config := validConfig()
 	config.Models[0].APIKey = ""

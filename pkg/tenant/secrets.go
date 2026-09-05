@@ -9,6 +9,8 @@ package tenant
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -50,6 +52,21 @@ var (
 // them as soon as the downstream SDK has copied the credential.
 type SecretResolver interface {
 	Resolve(context.Context, SecretRef) ([]byte, error)
+}
+
+// TenantSecretResolver is the authorization-aware runtime boundary for
+// tenant credentials. Implementations must verify the operator binding for
+// the tenant, provider/model and purpose before returning a value.
+type TenantSecretResolver interface {
+	SecretResolver
+	ResolveForTenant(context.Context, string, string, string, string, SecretRef) ([]byte, error)
+}
+
+// TenantSecretBindingAuthorizer checks an operator-owned binding without
+// materializing its secret. Control-plane admission uses this capability to
+// reject an unauthorized reference before a version can be published.
+type TenantSecretBindingAuthorizer interface {
+	AuthorizeForTenant(context.Context, string, string, string, string, SecretRef) error
 }
 
 // EnvSecretResolver resolves env://NAME references from secrets injected into
@@ -96,6 +113,61 @@ func (r *EnvSecretResolver) Resolve(ctx context.Context, ref SecretRef) ([]byte,
 		return nil, ErrSecretUnavailable
 	}
 	return []byte(secret), nil
+}
+
+// ResolveForTenant enforces an operator-owned binding before resolving the
+// value. Bindings are non-secret environment entries named
+// TRPC_SECRET_BINDING_<sha256> and contain the exact env:// reference allowed
+// for that scope. This keeps the secret value out of tenant configuration and
+// prevents cross-tenant reference reuse or punctuation-based key collisions.
+func (r *EnvSecretResolver) ResolveForTenant(ctx context.Context, tenantID, provider, model, purpose string, ref SecretRef) ([]byte, error) {
+	if err := r.AuthorizeForTenant(ctx, tenantID, provider, model, purpose, ref); err != nil {
+		return nil, err
+	}
+	return r.Resolve(ctx, ref)
+}
+
+// AuthorizeForTenant verifies the exact operator binding for a tenant and
+// purpose. The binding key is a digest of length-delimited fields, avoiding
+// collisions from punctuation replacement (for example "a-b" vs "a_b").
+func (r *EnvSecretResolver) AuthorizeForTenant(ctx context.Context, tenantID, provider, model, purpose string, ref SecretRef) error {
+	if tenantID == "" || provider == "" || model == "" || purpose == "" {
+		return ErrInvalidSecretRef
+	}
+	if r == nil || r.lookupEnv == nil {
+		return ErrSecretUnavailable
+	}
+	if err := ref.Validate(); err != nil {
+		return err
+	}
+	bindingName := secretBindingName(tenantID, purpose, provider, model)
+	bound, ok := r.lookupEnv(bindingName)
+	if !ok || bound != string(ref) {
+		return ErrSecretUnavailable
+	}
+	if ctx != nil {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+	}
+	return nil
+}
+
+func secretBindingName(tenantID, purpose, provider, model string) string {
+	// Length prefixes make the tuple unambiguous before hashing and keep the
+	// resulting environment variable within a stable, bounded name.
+	value := fmt.Sprintf("%d:%s|%d:%s|%d:%s|%d:%s", len(tenantID), tenantID, len(purpose), purpose, len(provider), provider, len(model), model)
+	digest := sha256.Sum256([]byte(value))
+	return "TRPC_SECRET_BINDING_" + strings.ToUpper(hex.EncodeToString(digest[:]))
+}
+
+// SecretBindingEnvironmentName returns the operator binding variable name for
+// a tenant-scoped reference. The returned name is safe to log; only its value
+// must remain secret.
+func SecretBindingEnvironmentName(tenantID, purpose, provider, model string) string {
+	return secretBindingName(tenantID, purpose, provider, model)
 }
 
 func validEnvPrefix(prefix string) bool {

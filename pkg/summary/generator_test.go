@@ -2,6 +2,8 @@ package summary
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -168,5 +170,23 @@ func TestTRPCSessionTargetResolverReadsAuthoritativeEventCount(t *testing.T) {
 	})
 	if err != nil || sequence != 4 {
 		t.Fatalf("resolved sequence=%d err=%v", sequence, err)
+	}
+}
+
+func TestTRPCSessionReaderFailsClosedOnDefaultWindowTruncation(t *testing.T) {
+	key := summaryKey()
+	stored := session.NewSession("tsa1:8:tenant-a:support", key.SessionOwnerID, key.SessionID)
+	for i := 1; i <= 1000; i++ {
+		stored.Events = append(stored.Events, event.Event{ID: fmt.Sprintf("event-%04d", i)})
+	}
+	reader, err := NewTRPCSessionTranscriptReader(staticSessionGetter{value: stored}, func(Key) (string, error) {
+		return stored.AppName, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = reader.ReadTranscript(context.Background(), key, 1000)
+	if !errors.Is(err, ErrTranscriptIncomplete) {
+		t.Fatalf("truncated default window err=%v, want ErrTranscriptIncomplete", err)
 	}
 }

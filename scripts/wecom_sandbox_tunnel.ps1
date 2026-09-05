@@ -9,7 +9,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$containerName = 'trpc-v14-wecom-tunnel'
+$containerName = 'trpc-platform-wecom-tunnel'
 $image = 'cloudflare/cloudflared@sha256:e39ee8da81ad5e05d77f38d2f51c60ca51bf2a8450ac3abab50c17fdb91d91bf'
 
 function Protect-LocalEnvFile {

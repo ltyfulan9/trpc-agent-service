@@ -192,7 +192,7 @@ KnowledgeDocument: tenant_id + kb_id + document_id + object_uri + vector_version
 Artifact: tenant_id + session_id + artifact_id + object_key + content_hash + metadata
 ```
 
-- SQL 保存租户、ACL、版本和 Artifact 对象元数据；向量内容进入 Qdrant。V14 的 Qdrant 物理 ID 是 tenant/app/logical document ID 的稳定 SHA-256，保留 scope metadata 不能由用户覆盖。
+- SQL 保存租户、ACL、版本和 Artifact 对象元数据；向量内容进入 Qdrant。Qdrant 物理 ID 是 tenant/app/logical document ID 的稳定 SHA-256，保留 scope metadata 不能由用户覆盖。
 - Artifact 对象存储 key 对 tenant/app/user/session/filename 分段做 base64url 编码并包含不可变版本；读取同时校验 SQL size 和 SHA-256。对外下载若后续开放，必须使用短 TTL 签名 URL 并审计访问主体。
 - Memory 在 Redis/PostgreSQL 提交后跨节点可见；向量检索是最终一致，不能把 PostgreSQL 全文检索称为语义向量检索。
 

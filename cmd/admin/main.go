@@ -56,6 +56,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("configure storage backend profiles: error=%s", telemetry.StableErrorCode(err))
 	}
+	secretResolver, err := tenant.NewEnvSecretResolver("TRPC_SECRET_")
+	if err != nil {
+		log.Fatalf("configure secret resolver: error=%s", telemetry.StableErrorCode(err))
+	}
 	dataPlaneProfiles, err := runtimeplane.LoadProfileValidator(requireEnv("DATA_PLANE_PROFILES"))
 	if err != nil {
 		log.Fatalf("configure runtime data-plane profiles: error=%s", telemetry.StableErrorCode(err))
@@ -93,6 +97,7 @@ func main() {
 			}
 			return dataPlaneProfiles.ValidateTenantStorage(tenantID, config)
 		}),
+		tenant.WithSecretResolver(secretResolver),
 	)
 	if err != nil {
 		log.Fatalf("configure tenant encryption: error=%s", telemetry.StableErrorCode(err))
