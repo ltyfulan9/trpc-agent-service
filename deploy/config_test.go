@@ -742,24 +742,6 @@ func TestWeComSandboxScriptsProtectCredentialsAndPinModelSecretRef(t *testing.T)
 	if strings.Contains(requiredBlock, "TRPC_SECRET_OPENAI_API_KEY") {
 		t.Error("bootstrap requires a model key even though its callback preflight makes zero provider calls")
 	}
-	for _, required := range []string{
-		"WECOM_MODEL_PROVIDER", "WECOM_MODEL_NAME", "WECOM_MODEL_ENDPOINT",
-		"$versionSnapshot.model.endpoint = $modelEndpoint",
-	} {
-		if !strings.Contains(bootstrap, required) {
-			t.Errorf("bootstrap does not propagate configurable model field %q", required)
-		}
-	}
-	setup := readScript("wecom_sandbox_setup.ps1")
-	for _, required := range []string{
-		"WECOM_MODEL_PROVIDER", "WECOM_MODEL_NAME", "WECOM_MODEL_ENDPOINT",
-		"custom model endpoints are disabled",
-		"currently supports only the operator-installed openai provider",
-	} {
-		if !strings.Contains(setup, required) {
-			t.Errorf("Windows setup is missing model field validation %q", required)
-		}
-	}
 
 	preflight := readScript("external_acceptance_preflight.ps1")
 	for _, required := range []string{

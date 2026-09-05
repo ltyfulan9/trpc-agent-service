@@ -124,13 +124,8 @@ $required = @(
 foreach ($key in $required) {
     $null = Require-Value $values $key
 }
-$modelProvider = if ($values.Contains('WECOM_MODEL_PROVIDER') -and $values['WECOM_MODEL_PROVIDER']) { [string]$values['WECOM_MODEL_PROVIDER'] } else { 'openai' }
-$modelName = if ($values.Contains('WECOM_MODEL_NAME') -and $values['WECOM_MODEL_NAME']) { [string]$values['WECOM_MODEL_NAME'] } else { 'gpt-4o-mini' }
-$modelEndpoint = if ($values.Contains('WECOM_MODEL_ENDPOINT')) { [string]$values['WECOM_MODEL_ENDPOINT'] } else { '' }
-if ($modelProvider -notmatch '^[A-Za-z0-9_.-]{1,64}$') { throw 'WECOM_MODEL_PROVIDER has an invalid shape' }
-if ($modelProvider -ne 'openai') { throw 'WECOM_MODEL_PROVIDER must be openai; custom providers are not installed' }
-if ($modelName -notmatch '^[A-Za-z0-9_.:@/-]{1,128}$') { throw 'WECOM_MODEL_NAME has an invalid shape' }
-if ($modelEndpoint) { throw 'WECOM_MODEL_ENDPOINT must be empty; custom endpoints are not installed with an SSRF-safe transport' }
+$modelProvider = 'openai'
+$modelName = 'gpt-4o-mini'
 foreach ($entry in $values.GetEnumerator()) {
     [Environment]::SetEnvironmentVariable($entry.Key, [string]$entry.Value, 'Process')
 }
@@ -180,7 +175,6 @@ if (-not $tenantID) {
         maxTokens = 512
         temperature = 0.2
     }
-    if ($modelEndpoint) { $model.endpoint = $modelEndpoint }
     $binding = [ordered]@{
         accountId = "wecom-$($values['WECOM_AGENT_ID'])"
         webhookKey = [string]$values['TRPC_WEBHOOK_ROUTE_KEY']
@@ -253,7 +247,6 @@ if (-not $versionID) {
             maxTokens = 512; temperature = 0.2
         }
     }
-    if ($modelEndpoint) { $versionSnapshot.model.endpoint = $modelEndpoint }
     $version = Invoke-AdminJSON -Method POST -Path '/api/v1/agent-versions' -Body ([ordered]@{
         tenantId = $tenantID
         appName = 'support'

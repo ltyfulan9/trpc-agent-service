@@ -61,10 +61,8 @@ WECOM_CORP_ID
 WECOM_AGENT_ID
 ```
 
-企微沙箱向导保存 `WECOM_MODEL_PROVIDER` 和 `WECOM_MODEL_NAME`，当前 Provider
-必须是已安装的 `openai`，默认模型为 `gpt-4o-mini`。`WECOM_MODEL_ENDPOINT` 必须留空；
-自定义 Endpoint 仍被控制面拒绝，直到部署方提供经过评审的 SSRF-safe transport、
-DNS 重解析防护和出网 allowlist。
+企微沙箱使用已安装的 `openai` Provider 和 `gpt-4o-mini` 模型。模型密钥只保存在
+被忽略的本地环境文件中，不写入源码或交付包。
 
 只做格式、公开 URL 和可选 TLS 探针，不调用 Telegram/企业微信：
 
