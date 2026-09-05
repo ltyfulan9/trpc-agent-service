@@ -1,0 +1,62 @@
+trpc-agent-enterprise-v14 checkpoint source package
+
+Included:
+- cmd/                 Go service and job entrypoints
+- pkg/                 multi-tenant control/data planes, channels, governance,
+                       telemetry, reliable pipeline and migration projections
+- migrations/          versioned PostgreSQL schema migrations
+- deploy/              Compose, Kubernetes and monitoring templates
+- scripts/             validation and external-acceptance helpers
+- test/                unit/integration evidence harnesses
+- docs/                architecture, acceptance, security and risk documents
+- .github/workflows/   reproducible CI gates
+- README.md, HANDOFF.md, PACKAGE_MANIFEST.md, LICENSE, go.mod, go.sum
+- TRPC_AGENT_ENTERPRISE_HANDOFF_V14_FINAL.md
+
+V14 closure included in this checkpoint:
+- Production Summary Generator persistence and real Runner reinjection proof.
+- Qdrant Knowledge and PostgreSQL/MinIO Artifact data planes.
+- Versioned vector/object/session migration projections with durable ledger,
+  fencing, idempotent catch-up, validation and rollback-window semantics.
+- A real tRPC Session Redis-to-PostgreSQL vertical slice covering session state,
+  ordered events and tracks through public framework service contracts.
+- Operator-owned MCP profiles over the official tRPC-Agent-Go ToolSet, with an
+  actual local Streamable HTTP Worker/Runner/governance vertical slice.
+- WeCom/Telegram adapters, encrypted callback verification, Inbox/Outbox,
+  tenant-scoped credentials, audit/telemetry and deployment manifests.
+- Windows/Bash WeCom sandbox helpers for a pinned temporary HTTPS tunnel,
+  hidden credential capture and isolated control-plane/bootstrap execution.
+
+Canonical reading order:
+1. docs/COMPETITION_SUBMISSION_V14.md
+2. docs/ACCEPTANCE_EVIDENCE_V14.md
+3. docs/DATA_MODEL.md
+4. docs/RISK_REGISTER_V14.md
+5. docs/SECURITY_REVIEW_V14.md
+6. TRPC_AGENT_ENTERPRISE_HANDOFF_V14_FINAL.md
+
+Excluded from the archive:
+- Git metadata and history
+- real .env files, local WeCom credentials and other secrets
+- binaries, coverage output, logs, caches and temporary files
+- Docker volumes/images and all user data outside this source tree
+
+Evidence boundary:
+- Local automated and real-backend evidence is recorded in the V14 acceptance
+  document. A real WeCom tenant callback, target-cluster rollout, target KMS/Vault
+  identity and target-environment load/DR exercises remain external evidence
+  until their dated acceptance records exist.
+
+2026-09-05 reproducibility note:
+- The current sanitized V14 source snapshot is 432 files and 3,128,319 bytes;
+  the final delivery inventory is authoritative after all edits.
+- The source tree intentionally has no `.env`. On Windows, run
+  `scripts/run_c_local_stack.ps1 -Build` to resolve the root from
+  `$PSScriptRoot`, use process-only validation values and isolated ports. A
+  direct Compose invocation without an env file must fail with a required
+  variable error; this is expected and keeps credentials out of the archive.
+- The full delivery bundle (outside this source tree) additionally contains
+  sanitized V13 and reference-service source, historical acceptance and
+  originality text evidence, and a redacted E-drive lab note. It excludes
+  Git metadata, credentials, databases, caches, certificates/private keys,
+  binaries, Docker data and nested archives.
