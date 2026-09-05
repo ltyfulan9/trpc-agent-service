@@ -62,7 +62,7 @@ Knowledge 的真实数据面测试使用真实 Qdrant/MinIO，但 embedding 请�
 | Fair queue capacity | 干净隔离 PostgreSQL：2200 Inbox/Outbox 完成，errors=0，quiet claim first position=2，max consecutive noisy=1 | 单机实验室基线，不是目标容量承诺 |
 | External IM | callback public health 200；无 route key 的 `/webhook` 返回 400；企微/Telegram 凭据均未配置 | 真实控制台登录、URL verify、消息回路仍 EXTERNAL_REQUIRED |
 
-容量基线的入口是 `scripts/test_local_capacity.ps1 -HarnessPath <Go harness>`；脚本负责创建一次性 C 盘/loopback PostgreSQL、迁移 schema、执行外部 harness 并清理容器。当前源码归档不包含该历史 harness，因此 `docs/LOCAL_PRODUCTION_VALIDATION_20260830.md` 中的 2,200 条结果是脱敏历史证据，不是从全新归档目录可直接重放的 benchmark。该脚本和结果均不覆盖模型吞吐、端到端 IM、HA 故障、生产 sizing、成本或 DR。
+容量基线的入口是 `scripts/test_local_capacity.ps1 -HarnessPath <Go harness>`；脚本负责创建一次性 C 盘/loopback PostgreSQL、迁移 schema、执行外部 harness 并清理容器。历史容量结果不随当前精简交付包提供，不能宣称从全新归档目录直接重放 benchmark。该脚本和结果均不覆盖模型吞吐、端到端 IM、HA 故障、生产 sizing、成本或 DR。
 
 ## 当前源码门禁
 

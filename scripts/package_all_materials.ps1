@@ -2,7 +2,6 @@
 param(
     [string]$RepoRoot = (Join-Path $PSScriptRoot '..'),
     [Parameter(Mandatory)][string]$WorkspaceRoot,
-    [Parameter(Mandatory)][string]$LegacyRoot,
     [Parameter(Mandatory)][string]$OutputRoot
 )
 
@@ -10,16 +9,14 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath($RepoRoot)
 $workspace = [IO.Path]::GetFullPath($WorkspaceRoot)
-$legacy = [IO.Path]::GetFullPath($LegacyRoot)
 $output = [IO.Path]::GetFullPath($OutputRoot)
-$packageName = 'trpc-agent-enterprise-v14-all-materials-20260905'
+$packageName = 'enterprise-multi-tenant-agent-platform-20260905'
 $staging = Join-Path $workspace "work\$packageName"
 $zipPath = Join-Path $output "$packageName.zip"
 $inventoryName = 'PACKAGE_INVENTORY_20260905.md'
 $checksumsName = 'SHA256SUMS_20260905.txt'
 
-if (-not (Test-Path -LiteralPath (Join-Path $repo 'go.mod'))) { throw 'V14 source root is not valid' }
-if (-not (Test-Path -LiteralPath $legacy)) { throw 'legacy root is not valid' }
+if (-not (Test-Path -LiteralPath (Join-Path $repo 'go.mod'))) { throw 'platform source root is not valid' }
 New-Item -ItemType Directory -Force -Path (Join-Path $workspace 'work'),$output | Out-Null
 if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $staging | Out-Null
@@ -47,6 +44,17 @@ function Copy-SafeTree([string]$Source,[string]$Destination,[string]$Label) {
             continue
         }
         $relative = $file.FullName.Substring($sourceFull.Length).TrimStart('\','/')
+        $normalized = $relative.Replace('\','/')
+        $historical = @(
+            'docs/*_V13.md', 'docs/LOCAL_PRODUCTION_VALIDATION_20260830.md',
+            'docs/REFERENCE_SERVICE_AUDIT.md', 'docs/REFERENCE_SERVICE_RECHECK_20260824.md',
+            'docs/MERGE_NOTES.md', 'TRPC_AGENT_ENTERPRISE_HANDOFF_V13.md',
+            'TRPC_AGENT_ENTERPRISE_HANDOFF_V14_CURRENT.md'
+        ) | Where-Object { $normalized -like $_ }
+        if ($historical) {
+            $excluded.Add("$Label/$normalized")
+            continue
+        }
         $target = Join-Path $Destination $relative
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
         Copy-Item -LiteralPath $file.FullName -Destination $target -Force
@@ -64,23 +72,6 @@ function Copy-SafeFile([string]$Source,[string]$Destination,[string]$Label) {
 }
 
 Copy-SafeTree $repo (Join-Path $staging 'v14-source') 'v14-source'
-Copy-SafeTree (Join-Path $legacy 'work\trpc-agent-enterprise-v13') (Join-Path $staging 'v13-source') 'v13-source'
-Copy-SafeTree (Join-Path $legacy 'work\trpc-agent-service-wangzilong') (Join-Path $staging 'reference-trpc-agent-service-wangzilong') 'reference-trpc-agent-service-wangzilong'
-Copy-SafeTree (Join-Path $legacy 'outputs\originality-evidence-wangzilong-20260830') (Join-Path $staging 'submission-materials\originality-evidence-wangzilong-20260830') 'submission-materials/originality-evidence-wangzilong-20260830'
-
-$legacyDocs = @(
-    'ACCEPTANCE_EVIDENCE_V13.md','ARCHITECTURE_V13.md','COMPETITION_SUBMISSION_V13.md',
-    'DATA_MODEL_V13.md','DELIVERABLE_INDEX_V13_20260830.md','DEMO_V13.md',
-    'DOCKER_DESKTOP_SAFE_START_README.md','EXTERNAL_ACCEPTANCE_RUNBOOK_V13.md',
-    'LOCAL_PRODUCTION_VALIDATION_20260830.md','PACKAGE_MANIFEST_V13.md','README_V13.md',
-    'RISK_REGISTER_V13.md','SECURITY_REVIEW_V13.md','SLO_V13.md','Start-DockerDesktopSafe.ps1',
-    'TRPC_AGENT_ENTERPRISE_HANDOFF_V13.md','TRPC_AGENT_ENTERPRISE_HANDOFF_V14_CURRENT.md',
-    'TRPC_AGENT_V13_DOCKER_AND_LIVE_ACCEPTANCE_20260829.md','VERIFICATION_V13.md',
-    'external_acceptance_preflight.ps1'
-)
-foreach ($name in $legacyDocs) {
-    Copy-SafeFile (Join-Path $legacy "outputs\$name") (Join-Path $staging "submission-materials\historical\$name") "submission-materials/historical/$name"
-}
 
 $evidenceDestination = Join-Path $staging 'verification-evidence'
 foreach ($file in Get-ChildItem -LiteralPath (Join-Path $workspace 'outputs') -Filter '*.log' -File -ErrorAction SilentlyContinue) {
@@ -90,8 +81,6 @@ foreach ($file in Get-ChildItem -LiteralPath (Join-Path $workspace 'outputs') -F
     $included.Add([pscustomobject]@{Path=("verification-evidence/$($file.Name)");Source=$file.FullName;Kind='evidence'})
 }
 Copy-SafeFile (Join-Path $workspace 'outputs\PROJECT_COMPLETION_SUMMARY_20260905.md') (Join-Path $staging 'delivery-summary\PROJECT_COMPLETION_SUMMARY_20260905.md') 'delivery-summary/PROJECT_COMPLETION_SUMMARY_20260905.md'
-Copy-SafeFile (Join-Path $legacy 'outputs\Start-DockerDesktopSafe.ps1') (Join-Path $staging 'docker-repair\Start-DockerDesktopSafe.ps1') 'docker-repair/Start-DockerDesktopSafe.ps1'
-Copy-SafeFile (Join-Path $legacy 'outputs\DOCKER_DESKTOP_SAFE_START_README.md') (Join-Path $staging 'docker-repair\README.md') 'docker-repair/README.md'
 
 # Never place a credential-bearing file in the package. Scan text before the
 # inventory is written so a failure cannot be hidden by a later archive step.
@@ -112,7 +101,7 @@ $sourceCount = $included.Count
 $sourceBytes = [long]0
 foreach ($item in $included) { $sourceBytes += (Get-Item -LiteralPath $item.Source).Length }
 $inventory = @(
-    '# V14 全量交付包清单',
+    '# Enterprise Multi-Tenant Agent Platform 交付包清单',
     '',
     "生成时间：$([DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss zzz'))",
     "包名：$packageName",
@@ -120,19 +109,15 @@ $inventory = @(
     '',
     '## 包含内容',
     '',
-    '- `v14-source/`：C 盘权威 V14 源码、测试、迁移、Compose/Kubernetes、验证脚本和全部 V14 文档。',
-    '- `v13-source/`：V13 源码快照，作为历史兼容和演进材料。',
-    '- `reference-trpc-agent-service-wangzilong/`：参考实现源码，不含 `.git`。',
-    '- `submission-materials/`：V13/V14 交接、竞赛、验收、安全、风险、原创性和历史材料；原创性 ZIP/BUNDLE 已做内容/历史扫描。',
+    '- `v14-source/`：C 盘权威平台源码、测试、迁移、Compose/Kubernetes、验证脚本和当前文档。',
     '- `verification-evidence/`：本轮脱敏验证日志（只含退出状态、拓扑和公开地址，不含凭据）。',
-    '- `docker-repair/`：可恢复 Docker safe-start 脚本及说明。',
     '',
     '## 排除内容',
     '',
     '- 所有真实 `.env`/`.env.*`（保留安全模板 `.env.example`），包括 `deploy/.env.wecom.local`。',
     '- Docker Desktop image、volume、数据库、socket、运行时目录、缓存和临时工作目录。',
     '- 私钥、证书/密钥文件、二进制、日志数据库和未审核的历史嵌套归档。',
-    '- E 盘实验室缓存、数据库 dump、证书、私钥、工具和运行时；V14 没有 E 盘依赖。',
+    '- E 盘实验室缓存、数据库 dump、证书、私钥、工具和运行时；平台没有 E 盘依赖。',
     '',
     '排除是为了防止凭据和运行时数据扩散，不代表源码或提交文档缺失。包内 `SHA256SUMS_20260905.txt` 覆盖除其自身外的每个文件。'
 )
