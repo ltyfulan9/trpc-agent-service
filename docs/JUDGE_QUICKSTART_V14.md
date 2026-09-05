@@ -57,6 +57,6 @@ Set-Location <V14 源码根目录>
 
 ## 五、提交前硬门禁
 
-V14 已发布到 [GitHub](https://github.com/ltyfulan9/trpc-agent-service/tree/v14-final)，固定发布标签为 `v14.0.4-final`；仓库默认分支是 `main`，V14 发布分支是 `v14-final`。评委可在全新目录执行 `git clone`、`git checkout v14.0.4-final`、`git rev-parse v14.0.4-final^{}`、`./scripts/validate.sh`、Compose config 和镜像构建。仓库保留 Apache-2.0 LICENSE、`.github/workflows/verify.yml` 和不含秘密的测试配置；真实企微回调仍按本页 `EXTERNAL_REQUIRED` 边界验收。
+V14 已发布到 [GitHub](https://github.com/ltyfulan9/trpc-agent-service/tree/v14-final)，固定发布标签为 `v14.0.5-final`；仓库默认分支是 `main`，V14 发布分支是 `v14-final`。评委可在全新目录执行 `git clone`、`git checkout v14.0.5-final`、`git rev-parse v14.0.5-final^{}`、`./scripts/validate.sh`、Compose config 和镜像构建。仓库保留 Apache-2.0 LICENSE、`.github/workflows/verify.yml` 和不含秘密的测试配置；真实企微回调仍按本页 `EXTERNAL_REQUIRED` 边界验收。
 
 最终评分时，应把实现质量和边界诚实同时纳入判断：本地可靠消息和治理链路是已验证优势；真实 IM、目标基础设施、跨后端迁移矩阵、正式容量与 GitHub 可复现入口是决定能否从“前列”升到“第一”的关键差距。任何未完成外部动作都应保持 `EXTERNAL_REQUIRED`，由证据而不是措辞决定状态。
