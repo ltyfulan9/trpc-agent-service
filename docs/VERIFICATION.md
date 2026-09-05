@@ -768,7 +768,7 @@ failover and production rollout remain separate acceptance work.
 The previous paragraphs are historical snapshots. This continuation started
 the infrastructure that those snapshots explicitly left open; exact scope and
 non-production boundaries are recorded in
-`docs/LOCAL_PRODUCTION_VALIDATION_20260830.md`.
+历史容量验证材料不包含在当前精简交付包中。
 
 Fresh source gates after the fair-queue and deployment fixes:
 
