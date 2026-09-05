@@ -826,7 +826,7 @@ against the old SQL and passes after the fix. The rebuilt Consumer was pushed
 and rolled out at:
 
 ```text
-trpc-v13-registry:5000/v13/consumer@sha256:1d7758cf8261681b2701fff78d6e6af746a474d4126b77094920533138f71208
+consumer image digest: sha256:1d7758cf8261681b2701fff78d6e6af746a474d4126b77094920533138f71208
 ```
 
 Two replicas were Ready with zero application/proxy restarts and explicit

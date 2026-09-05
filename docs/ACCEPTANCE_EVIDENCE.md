@@ -68,7 +68,7 @@ Knowledge 的真实数据面测试使用真实 Qdrant/MinIO，但 embedding 请�
 |---|---|---|
 | C 盘宿主 | Docker 29.7.2 恢复；safe-start 仅移动损坏 runtime 目录到可恢复备份，未删除 image/volume/database；C 盘仍约 35 GB 可用 | 仍需把 safe-start 纳入宿主机开机/重启运维流程 |
 | C-local Compose | `scripts/validate.sh` 10/10 全绿；7 个应用镜像逐个构建；真实 PG/Redis/Qdrant/MinIO integration 10.862s；Gateway/Admin 200、Prometheus 6/6、15 rules | 本地隔离验证，不是生产认证 |
-| K3d 本地 bootstrap/compatible | `agent-platform-v14` migration complete；17 个应用 Pod 及 PostgreSQL/Redis Ready；compatible migration 重放成功；3-node HPA metrics valid | `agent-platform-v14` 与 `k3d-trpc-v13` 是不可变实验室标识，仅用于复核，不是项目命名或目标集群 |
+| K3d 本地 bootstrap/compatible | 独立实验室 namespace 的 migration complete；17 个应用 Pod 及 PostgreSQL/Redis Ready；compatible migration 重放成功；3-node HPA metrics valid | 实验室 namespace/context/registry 是不可变复核标识，不是项目命名或目标集群 |
 | Linkerd identity | 带 identity 的 Consumer-labelled probe 到 Worker protected route 为应用 401；无 identity 的同请求为 Linkerd 403 | 本地 all-authenticated policy；不等于正式 strict mTLS/证书轮换 |
 | Gateway rollback | 当前镜像 digest → 历史镜像 digest → 原当前 digest 真实 rollout/restore 成功，3 replicas Ready | 只覆盖 Gateway image rollback，不覆盖全平台 breaking schema rollback |
 | Vault workload identity | 本地 dev Vault：绑定 `vault-client` 的 projected JWT 可读允许路径并被拒绝 forbidden path；错误 ServiceAccount 返回 403 | 不等于 HA/auto-unseal/cloud KMS |
