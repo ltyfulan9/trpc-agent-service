@@ -18,9 +18,10 @@
 
 ```text
 公开仓库：https://github.com/ltyfulan9/trpc-agent-service
-固定提交：65ace40
-发布标签：v14.0.0-final
-默认分支：v14-final
+固定发布标签：v14.0.1-final
+固定提交校验：`git rev-parse v14.0.1-final^{}`
+仓库默认分支：main
+V14 发布分支：v14-final
 许可证：Apache-2.0（见 LICENSE）
 ```
 
@@ -29,7 +30,7 @@
 ```bash
 git clone https://github.com/ltyfulan9/trpc-agent-service
 cd <repository>
-git checkout v14.0.0-final
+    git checkout v14.0.1-final
 ./scripts/validate.sh
 docker compose -f deploy/docker-compose.yml config
 ```
