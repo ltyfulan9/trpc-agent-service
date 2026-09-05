@@ -12,6 +12,9 @@ func TestResolveUsesExactOperatorApprovedModelIDs(t *testing.T) {
 		provider string
 		model    string
 	}{
+		{provider: "openai", model: "GPT-4"},
+		{provider: "openai", model: " gpt-4"},
+		{provider: "openai", model: "gpt-4 "},
 		{provider: "openai", model: "gpt-4-evil"},
 		{provider: "openai", model: "gpt-4o-mini-2026-01-01"},
 		{provider: "openai", model: "unknown"},

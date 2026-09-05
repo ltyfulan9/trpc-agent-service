@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/datamigration"
+	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/tenant"
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 )
@@ -69,6 +70,9 @@ func (p *SessionProjector) Domain() datamigration.Domain { return datamigration.
 func (p *SessionProjector) Apply(ctx context.Context, tenantID string, record datamigration.Record) error {
 	if p == nil || p.resolve == nil || p.maxEvents <= 0 {
 		return fmt.Errorf("%w: session projector", ErrInvalidProjection)
+	}
+	if err := tenant.ValidateTenantID(tenantID); err != nil {
+		return fmt.Errorf("%w: tenant", ErrInvalidProjection)
 	}
 	if err := record.Validate(); err != nil {
 		return err

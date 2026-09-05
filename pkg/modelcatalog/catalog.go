@@ -3,8 +3,6 @@
 // mutation interface and therefore cannot be weakened by tenant or plugin code.
 package modelcatalog
 
-import "strings"
-
 // Revision identifies the exact limit set embedded in an immutable Agent
 // version. Changing any context-window value requires a new revision.
 const Revision = "openai-2026-08-25.2"
@@ -31,17 +29,19 @@ var openAIProfiles = map[string]Profile{
 // Resolve accepts exact model IDs only. Versioned aliases require their own
 // reviewed catalog entry; arbitrary suffixes cannot inherit a hard limit.
 func Resolve(provider, modelName string) (Profile, bool) {
-	if strings.ToLower(strings.TrimSpace(provider)) != "openai" {
+	// Model IDs are opaque identifiers. Keep matching case- and
+	// whitespace-sensitive so unreviewed aliases cannot inherit another
+	// entry's limits and catalog revision.
+	if provider != "openai" {
 		return Profile{}, false
 	}
-	name := strings.ToLower(strings.TrimSpace(modelName))
-	limits, ok := openAIProfiles[name]
+	limits, ok := openAIProfiles[modelName]
 	if !ok {
 		return Profile{}, false
 	}
 	return Profile{
 		Provider:        "openai",
-		ModelID:         name,
+		ModelID:         modelName,
 		ContextWindow:   limits.ContextWindow,
 		MaxOutputTokens: limits.MaxOutputTokens,
 		Revision:        Revision,

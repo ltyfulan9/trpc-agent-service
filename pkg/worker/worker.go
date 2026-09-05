@@ -432,6 +432,15 @@ func NewWorkerWithOptionsContext(ctx context.Context, t *tenant.Tenant, storageA
 		return nil, fmt.Errorf("model %q is not configured for agent %q", agentConfig.DefaultModel, agentConfig.Name)
 	}
 	versioned := options.Agent != nil || options.Model != nil || options.VersionID != ""
+	if strictComposition {
+		// Production workers must independently enforce the immutable operator
+		// model catalog. The Admin publish gate is not sufficient protection
+		// against a stale, imported, or directly-mutated version row, and a
+		// zero-budget tenant would otherwise bypass catalog validation here.
+		if err := tenant.ValidateProductionModelCatalog(agentConfig, *modelConfig); err != nil {
+			return nil, fmt.Errorf("validate production model catalog: %w", err)
+		}
+	}
 	if versioned {
 		if err := tenant.ValidatePinnedAgentModelBudget(
 			agentConfig,

@@ -5,8 +5,8 @@ param(
     [string]$SchemaClass = 'bootstrap',
     [ValidatePattern('^[^\r\n\x00]{1,256}$')]
     [string]$MeshEvidence = 'k3d-trpc-v13-linkerd-edge-26.8.4-all-authenticated-20260905',
-    [ValidatePattern('^sha256:[a-f0-9]{64}$')]
-    [string]$GatewayDigest = 'sha256:72e209b7d2ba5b56baaa773ccc86b42b83a1ad79fb75ce7c2c457f0e68c11dff'
+    [Parameter(Mandatory)][ValidatePattern('^sha256:[a-f0-9]{64}$')]
+    [string]$GatewayDigest
 )
 
 Set-StrictMode -Version Latest

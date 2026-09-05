@@ -133,6 +133,16 @@ provisioning. The resolver must validate signature/issuer/audience/expiry and
 the mTLS identity before returning a server-side Principal. No client-supplied
 identity header is trusted by the platform.
 
+### P2 compatibility boundary: legacy session IDs
+
+The Inbox FIFO key is `(tenant, agent app, session_id)`. The production Gateway
+uses a canonical generator that encodes the direct-message subject or group
+conversation into `session_id`, so normal traffic does not merge users. Legacy
+or manually constructed requests can still reuse an ID across subjects and cause
+head-of-line blocking. This is not a cross-tenant data read, but it is an
+ordering/availability risk. Production ingress must reject legacy IDs; changing
+the durable partition key requires a new migration and a group-ordering drill.
+
 ## Changes made in this review pass
 
 1. **Credential binding**: new `enc:v2` envelopes bind AES-GCM authentication
