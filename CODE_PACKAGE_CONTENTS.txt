@@ -1,4 +1,4 @@
-trpc-agent-enterprise-v14 checkpoint source package
+Enterprise Multi-Tenant Agent Platform checkpoint source package
 
 Included:
 - cmd/                 Go service and job entrypoints
