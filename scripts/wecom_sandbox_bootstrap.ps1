@@ -128,8 +128,9 @@ $modelProvider = if ($values.Contains('WECOM_MODEL_PROVIDER') -and $values['WECO
 $modelName = if ($values.Contains('WECOM_MODEL_NAME') -and $values['WECOM_MODEL_NAME']) { [string]$values['WECOM_MODEL_NAME'] } else { 'gpt-4o-mini' }
 $modelEndpoint = if ($values.Contains('WECOM_MODEL_ENDPOINT')) { [string]$values['WECOM_MODEL_ENDPOINT'] } else { '' }
 if ($modelProvider -notmatch '^[A-Za-z0-9_.-]{1,64}$') { throw 'WECOM_MODEL_PROVIDER has an invalid shape' }
+if ($modelProvider -ne 'openai') { throw 'WECOM_MODEL_PROVIDER must be openai; custom providers are not installed' }
 if ($modelName -notmatch '^[A-Za-z0-9_.:@/-]{1,128}$') { throw 'WECOM_MODEL_NAME has an invalid shape' }
-if ($modelEndpoint -and $modelEndpoint -notmatch '^https://[^/?#]+(?:/[^?#]*)?$') { throw 'WECOM_MODEL_ENDPOINT must be an HTTPS URL without query or fragment' }
+if ($modelEndpoint) { throw 'WECOM_MODEL_ENDPOINT must be empty; custom endpoints are not installed with an SSRF-safe transport' }
 foreach ($entry in $values.GetEnumerator()) {
     [Environment]::SetEnvironmentVariable($entry.Key, [string]$entry.Value, 'Process')
 }

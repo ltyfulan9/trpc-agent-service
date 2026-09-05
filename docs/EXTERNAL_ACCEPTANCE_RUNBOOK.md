@@ -46,7 +46,7 @@ Windows setup 的 UserID 可以直接填写通讯录“账号”；如果通讯�
 & .\scripts\wecom_sandbox_bootstrap.ps1
 ```
 
-前两步不会调用企业微信 API 或模型 Provider；第三步会构建/启动本地服务并写本地控制面，但仍不发送模型请求。临时 Tunnel 只用于验收，URL 会随容器重建变化，不能当生产域名。三个脚本把真实值留在被 gitignore 排除的 `deploy/.env.wecom.local`；归档前必须再次确认该文件未被收集。V13 默认端口仍可保持运行，企微沙箱使用 15432/14317/14318/18080/18081/19095/13000。
+第一步只启动临时 Tunnel。第二步不会调用模型 Provider；如果 UserID 留空，setup 会调用企业微信 `gettoken`/`getuserid` 仅解析一次测试成员账号。第三步会构建/启动本地服务并写本地控制面，但仍不发送模型请求。临时 Tunnel 只用于验收，URL 会随容器重建变化，不能当生产域名。三个脚本把真实值留在被 gitignore 排除的 `deploy/.env.wecom.local`；归档前必须再次确认该文件未被收集。V13 默认端口仍可保持运行，企微沙箱使用 15432/14317/14318/18080/18081/19095/13000。
 
 把真实凭据通过临时进程环境或 Secret Manager 注入；不要写入 `.env`、脚本参数、PowerShell 历史、CI 日志或截图。需要的变量名：
 
@@ -61,11 +61,10 @@ WECOM_CORP_ID
 WECOM_AGENT_ID
 ```
 
-企微沙箱向导还会保存三个可选的模型运行参数：`WECOM_MODEL_PROVIDER`、
-`WECOM_MODEL_NAME` 和 `WECOM_MODEL_ENDPOINT`。Endpoint 只能填写无查询串/片段的
-HTTPS URL；它会同时写入租户模型和不可变版本快照。当前控制面仍默认拒绝自定义
-模型 Endpoint，直到部署方提供经过评审的 SSRF-safe transport、DNS 重解析防护和
-出网 allowlist；因此这些字段不会绕过生产安全门禁。
+企微沙箱向导保存 `WECOM_MODEL_PROVIDER` 和 `WECOM_MODEL_NAME`，当前 Provider
+必须是已安装的 `openai`，默认模型为 `gpt-4o-mini`。`WECOM_MODEL_ENDPOINT` 必须留空；
+自定义 Endpoint 仍被控制面拒绝，直到部署方提供经过评审的 SSRF-safe transport、
+DNS 重解析防护和出网 allowlist。
 
 只做格式、公开 URL 和可选 TLS 探针，不调用 Telegram/企业微信：
 

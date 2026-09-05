@@ -260,16 +260,15 @@ if [[ -z "$TRPC_WEBHOOK_ROUTE_KEY" ]]; then
   TRPC_WEBHOOK_ROUTE_KEY=$(random_urlsafe)
 fi
 require_match "$TRPC_WEBHOOK_ROUTE_KEY" '^[A-Za-z0-9_-]{32,128}$' "route key must be 32-128 URL-safe characters"
-ask WECOM_MODEL_PROVIDER "Model provider (openai-compatible; default openai):"
+ask WECOM_MODEL_PROVIDER "Model provider (openai only; custom endpoints disabled):"
 [[ -n "$WECOM_MODEL_PROVIDER" ]] || WECOM_MODEL_PROVIDER="openai"
 require_match "$WECOM_MODEL_PROVIDER" '^[A-Za-z0-9_.-]{1,64}$' "model provider must be 1-64 ASCII name characters"
+[[ "$WECOM_MODEL_PROVIDER" == "openai" ]] || fail "the WeCom sandbox currently supports only the operator-installed openai provider"
 ask WECOM_MODEL_NAME "Model name (for example gpt-4o-mini):"
 [[ -n "$WECOM_MODEL_NAME" ]] || WECOM_MODEL_NAME="gpt-4o-mini"
 require_match "$WECOM_MODEL_NAME" '^[A-Za-z0-9_.:@/-]{1,128}$' "model name contains unsupported characters"
-ask WECOM_MODEL_ENDPOINT "Model endpoint (optional, e.g. https://api.example.com/v1):"
-if [[ -n "$WECOM_MODEL_ENDPOINT" ]]; then
-  require_match "$WECOM_MODEL_ENDPOINT" '^https://[^/?#]+(/[^?#]*)?$' "model endpoint must be an HTTPS URL without query or fragment"
-fi
+ask WECOM_MODEL_ENDPOINT "Model endpoint (leave blank; custom endpoints disabled):"
+[[ -z "$WECOM_MODEL_ENDPOINT" ]] || fail "custom model endpoints are disabled until an SSRF-safe transport and egress allowlist are installed"
 
 stage "Local runtime secrets"
 say "The wizard also prepares fresh local-only platform keys needed by the Compose sandbox."

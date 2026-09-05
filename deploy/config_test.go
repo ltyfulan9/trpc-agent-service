@@ -753,7 +753,8 @@ func TestWeComSandboxScriptsProtectCredentialsAndPinModelSecretRef(t *testing.T)
 	setup := readScript("wecom_sandbox_setup.ps1")
 	for _, required := range []string{
 		"WECOM_MODEL_PROVIDER", "WECOM_MODEL_NAME", "WECOM_MODEL_ENDPOINT",
-		"model endpoint must be an HTTPS URL",
+		"custom model endpoints are disabled",
+		"currently supports only the operator-installed openai provider",
 	} {
 		if !strings.Contains(setup, required) {
 			t.Errorf("Windows setup is missing model field validation %q", required)

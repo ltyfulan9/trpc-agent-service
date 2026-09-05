@@ -194,14 +194,13 @@ if (-not $routeKey) {
     $routeKey = New-UrlSafeSecret
 }
 Assert-Match $routeKey '^[A-Za-z0-9_-]{32,128}$' 'route key must be 32-128 URL-safe characters'
-$modelProvider = Read-VisibleValue 'Model provider (openai-compatible)' (if ($values.Contains('WECOM_MODEL_PROVIDER')) { [string]$values['WECOM_MODEL_PROVIDER'] } else { 'openai' })
+$modelProvider = Read-VisibleValue 'Model provider (openai only; custom endpoints are disabled)' (if ($values.Contains('WECOM_MODEL_PROVIDER')) { [string]$values['WECOM_MODEL_PROVIDER'] } else { 'openai' })
 $modelName = Read-VisibleValue 'Model name (for example gpt-4o-mini)' (if ($values.Contains('WECOM_MODEL_NAME')) { [string]$values['WECOM_MODEL_NAME'] } else { 'gpt-4o-mini' })
-$modelEndpoint = Read-VisibleValue 'Model endpoint (optional, e.g. https://api.example.com/v1)' (if ($values.Contains('WECOM_MODEL_ENDPOINT')) { [string]$values['WECOM_MODEL_ENDPOINT'] } else { '' })
+$modelEndpoint = Read-VisibleValue 'Model endpoint (leave blank; custom endpoints are disabled)' (if ($values.Contains('WECOM_MODEL_ENDPOINT')) { [string]$values['WECOM_MODEL_ENDPOINT'] } else { '' })
 Assert-Match $modelProvider '^[A-Za-z0-9_.-]{1,64}$' 'model provider must be 1-64 ASCII name characters'
+if ($modelProvider -ne 'openai') { Fail-Setup 'the WeCom sandbox currently supports only the operator-installed openai provider' }
 Assert-Match $modelName '^[A-Za-z0-9_.:@/-]{1,128}$' 'model name contains unsupported characters'
-if ($modelEndpoint) {
-    Assert-Match $modelEndpoint '^https://[^/?#]+(?:/[^?#]*)?$' 'model endpoint must be an HTTPS URL without query or fragment'
-}
+if ($modelEndpoint) { Fail-Setup 'custom model endpoints are disabled until an SSRF-safe transport and egress allowlist are installed' }
 $providerKey = Read-HiddenValue 'OpenAI-compatible provider key (optional for URL verification)' ([string]$values['TRPC_SECRET_OPENAI_API_KEY'])
 
 $updates = [ordered]@{
