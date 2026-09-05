@@ -1,4 +1,4 @@
-# 基于 tRPC-Agent-Go 的多租户节点化 Agent 平台——决赛方案 V14
+# Enterprise Multi-Tenant Agent Platform
 
 作者：王子龙  
 实现框架：tRPC-Agent-Go v1.11.2  
