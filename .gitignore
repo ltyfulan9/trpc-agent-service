@@ -1,0 +1,12 @@
+.env
+.env.wecom.local
+deploy/.env
+*.log
+*.out
+.audit-errors.txt
+coverage*
+bin/
+dist/
+.idea/
+.vscode/
+.DS_Store

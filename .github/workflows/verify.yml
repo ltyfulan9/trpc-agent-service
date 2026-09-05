@@ -1,0 +1,106 @@
+name: verify
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15.8-alpine@sha256:8b963ea3038c3b32182ee7f592ccde21242fa7c5fd9d1b72aa333c27f1bfc809
+        env:
+          POSTGRES_USER: agent
+          POSTGRES_PASSWORD: integration-password
+          POSTGRES_DB: trpc_agent
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U agent -d trpc_agent"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+      redis:
+        image: redis:7.4-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+      qdrant:
+        image: qdrant/qdrant:v1.16.3@sha256:0425e3e03e7fd9b3dc95c4214546afe19de2eb2e28ca621441a56663ac6e1f46
+        ports: ["6333:6333", "6334:6334"]
+    env:
+      TEST_DATABASE_URL: postgres://agent:integration-password@localhost:5432/trpc_agent?sslmode=disable
+      TEST_REDIS_URL: redis://localhost:6379/0
+      TEST_QDRANT_HOST: localhost
+      TEST_QDRANT_GRPC_PORT: "6334"
+      TEST_MINIO_ENDPOINT: localhost:9000
+      TEST_MINIO_ACCESS_KEY: validation-minio-user
+      TEST_MINIO_SECRET_KEY: validation-minio-password-not-for-deployment
+      POSTGRES_PASSWORD: validation-only-password
+      MASTER_KEY: validation-only-master-key-32-bytes-minimum
+      SERVICE_AUTH_SECRET: validation-only-service-secret-32-bytes
+      ADMIN_API_TOKEN: validation-only-admin-token-32-bytes
+      GRAFANA_PASSWORD: validation-only-grafana-password
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+    - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+      with:
+        go-version: "1.26.7"
+        cache: true
+    - name: Start MinIO integration backend
+      run: >-
+        docker run --detach --name ci-minio --publish 9000:9000
+        --env MINIO_ROOT_USER=validation-minio-user
+        --env MINIO_ROOT_PASSWORD=validation-minio-password-not-for-deployment
+        minio/minio:RELEASE.2025-04-22T22-12-26Z@sha256:a1ea29fa28355559ef137d71fc570e508a214ec84ff8083e39bc5428980b015e
+        server /data --address :9000
+    - name: Wait for Qdrant and MinIO
+      run: |
+        for attempt in {1..60}; do
+          if curl --fail --silent --show-error http://127.0.0.1:6333/readyz >/dev/null \
+            && curl --fail --silent --show-error http://127.0.0.1:9000/minio/health/ready >/dev/null; then
+            exit 0
+          fi
+          sleep 2
+        done
+        echo "Qdrant or MinIO did not become ready" >&2
+        exit 1
+    - run: bash ./scripts/require_secure_go.sh
+    - run: go mod verify
+    - run: test -z "$(gofmt -l $(find cmd pkg migrations test -name '*.go' -type f))"
+    - run: go build -buildvcs=false ./cmd/...
+    - run: go vet ./...
+    - run: go test -count=1 ./...
+    - run: go test -race -count=1 ./...
+    - run: go test -tags=integration -count=1 ./test/integration
+    - run: ./scripts/static_verify.sh
+    - run: docker compose -f deploy/docker-compose.yml config >/dev/null
+    - run: docker compose -f deploy/docker-compose.yml build
+    - run: docker run --rm -v "$PWD/deploy:/work:ro" prom/prometheus:v2.54.1 promtool check rules /work/prometheus-rules.yml
+
+  go-1-25-compatibility:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+    - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+      with:
+        go-version: "1.25.14"
+        cache: true
+    - run: go mod verify
+    - run: go build -buildvcs=false ./...
+    - run: go test -count=1 ./...
+
+  vulnerability-scan:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+    # Keep vulnerability analysis on the same patched toolchain as the
+    # production build; Go 1.25 remains the minimum source compatibility line.
+    - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+      with:
+        go-version: "1.26.7"
+        cache: true
+    - run: bash ./scripts/require_secure_go.sh
+    - run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
