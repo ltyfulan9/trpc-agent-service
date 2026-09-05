@@ -172,10 +172,10 @@ if ($allowedUser) {
 }
 
 Write-Host '2/4  Copy the app Secret and callback Token/EncodingAESKey.' -ForegroundColor Cyan
-$corpSecret = Read-HiddenValue 'App Secret (43 characters)' ([string]$values['TRPC_SECRET_WECOM_CORP_SECRET'])
+$corpSecret = Read-HiddenValue 'App Secret (copy exactly)' ([string]$values['TRPC_SECRET_WECOM_CORP_SECRET'])
 $callbackToken = Read-HiddenValue 'Callback Token (1-64 URL-safe characters)' ([string]$values['TRPC_SECRET_WECOM_TOKEN'])
 $aesKey = Read-HiddenValue 'EncodingAESKey (43 characters)' ([string]$values['TRPC_SECRET_WECOM_AES'])
-Assert-Match $corpSecret '^[A-Za-z0-9_-]{43}$' 'WeCom app Secret has an invalid shape'
+Assert-Match $corpSecret '^[A-Za-z0-9_-]{16,128}$' 'WeCom app Secret has an invalid shape'
 Assert-Match $callbackToken '^[A-Za-z0-9_-]{1,64}$' 'WeCom callback Token has an invalid shape'
 Assert-WeComAESKey $aesKey
 

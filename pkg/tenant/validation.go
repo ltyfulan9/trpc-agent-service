@@ -54,7 +54,10 @@ var (
 	telegramWebhookSecretPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{32,256}$`)
 	weWorkCallbackTokenPattern   = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 	weWorkCorpIDPattern          = regexp.MustCompile(`^ww[0-9a-f]{16}$`)
-	weWorkCorpSecretPattern      = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
+	// WeCom application secrets are operator-issued and their length has varied
+	// across app generations; validate the safe character set and a bounded
+	// range instead of confusing them with the fixed 43-character AES key.
+	weWorkCorpSecretPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{16,128}$`)
 )
 
 // ValidateTenantID applies the narrowest persisted tenant identifier contract.

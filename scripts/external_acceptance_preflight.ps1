@@ -88,7 +88,7 @@ if ($Channel -in @('WeCom', 'All')) {
     $corpSecret = Get-RequiredSecret 'TRPC_SECRET_WECOM_CORP_SECRET'
     $encodingAesKey = Get-RequiredSecret 'TRPC_SECRET_WECOM_AES'
     Assert-Preflight ($callbackToken -match '^[A-Za-z0-9_-]{1,64}$') 'WeCom callback token has an invalid shape'
-    Assert-Preflight ($corpSecret -match '^[A-Za-z0-9_-]{43}$') 'WeCom corp secret has an invalid shape'
+    Assert-Preflight ($corpSecret -match '^[A-Za-z0-9_-]{16,128}$') 'WeCom corp secret has an invalid shape'
     Assert-Preflight ($WeComCorpId -match '^ww[0-9a-f]{16}$') 'WECOM_CORP_ID has an invalid shape'
     $parsedAgentID = [uint32]0
     Assert-Preflight ([uint32]::TryParse($WeComAgentId, [ref]$parsedAgentID) -and $parsedAgentID -gt 0) 'WECOM_AGENT_ID must be a positive 32-bit decimal ID'
