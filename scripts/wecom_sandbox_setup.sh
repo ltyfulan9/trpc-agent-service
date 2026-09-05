@@ -260,6 +260,16 @@ if [[ -z "$TRPC_WEBHOOK_ROUTE_KEY" ]]; then
   TRPC_WEBHOOK_ROUTE_KEY=$(random_urlsafe)
 fi
 require_match "$TRPC_WEBHOOK_ROUTE_KEY" '^[A-Za-z0-9_-]{32,128}$' "route key must be 32-128 URL-safe characters"
+ask WECOM_MODEL_PROVIDER "Model provider (openai-compatible; default openai):"
+[[ -n "$WECOM_MODEL_PROVIDER" ]] || WECOM_MODEL_PROVIDER="openai"
+require_match "$WECOM_MODEL_PROVIDER" '^[A-Za-z0-9_.-]{1,64}$' "model provider must be 1-64 ASCII name characters"
+ask WECOM_MODEL_NAME "Model name (for example gpt-4o-mini):"
+[[ -n "$WECOM_MODEL_NAME" ]] || WECOM_MODEL_NAME="gpt-4o-mini"
+require_match "$WECOM_MODEL_NAME" '^[A-Za-z0-9_.:@/-]{1,128}$' "model name contains unsupported characters"
+ask WECOM_MODEL_ENDPOINT "Model endpoint (optional, e.g. https://api.example.com/v1):"
+if [[ -n "$WECOM_MODEL_ENDPOINT" ]]; then
+  require_match "$WECOM_MODEL_ENDPOINT" '^https://[^/?#]+(/[^?#]*)?$' "model endpoint must be an HTTPS URL without query or fragment"
+fi
 
 stage "Local runtime secrets"
 say "The wizard also prepares fresh local-only platform keys needed by the Compose sandbox."
@@ -295,6 +305,9 @@ for pair in \
   "WECOM_CALLBACK_BASE_URL:$WECOM_CALLBACK_BASE_URL"; do
   write_env "${pair%%:*}" "${pair#*:}"
 done
+write_env WECOM_MODEL_PROVIDER "$WECOM_MODEL_PROVIDER"
+write_env WECOM_MODEL_NAME "$WECOM_MODEL_NAME"
+write_env WECOM_MODEL_ENDPOINT "$WECOM_MODEL_ENDPOINT"
 if [[ -n "$TRPC_SECRET_OPENAI_API_KEY" ]]; then
   write_env TRPC_SECRET_OPENAI_API_KEY "$TRPC_SECRET_OPENAI_API_KEY"
 fi

@@ -61,6 +61,12 @@ WECOM_CORP_ID
 WECOM_AGENT_ID
 ```
 
+企微沙箱向导还会保存三个可选的模型运行参数：`WECOM_MODEL_PROVIDER`、
+`WECOM_MODEL_NAME` 和 `WECOM_MODEL_ENDPOINT`。Endpoint 只能填写无查询串/片段的
+HTTPS URL；它会同时写入租户模型和不可变版本快照。当前控制面仍默认拒绝自定义
+模型 Endpoint，直到部署方提供经过评审的 SSRF-safe transport、DNS 重解析防护和
+出网 allowlist；因此这些字段不会绕过生产安全门禁。
+
 只做格式、公开 URL 和可选 TLS 探针，不调用 Telegram/企业微信：
 
 ```powershell

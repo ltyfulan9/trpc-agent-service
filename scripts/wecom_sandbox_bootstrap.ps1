@@ -124,6 +124,12 @@ $required = @(
 foreach ($key in $required) {
     $null = Require-Value $values $key
 }
+$modelProvider = if ($values.Contains('WECOM_MODEL_PROVIDER') -and $values['WECOM_MODEL_PROVIDER']) { [string]$values['WECOM_MODEL_PROVIDER'] } else { 'openai' }
+$modelName = if ($values.Contains('WECOM_MODEL_NAME') -and $values['WECOM_MODEL_NAME']) { [string]$values['WECOM_MODEL_NAME'] } else { 'gpt-4o-mini' }
+$modelEndpoint = if ($values.Contains('WECOM_MODEL_ENDPOINT')) { [string]$values['WECOM_MODEL_ENDPOINT'] } else { '' }
+if ($modelProvider -notmatch '^[A-Za-z0-9_.-]{1,64}$') { throw 'WECOM_MODEL_PROVIDER has an invalid shape' }
+if ($modelName -notmatch '^[A-Za-z0-9_.:@/-]{1,128}$') { throw 'WECOM_MODEL_NAME has an invalid shape' }
+if ($modelEndpoint -and $modelEndpoint -notmatch '^https://[^/?#]+(?:/[^?#]*)?$') { throw 'WECOM_MODEL_ENDPOINT must be an HTTPS URL without query or fragment' }
 foreach ($entry in $values.GetEnumerator()) {
     [Environment]::SetEnvironmentVariable($entry.Key, [string]$entry.Value, 'Process')
 }
@@ -158,7 +164,6 @@ if (-not $tenantID) {
 }
 
 if (-not $tenantID) {
-    $modelName = 'gpt-4o-mini'
     $agent = [ordered]@{
         name = 'support'
         type = 'llm'
@@ -168,12 +173,13 @@ if (-not $tenantID) {
         tools = @()
     }
     $model = [ordered]@{
-        provider = 'openai'
+        provider = $modelProvider
         modelName = $modelName
         apiKeyRef = 'env://TRPC_SECRET_OPENAI_API_KEY'
         maxTokens = 512
         temperature = 0.2
     }
+    if ($modelEndpoint) { $model.endpoint = $modelEndpoint }
     $binding = [ordered]@{
         accountId = "wecom-$($values['WECOM_AGENT_ID'])"
         webhookKey = [string]$values['TRPC_WEBHOOK_ROUTE_KEY']
@@ -234,21 +240,23 @@ if (-not $appID) {
 
 $versionID = if ($values.Contains('WECOM_AGENT_VERSION_ID')) { [string]$values['WECOM_AGENT_VERSION_ID'] } else { '' }
 if (-not $versionID) {
+    $versionSnapshot = [ordered]@{
+        agent = [ordered]@{
+            name = 'support'; type = 'llm'
+            systemPrompt = 'You are the enterprise WeCom sandbox assistant. Be concise and never expose secrets.'
+            defaultModel = $modelName; maxLLMCalls = 1; tools = @()
+        }
+        model = [ordered]@{
+            provider = $modelProvider; modelName = $modelName
+            apiKeyRef = 'env://TRPC_SECRET_OPENAI_API_KEY'
+            maxTokens = 512; temperature = 0.2
+        }
+    }
+    if ($modelEndpoint) { $versionSnapshot.model.endpoint = $modelEndpoint }
     $version = Invoke-AdminJSON -Method POST -Path '/api/v1/agent-versions' -Body ([ordered]@{
         tenantId = $tenantID
         appName = 'support'
-        snapshot = [ordered]@{
-            agent = [ordered]@{
-                name = 'support'; type = 'llm'
-                systemPrompt = 'You are the enterprise WeCom sandbox assistant. Be concise and never expose secrets.'
-                defaultModel = 'gpt-4o-mini'; maxLLMCalls = 1; tools = @()
-            }
-            model = [ordered]@{
-                provider = 'openai'; modelName = 'gpt-4o-mini'
-                apiKeyRef = 'env://TRPC_SECRET_OPENAI_API_KEY'
-                maxTokens = 512; temperature = 0.2
-            }
-        }
+        snapshot = $versionSnapshot
     })
     $versionID = [string]$version.id
     if (-not $versionID) {
