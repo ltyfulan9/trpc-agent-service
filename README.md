@@ -6,7 +6,7 @@
 
 > 安全基线：当前模块最低要求 Go 1.25.14，生产 CI 与容器构建固定到官方 Go 1.26.7。此前 Go 1.21 验证记录已归档，不再构成当前兼容承诺。源码验证、真实基础设施验收和外部 Provider 验收必须严格区分；请在目标环境运行 `./scripts/validate.sh`，详见 [验证报告](docs/VERIFICATION.md)。
 
-评委建议阅读顺序：先看 [评委快速摘要 V14](docs/JUDGE_QUICKSTART_V14.md)，再看 [决赛架构设计 V14](docs/COMPETITION_SUBMISSION_V14.md)、[验收证据矩阵 V14](docs/ACCEPTANCE_EVIDENCE_V14.md)、[核心数据模型](docs/DATA_MODEL.md)、[风险登记册 V14](docs/RISK_REGISTER_V14.md)、[安全审计 V14](docs/SECURITY_REVIEW_V14.md) 和 [最终交接](TRPC_AGENT_ENTERPRISE_HANDOFF_V14_FINAL.md)。每项能力明确区分本机实测、源码已闭环但待目标环境验收和外部依赖未验收，避免用单测或模拟器冒充生产证据。
+评委建议阅读顺序：先看 [评委快速摘要](docs/JUDGE_QUICKSTART_V14.md)，再看 [决赛架构设计](docs/COMPETITION_SUBMISSION_V14.md)、[验收证据矩阵](docs/ACCEPTANCE_EVIDENCE_V14.md)、[核心数据模型](docs/DATA_MODEL.md)、[风险登记册](docs/RISK_REGISTER_V14.md)、[安全审计](docs/SECURITY_REVIEW_V14.md) 和 [最终交接](TRPC_AGENT_ENTERPRISE_HANDOFF_V14_FINAL.md)。每项能力明确区分本机实测、源码已闭环但待目标环境验收和外部依赖未验收，避免用单测或模拟器冒充生产证据。
 
 ## 1. 运行架构
 
@@ -185,7 +185,7 @@ DATABASE_URL='...' go run ./cmd/replay outbox 456 operator-a 'approved full rese
 ./scripts/validate.sh       # 安全 Go 门、build/vet/unit/race、镜像、真实 PostgreSQL+Redis integration
 ```
 
-真实基础设施集成与故障测试应在 CI 中启动 PostgreSQL/Redis 后执行。没有命令输出和退出码，不得声称测试通过。本次 2026-09-05 C 盘复核的命令、端口、容器后状态和路径诊断见 [V14 验收证据](docs/ACCEPTANCE_EVIDENCE_V14.md) 与 [验证报告](docs/VERIFICATION.md)；此前三节点 K3d、Linkerd、Vault dev-mode、真实 PostgreSQL/Redis、发布/回滚和 2,200 条容量证据见 [本地生产化验证报告](docs/LOCAL_PRODUCTION_VALIDATION_20260830.md)；目标账号的低次数执行顺序见 [外部验收 Runbook](docs/EXTERNAL_ACCEPTANCE_RUNBOOK.md)。
+真实基础设施集成与故障测试应在 CI 中启动 PostgreSQL/Redis 后执行。没有命令输出和退出码，不得声称测试通过。本次 2026-09-05 C 盘复核的命令、端口、容器后状态和路径诊断见 [验收证据](docs/ACCEPTANCE_EVIDENCE_V14.md) 与 [验证报告](docs/VERIFICATION.md)；此前三节点 K3d、Linkerd、Vault dev-mode、真实 PostgreSQL/Redis、发布/回滚和 2,200 条容量证据见 [本地生产化验证报告](docs/LOCAL_PRODUCTION_VALIDATION_20260830.md)；目标账号的低次数执行顺序见 [外部验收 Runbook](docs/EXTERNAL_ACCEPTANCE_RUNBOOK.md)。
 
 Windows 企微沙箱依次使用 `scripts/wecom_sandbox_tunnel.ps1`、`scripts/wecom_sandbox_setup.ps1`、`scripts/wecom_sandbox_bootstrap.ps1`。它会用独立 Compose project/端口保留现有 V13，凭据只写入 gitignore 的 `deploy/.env.wecom.local` 并以 SecretRef 注入；Bash 环境另提供模板一致、经 `bash -n` 与 ShellCheck 验证的 `scripts/wecom_sandbox_setup.sh`。这些脚本把 URL verify 前置条件自动化，但真实控制台保存和成员消息仍必须由企业管理员完成并留证。
 
@@ -222,4 +222,4 @@ Windows 企微沙箱依次使用 `scripts/wecom_sandbox_tunnel.ps1`、`scripts/w
 - 迁移 019 为每个 tenant/app/session 增加 execution admission guard；迁移 020 增加显式 reconciliation-wait 状态；迁移 021 让过期 reconciler 在迁移遗留的多个 stale attempt 场景下逐行、安全地排空。旧 `ExecutionRecorder.Start` 保留仅为源码兼容但会 fail-closed，所有新执行必须经过 `StartWithRequest` 获得 token 和 generation。
 - Compose 是开发/集成栈；其外部镜像已按 tag + Docker Hub digest 固定，七个 Go 服务/作业以 non-root、只读根文件系统、`cap_drop: ALL`、`no-new-privileges` 和有界 `/tmp` 运行。Kubernetes 清单另含 seccomp、PDB、拓扑分散、默认拒绝 NetworkPolicy 和迁移先行脚本。网络策略假设同 namespace 的 PostgreSQL/Redis；托管私网后端必须替换为精确 CIDR，不能直接套用。生产仍应使用 KMS/Vault、mTLS、签名的应用镜像 digest/SBOM 和真实 Trace/Alertmanager 后端。
 
-更多内容： [V14 决赛方案](docs/COMPETITION_SUBMISSION_V14.md) · [V14 验收证据](docs/ACCEPTANCE_EVIDENCE_V14.md) · [架构与一致性](docs/ARCHITECTURE.md) · [数据模型](docs/DATA_MODEL.md) · [SLO 与告警](docs/SLO.md) · [V14 风险](docs/RISK_REGISTER_V14.md) · [V14 安全审计](docs/SECURITY_REVIEW_V14.md) · [本地生产化证据](docs/LOCAL_PRODUCTION_VALIDATION_20260830.md) · [外部低次数验收](docs/EXTERNAL_ACCEPTANCE_RUNBOOK.md) · [演示步骤](docs/DEMO.md)
+更多内容： [决赛方案](docs/COMPETITION_SUBMISSION_V14.md) · [验收证据](docs/ACCEPTANCE_EVIDENCE_V14.md) · [架构与一致性](docs/ARCHITECTURE.md) · [数据模型](docs/DATA_MODEL.md) · [SLO 与告警](docs/SLO.md) · [风险登记册](docs/RISK_REGISTER_V14.md) · [安全审计](docs/SECURITY_REVIEW_V14.md) · [本地生产化证据](docs/LOCAL_PRODUCTION_VALIDATION_20260830.md) · [外部低次数验收](docs/EXTERNAL_ACCEPTANCE_RUNBOOK.md) · [演示步骤](docs/DEMO.md)

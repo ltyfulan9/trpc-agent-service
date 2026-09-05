@@ -1,4 +1,4 @@
-# V14 评委快速摘要与验收执行清单
+# Enterprise Multi-Tenant Agent Platform Judge Quickstart
 
 本页是评委在 5–10 分钟内建立判断的入口。它把“源码已经实现”“本机已经验证”和“必须在目标环境完成”分开，不把架构设想、单元测试或本地模拟器包装成生产证据。完整设计见 [决赛方案](COMPETITION_SUBMISSION_V14.md)，逐项命令和后状态见 [验收证据矩阵](ACCEPTANCE_EVIDENCE_V14.md)。
 

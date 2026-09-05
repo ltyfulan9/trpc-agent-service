@@ -1,4 +1,4 @@
-# V14 安全审计报告
+# Enterprise Multi-Tenant Agent Platform Security Review
 
 审计对象：本归档的 Go 源码、migrations、Compose/Kubernetes 模板和发布校验。  
 结论：关键租户边界、消息 fence、治理、密钥最小暴露和专用数据面已形成可执行控制；正式身份系统、KMS/Vault、mTLS、云 IAM 与真实 IM 仍需目标环境验收。本报告不是渗透测试或合规认证。

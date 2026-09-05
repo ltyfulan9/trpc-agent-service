@@ -4,7 +4,7 @@
 当前最终交接：`TRPC_AGENT_ENTERPRISE_HANDOFF_V14_FINAL.md`  
 历史检查点：`TRPC_AGENT_ENTERPRISE_HANDOFF_V14_CURRENT.md`、`TRPC_AGENT_ENTERPRISE_HANDOFF_V13.md`
 
-V14 已把检查点中列出的三项主缺口接入生产 composition root：Summary Generator 与下一轮 Runner history overlay、Qdrant Knowledge 数据面、PostgreSQL+S3/MinIO Artifact 数据面；并加入向量/对象 migration projection、独立 summary-worker、租户级 runtime profile/Secret 隔离、Compose/Kubernetes 资源与告警。
+平台已把检查点中列出的三项主缺口接入生产 composition root：Summary Generator 与下一轮 Runner history overlay、Qdrant Knowledge 数据面、PostgreSQL+S3/MinIO Artifact 数据面；并加入向量/对象 migration projection、独立 summary-worker、租户级 runtime profile/Secret 隔离、Compose/Kubernetes 资源与告警。
 
 评审入口：
 
