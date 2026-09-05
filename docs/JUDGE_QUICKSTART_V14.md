@@ -57,6 +57,6 @@ Set-Location <V14 源码根目录>
 
 ## 五、提交前硬门禁
 
-当前源码树没有 `.git` 元数据，不能声称已经提供 GitHub 实现代码。正式提交前必须填写 [决赛方案](COMPETITION_SUBMISSION_V14.md) 的公开仓库 URL、固定 commit/tag 和默认分支，并从全新目录执行 `git clone`、`git checkout`、`./scripts/validate.sh`、Compose config 和镜像构建。仓库应保留 Apache-2.0 LICENSE、`.github/workflows/verify.yml` 和不含秘密的测试配置。URL 和 SHA 未填入前，评委只能把本项目判为“源码快照 + 本机证据”，不能判为 GitHub 可复现交付。
+V14 已发布到 [GitHub](https://github.com/ltyfulan9/trpc-agent-service/tree/v14-final)，固定检查点为 `65ace40`，标签为 `v14.0.0-final`。评委应从全新目录执行 `git clone`、`git checkout v14.0.0-final`、`./scripts/validate.sh`、Compose config 和镜像构建。仓库保留 Apache-2.0 LICENSE、`.github/workflows/verify.yml` 和不含秘密的测试配置；真实企微回调仍按本页 `EXTERNAL_REQUIRED` 边界验收。
 
 最终评分时，应把实现质量和边界诚实同时纳入判断：本地可靠消息和治理链路是已验证优势；真实 IM、目标基础设施、跨后端迁移矩阵、正式容量与 GitHub 可复现入口是决定能否从“前列”升到“第一”的关键差距。任何未完成外部动作都应保持 `EXTERNAL_REQUIRED`，由证据而不是措辞决定状态。

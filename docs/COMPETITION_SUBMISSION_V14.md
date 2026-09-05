@@ -12,23 +12,24 @@
 
 四种组合 Runtime 已内置具体 factory，不再只是扩展设计：独立节点提示词、工具白名单和调用限额，Graph DAG/可达性校验，Cycle 有限迭代以及全局调用预算均进入正式 Worker 组合根。自动化测试执行真实拓扑并验证 Worker composition；Admin/Worker capability fingerprint 防止同名 runtime 实现漂移。模型响应使用本地测试模型，因此该证据不包含外部模型供应商验收。
 
-## 1.1 代码仓库与可复现入口（提交前填充）
+## 1.1 代码仓库与可复现入口
 
-本交付树当前是无 Git 元数据的源码快照；不得把本地目录或压缩包冒充 GitHub 仓库。正式提交前由项目负责人填写公开仓库地址、固定 commit/tag 和默认分支，并在此处补齐：
+以下入口固定到本次 V14 发布检查点；评委应从全新目录重新 clone 和校验，不把本地目录或压缩包当作 GitHub 仓库：
 
 ```text
-公开仓库：<待填入公开 GitHub URL>
-固定提交：<待填入 commit SHA>
-发布标签：<待填入 tag>
+公开仓库：https://github.com/ltyfulan9/trpc-agent-service
+固定提交：65ace40
+发布标签：v14.0.0-final
+默认分支：v14-final
 许可证：Apache-2.0（见 LICENSE）
 ```
 
-评委拿到地址后应从全新目录执行以下入口；在 URL 和 SHA 未填入前，这一项只能判为“材料占位”，不能宣称 GitHub 可复现：
+评委拿到地址后应从全新目录执行以下入口：
 
 ```bash
-git clone <公开 GitHub URL>
+git clone https://github.com/ltyfulan9/trpc-agent-service
 cd <repository>
-git checkout <固定 commit SHA 或 tag>
+git checkout v14.0.0-final
 ./scripts/validate.sh
 docker compose -f deploy/docker-compose.yml config
 ```
