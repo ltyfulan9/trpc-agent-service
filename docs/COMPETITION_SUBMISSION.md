@@ -19,7 +19,7 @@
 ```text
 公开仓库：https://github.com/ltyfulan9/trpc-agent-service
 提交校验：在评审 checkout 后执行 `git rev-parse HEAD`，并将结果记录到验收证据。
-仓库默认分支：main
+仓库默认分支：platform-final
 许可证：Apache-2.0（见 LICENSE）
 ```
 

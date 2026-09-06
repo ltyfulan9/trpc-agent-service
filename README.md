@@ -2,7 +2,9 @@
 
 [![verify](https://github.com/ltyfulan9/trpc-agent-service/actions/workflows/verify.yml/badge.svg)](https://github.com/ltyfulan9/trpc-agent-service/actions/workflows/verify.yml)
 
-本目录以较小、边界清楚的实现为基线，吸收另一版本中有效的治理 Plugin、控制面和运维设计，并重建了可靠消息主链路。它是一个可继续工程化的候选实现，不以文件数量或文档长度声称“生产就绪”。
+本项目面向企业 Agent 的可靠运行问题，围绕“durable 接收、租户隔离、不可变版本、fence/reconciliation”建立可验证的多租户执行平台。重点不是组件数量，而是在重复消息、节点故障、版本切换和外部副作用未知时，仍能保持顺序、隔离和可恢复。
+
+比赛演示的最小可重复基准可运行：`.\scripts\benchmark_local.ps1`。该命令输出本机 MemoryStore 的入队→领取→Inbox/Outbox 原子完成基线；它用于比较代码变化，不冒充生产容量或模型 Provider 性能。
 
 > 安全基线：当前模块最低要求 Go 1.25.14，生产 CI 与容器构建固定到官方 Go 1.26.7。此前 Go 1.21 验证记录已归档，不再构成当前兼容承诺。源码验证、真实基础设施验收和外部 Provider 验收必须严格区分；请在目标环境运行 `./scripts/validate.sh`，详见 [验证报告](docs/VERIFICATION.md)。
 

@@ -125,6 +125,8 @@ func runAdmin() {
 	// bundled LLM runtime; future factories must be registered explicitly at
 	// both the Admin and Worker composition roots.
 	runtimeFactories := worker.NewRuntimeAgentRegistry()
+	// Admin and Worker must publish against an immutable runtime composition.
+	runtimeFactories.Seal()
 	controlService := controlplane.NewService(controlDB, func(
 		ctx context.Context,
 		tenantID string,

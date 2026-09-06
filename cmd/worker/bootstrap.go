@@ -238,6 +238,9 @@ func runWorker() {
 		log.Fatalf("configure MCP runtime catalog: error=%s", telemetry.StableErrorCode(err))
 	}
 	runtimeFactories := worker.NewRuntimeAgentRegistry()
+	// Freeze the process composition before accepting work. Published versions
+	// must not observe a factory replacement under the same runtime type.
+	runtimeFactories.Seal()
 
 	// Initialize Redis for distributed locks and budget tracking
 	redisOptions, err := parseRedisOptions(redisURL)

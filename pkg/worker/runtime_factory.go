@@ -48,6 +48,9 @@ var (
 	// through the legacy type-only API and cannot enter a strict production
 	// composition without an operator-owned implementation/build identity.
 	ErrRuntimeCapabilityRequired = errors.New("agent runtime capability identity required")
+	// ErrRuntimeRegistrySealed means the process has finalized its runtime
+	// composition and no implementation may be replaced in-place.
+	ErrRuntimeRegistrySealed = errors.New("agent runtime registry sealed")
 )
 
 // RuntimeAgentBuildSpec is the immutable control-plane snapshot handed to a
@@ -120,6 +123,7 @@ type RuntimeAgentRegistry struct {
 	mu           sync.RWMutex
 	factories    map[string]RuntimeAgentFactory
 	capabilities map[string]string
+	sealed       bool
 }
 
 const (
@@ -164,6 +168,29 @@ func (r *RuntimeAgentRegistry) RegisterWithCapability(runtimeType, capability st
 	return r.register(runtimeType, capability, factory, false)
 }
 
+// Seal finalizes the operator-owned runtime composition. A sealed registry is
+// immutable for the lifetime of the process, so an already-published version
+// cannot silently execute a different factory under the same runtime type.
+func (r *RuntimeAgentRegistry) Seal() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	r.sealed = true
+	r.mu.Unlock()
+}
+
+// IsSealed reports whether registration is closed.
+func (r *RuntimeAgentRegistry) IsSealed() bool {
+	if r == nil {
+		return true
+	}
+	r.mu.RLock()
+	sealed := r.sealed
+	r.mu.RUnlock()
+	return sealed
+}
+
 func (r *RuntimeAgentRegistry) register(runtimeType, capability string, factory RuntimeAgentFactory, legacy bool) error {
 	if r == nil {
 		return ErrAgentFactoryInvalid
@@ -174,6 +201,10 @@ func (r *RuntimeAgentRegistry) register(runtimeType, capability string, factory 
 		return ErrAgentFactoryInvalid
 	}
 	r.mu.Lock()
+	if r.sealed {
+		r.mu.Unlock()
+		return ErrRuntimeRegistrySealed
+	}
 	if r.factories == nil {
 		r.factories = make(map[string]RuntimeAgentFactory)
 	}

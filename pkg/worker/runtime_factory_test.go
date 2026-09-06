@@ -245,6 +245,20 @@ func TestRuntimeAgentRegistryFingerprintIsStableAndCapabilityAware(t *testing.T)
 	}
 }
 
+func TestRuntimeAgentRegistrySealPreventsImplementationReplacement(t *testing.T) {
+	registry := NewRuntimeAgentRegistry()
+	registry.Seal()
+	factory := RuntimeAgentFactoryFunc(func(_ context.Context, spec RuntimeAgentBuildSpec, _ RuntimeAgentDependencies) (agent.Agent, error) {
+		return &factoryTestAgent{name: spec.Agent.Name}, nil
+	})
+	if err := registry.RegisterWithCapability(tenant.AgentTypeGraph, "graph@replacement", factory); !errors.Is(err, ErrRuntimeRegistrySealed) {
+		t.Fatalf("sealed registry replacement error=%v, want ErrRuntimeRegistrySealed", err)
+	}
+	if !registry.IsSealed() {
+		t.Fatal("registry lost sealed state")
+	}
+}
+
 func TestRuntimeAgentRegistryKeepsLegacyLLMOnlyFingerprintCompatible(t *testing.T) {
 	registry := NewRuntimeAgentRegistry()
 	legacy := legacyLLMOnlyFingerprint()
