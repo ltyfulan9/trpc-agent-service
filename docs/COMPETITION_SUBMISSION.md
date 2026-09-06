@@ -17,7 +17,7 @@
 项目仓库与验证入口：
 
 ```text
-公开仓库：https://github.com/ltyfulan9/trpc-agent-service
+公开仓库：https://github.com/ltyfulan9/trpc-agent-service/tree/submission-fixes-20260906
 提交校验：在评审 checkout 后执行 `git rev-parse HEAD`，并将结果记录到验收证据。
 提交分支：submission-fixes-20260906
 许可证：Apache-2.0（见 LICENSE）
@@ -30,7 +30,6 @@ git clone --branch submission-fixes-20260906 --single-branch https://github.com/
 cd trpc-agent-service
 git rev-parse HEAD
 ./scripts/validate.sh
-docker compose -f deploy/docker-compose.yml config
 ```
 
 Windows 本地验证入口是 `scripts/run_c_local_stack.ps1 -ProjectName trpc-platform-c-local-final -Build`，脚本在当前进程注入一次性验证凭据。CI 门禁见 `.github/workflows/verify.yml`；启动步骤与验证结果见 [评委快速摘要](JUDGE_QUICKSTART.md) 和 [验收证据矩阵](ACCEPTANCE_EVIDENCE.md)。运行 `go run ./cmd/demo` 可演示 lease 接管、旧 fence 拒绝、Inbox/Outbox 原子完成和未知投递结果核对；本地基准入口与数据解释见 [BENCHMARK.md](BENCHMARK.md)。
@@ -56,10 +55,15 @@ flowchart LR
   subgraph CTRL[控制面]
     A[Admin API\nTenant/App/Version/Canary/Rollback]
     CFG[(加密配置与审计)]
-    PROF[Storage Profile Catalog\n公开元数据 + Worker SecretRef]
+    PROF[Storage Profile Catalog\n公开元数据 + 作用域 SecretRef]
+  end
+  subgraph ADAPT[Storage Adapter / 进程内租户数据适配]
+    SM[Session / Memory Services]
+    KS[Knowledge Service]
+    AS[Artifact Service]
   end
   subgraph DATA[共享数据层]
-    PG[(PostgreSQL\n可靠队列/控制面/执行栅栏权威/Audit/Artifact metadata)]
+    PG[(PostgreSQL\n可靠队列/控制面/执行栅栏权威/Audit/Session/Memory/Artifact metadata)]
     R[(Redis\nSession/Memory/lease/nonce/budget)]
     Q[(Qdrant\nKnowledge vectors)]
     S3[(S3/MinIO\nArtifact objects)]
@@ -69,21 +73,27 @@ flowchart LR
 
   WX & TG --> CA --> GW --> PG
   PG --> C -->|HMAC + nonce + traceparent| W
-  W --> R
-  W --> Q
-  W --> S3
-  W --> PG
+  W --> SM & KS & AS
+  SM -->|Session / Memory| R & PG
+  KS -->|Knowledge vectors| Q
+  AS -->|Artifact metadata| PG
+  AS -->|Artifact objects| S3
+  W -->|lease / nonce / budget| R
+  W -->|执行记录 / 审计| PG
   C --> PG --> D --> CA --> WX & TG
-  PG --> SW --> R
-  SW --> PG
+  PG --> SW --> SM
+  SW -->|lease / budget| R
+  SW -->|Summary job / checkpoint| PG
   A --> CFG --> PG
   A --> PROF
-  PROF --> W
+  PROF --> SM & KS & AS
   GW & C & W & SW & D & A --> OT
   GW & C & W & SW & D & A --> PM
 ```
 
-Gateway 只在 Inbox 事务提交成功后返回 2xx；数据库不可用时返回可重试错误，不能先确认再异步落库。Consumer 使用 `FOR UPDATE SKIP LOCKED`、单调 `lease_version` 和持久化 `session_sequence`，既允许不同会话并行，也禁止同一会话乱序。Worker 的整次 Runner 生命周期持有可续约 Session lease，Session/Memory 存在共享后端，因此任意副本都能继续处理。
+对进入执行链路的文本消息，Gateway 只在 Inbox 事务提交成功后返回 2xx；数据库不可用时返回可重试错误，不能先确认再异步落库。Consumer 使用 `FOR UPDATE SKIP LOCKED`、单调 `lease_version` 和持久化 `session_sequence`，既允许不同会话并行，也禁止同一会话乱序。Worker 的整次 Runner 生命周期持有可续约 Session lease，Session/Memory 存在共享后端，因此任意副本都能继续处理。
+
+Storage Adapter 是执行进程内的数据适配边界：Session/Memory 按租户 profile 选择 Redis 或 PostgreSQL；Knowledge 连接 Qdrant；Artifact 将版本元数据与对象正文分别写入 PostgreSQL 和 S3/MinIO。各服务注入 Runner 时已绑定租户作用域，Summary Worker 复用同一 Session/Memory 后端选择规则。
 
 ## 3. 租户与隔离模型
 
@@ -97,13 +107,15 @@ Gateway 只在 Inbox 事务提交成功后返回 2xx；数据库不可用时返�
 4. 密钥：租户 JSON 保存加密业务密钥或 operator-owned SecretRef/profile ID；数据面和 MCP Header Secret 只进入 Worker，模型 Key 只进入 Worker/Summary Worker，Channel Secret 只进入 Gateway/Delivery。
 5. 观测：日志不记录 token、API key、DSN 和原始用户标识；用户标识按租户 HMAC 假名化，指标高基数标签默认汇聚到 `__other__`。
 
-群聊 Session ID 为 `tenant/channel/account/group/agent` 的稳定散列，单聊为 `tenant/channel/account/user/agent`；Session owner 另持久化真实用户映射。跨群、跨 Channel account、跨租户不会共享 Session；Memory 可按显式租户策略以用户作用域共享，但不能跨租户。
+Session ID 是 `tenant/channel/account/scope/subject` 的稳定 SHA-256 散列：单聊使用 `scope=direct`、发送者为 subject；Telegram 群聊使用 `scope=group`、chat ID 为 subject。企业微信应用回调采用单聊规则。单聊 Session owner 为发送者，群聊 owner 为同会话共享的确定性标识，actor 保留实际发送者；Agent App 另通过 Runner app namespace 和 Inbox 分区隔离。跨群、跨 Channel account、跨租户不会共享 Session；Memory 可按显式租户策略以用户作用域共享，但不能跨租户。
 
 ## 4. 企业微信与 Telegram 接入
 
-企业微信 Adapter 支持 URL 验证、SHA1 回调签名、AES-CBC 解密、CorpID 校验；Telegram 使用 webhook secret header。二者统一转换成内部 `NormalizedMessage`，构造 `model.Message` 后由 `runner.Runner.Run` 输出 Event。最终文本交给 Outbox，Delivery 根据 Provider 限长分段；每段成功后提交 cursor。
+企业微信 Adapter 支持 URL 验证、SHA1 回调签名、AES-CBC 解密、CorpID 校验，接收应用单聊文本；Telegram 使用 webhook secret header，接收 private/group/supergroup 用户文本。两种 Adapter 将消息转换成 `channel.InboundMessage`，由 Worker 构造 `model.Message` 并调用 `runner.Runner.Run` 输出 Event。最终文本交给 Outbox：企业微信使用文本应用消息，Telegram 使用文本消息并支持 Markdown 格式；Delivery 根据 Provider 限长分段，每段成功后提交 cursor。
 
-差异点是企业微信回调时限短且加密字段多，适合快速 durable ack；Telegram JSON 较直接但 Bot API 有 429/`Retry-After`。外部消息 ID + tenant/channel/account 构成 Inbox 唯一键；相同 ID 同 payload 返回已有结果，不同 payload hash 直接冲突。图片/文件保存经过验证的元数据或安全引用，由模型 Provider 消费；Worker 不下载用户 URL。
+差异点是企业微信回调时限短且加密字段多，适合快速 durable ack；Telegram JSON 较直接但 Bot API 有 429/`Retry-After`。企业微信以必填 `MsgId` 标识消息，缺失则拒绝；Telegram 使用 `update_id`，为 0 时用 `chat_id:message_id`。该消息 ID + tenant/channel/account 构成 Inbox 唯一键；相同 ID 同 payload 返回已有结果，不同 payload hash 直接冲突。
+
+通过验签的非文本回调按忽略事件返回成功确认，不进入 Inbox 或触发 Agent。Worker 通用请求接口另支持图片、音频、视频和文件 URL 的格式、地址及元数据校验，随后构造模型附件引用，由 Provider 处理，Worker 本身不下载。该接口与两种 IM 的文本适配边界分离；媒体通道扩展需负责媒体标识转换、有效期和访问授权，下载侧执行出网限制、DNS 与重定向校验。
 
 ## 5. 核心消息时序
 
@@ -135,8 +147,8 @@ sequenceDiagram
   W-->>C: Event stream 聚合结果 + budget proof + summary receipt
   C->>P: fenced transaction: COMPLETE Inbox + INSERT Outbox + UPSERT Summary job
   D->>P: claim，写 DISPATCH_STARTED fence
-  D->>U: 分段/卡片回复
-  D->>P: 每段 cursor；最终 DELIVERED
+  D->>U: 分段文本回复
+  D->>P: 每段 cursor；最终 REPLIED
   Note over G,D: 同一 trace_id 贯穿 callback、Runner、Tool、存储与回复
 ```
 

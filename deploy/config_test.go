@@ -597,8 +597,10 @@ func TestCIPinsActionsAndSeparatesToolchainContracts(t *testing.T) {
 	}
 	contents := string(data)
 	for _, required := range []string{
-		"actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
-		"actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff",
+		"actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+		"actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e",
+		"actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+		"actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
 		"go-version: \"1.26.7\"",
 		"TEST_REDIS_URL: redis://localhost:6379/0",
 		"bash ./scripts/require_secure_go.sh",
@@ -609,10 +611,47 @@ func TestCIPinsActionsAndSeparatesToolchainContracts(t *testing.T) {
 			t.Errorf("CI workflow is missing %q", required)
 		}
 	}
-	for _, floating := range []string{"actions/checkout@v", "actions/setup-go@v"} {
+	for _, floating := range []string{"actions/checkout@v", "actions/setup-go@v", "actions/upload-artifact@v", "actions/download-artifact@v"} {
 		if strings.Contains(contents, floating) {
 			t.Errorf("CI workflow still uses floating action reference %q", floating)
 		}
+	}
+}
+
+func TestCIPackageChecksumGateIsQuietAndFailClosed(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", ".github", "workflows", "verify.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow struct {
+		Jobs map[string]struct {
+			Needs           string `yaml:"needs"`
+			ContinueOnError bool   `yaml:"continue-on-error"`
+			Steps           []struct {
+				Run             string `yaml:"run"`
+				ContinueOnError bool   `yaml:"continue-on-error"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(data, &workflow); err != nil {
+		t.Fatal(err)
+	}
+	job, ok := workflow.Jobs["linux-package"]
+	if !ok || job.Needs != "windows-package" || job.ContinueOnError {
+		t.Fatal("Linux package verification must gate the Windows-built archive")
+	}
+	var checksumGate, regressionGate bool
+	for _, step := range job.Steps {
+		checksum := strings.Contains(step.Run, "sha256sum --check --quiet SHA256SUMS_20260906.txt")
+		regression := strings.Contains(step.Run, "./scripts/test_checksum_output.sh")
+		if (checksum || regression) && (step.ContinueOnError || strings.Contains(step.Run, "|| true")) {
+			t.Error("package checksum gates must propagate verification failures")
+		}
+		checksumGate = checksumGate || checksum
+		regressionGate = regressionGate || regression
+	}
+	if !checksumGate || !regressionGate {
+		t.Error("Linux package job must run quiet checksum validation and its corruption regression")
 	}
 }
 

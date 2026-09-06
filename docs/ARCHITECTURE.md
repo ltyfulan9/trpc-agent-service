@@ -30,13 +30,13 @@ Admin/Worker 的 `cmd/*/main.go` 仅调用进程组合根；
 
 ## 2. 组件职责
 
-- Gateway：使用非密钥 `webhookKey` 查租户，恢复并解析所选 channel 的加密凭据/SecretRef，验签/解密，限制 body/JSON 深度/内容长度，生成租户作用域 session，提交 Inbox 后才回复 200。缺少 scoped tenant reader 时直接拒绝，不加载完整租户配置。
+- Gateway：使用非密钥 `webhookKey` 查租户，恢复并解析所选 channel 的加密凭据/SecretRef，验签/解密，限制 body/JSON 深度/内容长度；用户文本消息生成租户作用域 session，提交 Inbox 后才回复 200，通过验签的非文本回调确认并忽略。缺少 scoped tenant reader 时直接拒绝，不加载完整租户配置。
 - Consumer：只领取 session 流中不存在未完成前序的 Inbox，再用 `SKIP LOCKED` 和 fence 竞争所有权；租约短于最大处理窗口时拒绝配置；调用 Worker；在同一数据库事务中把 Inbox 置为 COMPLETED 并插入唯一 Outbox。
 - Inbox FIFO 分区使用 `(tenant_id, agent_app_name, session_id)`。生产 Gateway 使用 canonical session ID 生成器：单聊把外部用户主体编码进 session，群聊把会话编码进 session；`session_owner_id` 另用于 Runner Session、Summary 与审批作用域。兼容调用者提供非 canonical ID 时，同样须保持主体与 session 的稳定映射，以避免跨主体队头阻塞。改变分区键须配套迁移和 group-chat ordering 验证。
 - Worker：验证 Consumer HMAC 与 nonce，解析 Channel 绑定的 Agent App，将幂等请求固定到不可变版本，连接租户 Session/Memory，运行 Runner 与治理 Plugin，持久化 execution/audit/result；没有 active stable deployment 时拒绝执行。不可变 Runner 由带容量和空闲 TTL 的并发安全缓存复用，key 包含 tenant/config/app/version/deployment；引用计数确保使用中实例不被关闭。Worker 在构造/执行前校验 immutable snapshot 中的 runtime capability fingerprint，拒绝 Admin 与 Worker 安装集不一致的执行；生产 strict Worker 与 Admin admission 对非内置 runtime 拒绝 type-only 注册，自定义 runtime 必须提供稳定 capability identity。
 - Delivery：领取 Outbox，按 tenant/channel/account 恢复并解析单个 Channel 密钥，调用 Adapter；区分永久错误、普通重试和 provider Retry-After。分段消息每次只发送一段并 fenced 持久化 `delivery_cursor`，永久错误直接 DLQ，完整成功后更新 REPLIED。缺少 scoped tenant reader 时 fail-closed。
 - Admin：管理 Tenant 与 Agent App/Version/Deployment。bootstrap token 和可选 scoped token 均解析为 Principal；角色权限和 tenant allowlist 在数据访问前校验，审计 actor 来自服务端身份。`pkg/adminauth` 提供 `PrincipalResolver`，允许组合根接入经验证的 OIDC/IAP/mTLS 短期主体；解析器返回的 Principal 继续接受 ID、角色与租户范围归一化校验。默认二进制使用 bootstrap bearer。响应遮盖模型、IM 和存储凭据，遮盖值 PUT 保留原密钥。
-- Storage Adapter：按租户 StorageConfig 选择官方 Session/Memory Service。生产 Worker 把共享 SessionService 与 MemoryService 都注入 Runner，由框架完成会话与记忆访问，执行副本无需 sticky session。
+- Storage Adapter：执行进程内按租户 StorageConfig/profile 选择官方 Redis/PostgreSQL Session/Memory Service，Knowledge Service 连接 Qdrant，Artifact Service 组合 PostgreSQL 版本元数据与 S3/MinIO 对象正文。服务在注入 Runner 前绑定租户作用域，由框架完成对应数据访问；共享 Session/Memory 使执行副本无需 sticky session，Summary Worker 复用相同后端选择规则。
 - Memory 工具从租户实际 `memory.Service.Tools()` 动态解析；只有同时进入 Agent 版本快照和租户 whitelist 的工具才暴露，并继续经过 Runner governance plugin。默认 recall 预算为 10，避免无界上下文增长；不会无条件把每条原始输入保存成长期记忆。
 - Telemetry：Prometheus 指标、PostgreSQL 审计、OTLP trace。异步边界把 traceparent 写入 Inbox/Outbox，再由下游恢复。
 
@@ -86,17 +86,20 @@ sequenceDiagram
 | 初次验证 | GET `echostr` 验签并 AES 解密后原样返回 | 设置 webhook 时配置 secret token，无独立 echostr |
 | 回调认证 | token + timestamp + nonce + encrypted payload 做 SHA1；再校验 corp ID | `X-Telegram-Bot-Api-Secret-Token` 常量时间比较 |
 | 消息解密 | AES-CBC、PKCS#7、随机前缀、接收方 ID | JSON 明文，必须依赖 HTTPS |
-| 幂等 ID | 文本消息 `MsgId`，事件无 ID 时回退 payload hash | 优先全局 `update_id`，再用 `chat_id:message_id` |
-| 会话 | tenant + channel account + group/user/conversation | tenant + bot account + chat ID；群/私聊天然由 chat ID 区分 |
-| 回复 | access token 获取与缓存、平台频率/媒体限制 | 4096 字符分段、429/Retry-After、可 reply_to |
+| 入站范围 | 应用单聊文本；通过验签的非文本回调确认并忽略 | private/group/supergroup 用户文本；通过验签的非文本更新确认并忽略 |
+| 幂等 ID | 必填 `MsgId`；缺失则拒绝该文本消息 | 优先全局 `update_id`，为 0 时用 `chat_id:message_id` |
+| 会话 | 单聊按 `FromUserName`，叠加 tenant/channel/account 作用域 | 单聊按发送者，群聊按 chat ID，叠加 tenant/channel/bot account 作用域 |
+| 回复 | 文本应用消息；access token 获取与缓存、2048 字节 UTF-8 分段 | 文本/Markdown；4096 字符分段、429/Retry-After、可 reply_to |
 
 两类 Adapter 都只负责协议转换和投递，不拥有会话、Agent 执行或重试状态；可靠状态统一属于 Inbox/Outbox。
+
+Worker 通用请求可携带经格式、地址和元数据校验的图片、音频、视频、文件 URL，并将引用转换为模型内容；Worker 不下载资源。两种 IM 的入站适配采用文本范围，非文本回调不生成此类附件。媒体通道扩展承担媒体标识解析、访问授权和有效期管理，实际下载侧配置出网限制、DNS 与重定向校验。
 
 ## 4. 幂等、并发和恢复语义
 
 ### 4.1 Inbox
 
-唯一键为 `(tenant_id, channel_type, channel_account_id, external_message_id)`。Telegram 使用 bot 作用域全局 `update_id`，不存在时用 `chat_id:message_id`；企业微信使用 MsgId；无 ID 事件退化为 raw payload SHA-256。相同 key、不同 payload hash 返回 409，而不是静默丢弃。重复入队返回最初持久化的权威记录，不消耗新的 session 序号，也不会接受重试请求携带的路由覆盖。
+唯一键为 `(tenant_id, channel_type, channel_account_id, external_message_id)`。Telegram 使用 bot 作用域全局 `update_id`，为 0 时用 `chat_id:message_id`；企业微信使用必填 MsgId，缺少该字段的文本消息在适配器解析阶段被拒绝。相同 key、不同 payload hash 返回 409，而不是静默丢弃。重复入队返回最初持久化的权威记录，不消耗新的 session 序号，也不会接受重试请求携带的路由覆盖。
 
 入队事务通过 `inbox_session_sequences` 为 `(tenant_id, agent_app_name, session_id)` 分配单调 `session_sequence`。候选消息只有在该流所有更小序号都为 COMPLETED 时才可领取；RECEIVED、PROCESSING、RETRY_WAIT、WAITING_RECONCILIATION 和 DEAD_LETTERED 前序都会阻塞后续，其他 session 流仍可独立领取。死信或待核对状态因此有意暂停单个 session，而不是让后续消息越过已知失败破坏因果顺序；恢复需要租户已激活、完成外部结果核对，并带 actor/reason 的审计重放后成功完成前序。
 
