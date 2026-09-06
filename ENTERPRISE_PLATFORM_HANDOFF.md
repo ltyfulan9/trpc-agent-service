@@ -48,3 +48,5 @@
 ## 验证记录
 
 源码验证命令、退出码和环境保存在交付包 `verification-evidence/current-validation.log`。能力检查项及目标部署验收状态统一见 [验收矩阵](docs/ACCEPTANCE_EVIDENCE.md)。Kubernetes 发布步骤见 [部署指南](deploy/kubernetes/README.md)。
+
+后端集成使用独立 PostgreSQL、Redis、Qdrant 和 MinIO 测试环境，并核对持久化后状态：副本接管拒绝旧 fence 且只创建一个 Outbox；Summary 的摘要、未覆盖消息和历史裁剪进入下一轮实际模型请求；迁移目标读回内容、版本和 tombstone 与源记录一致，投影成功后才登记完成。环境变量和执行入口见 [后端集成与部署检查](docs/VERIFICATION.md#4-后端集成与部署检查)，逐项断言见 [验收矩阵](docs/ACCEPTANCE_EVIDENCE.md)。

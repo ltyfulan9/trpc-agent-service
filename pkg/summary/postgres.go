@@ -64,7 +64,7 @@ func EnqueueTx(ctx context.Context, tx *sql.Tx, request EnqueueRequest) (Enqueue
 				tenant_id, agent_app_id, agent_version_id, session_owner_id, session_id, filter_key,
 				target_event_sequence, status, max_attempts,
 				attempts, completed_event_sequence, last_error, target_resolution_lease_version, session_incarnation_id
-			) VALUES ($1,$2,$3,$4,$5,$6,$7,'PENDING',$8,0,0,'',CASE WHEN $7=0 THEN 1 ELSE 0 END,$9)
+			) VALUES ($1,$2,$3,$4,$5,$6,$7,'PENDING',$8,0,0,'',CASE WHEN $7::bigint=0 THEN 1 ELSE 0 END,$9)
 			ON CONFLICT (tenant_id, agent_app_id, session_owner_id, session_id, filter_key, session_incarnation_id) DO NOTHING
 			RETURNING `+summaryColumns,
 		request.TenantID, request.AgentAppID, request.AgentVersionID, request.SessionOwnerID, request.SessionID, request.FilterKey,
@@ -201,7 +201,7 @@ func (s *PostgresStore) ResolveTarget(ctx context.Context, claimed Job, sequence
 	}
 	row := s.db.QueryRowContext(nonNilContext(ctx), `
 		UPDATE summary_jobs
-		SET target_event_sequence=CASE WHEN target_event_sequence=0 OR ($5>0 AND target_resolution_lease_version>0)
+		SET target_event_sequence=CASE WHEN target_event_sequence=0 OR ($5::bigint>0 AND target_resolution_lease_version>0)
 		                              THEN GREATEST(target_event_sequence,$1) ELSE target_event_sequence END,
 		    target_resolution_lease_version=CASE WHEN target_resolution_lease_version <= $4
 		                                         THEN 0 ELSE target_resolution_lease_version END,
