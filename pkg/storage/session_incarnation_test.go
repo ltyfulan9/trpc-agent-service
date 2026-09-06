@@ -146,3 +146,24 @@ func TestFencedSessionReadPreservesNotFoundForRunnerCreation(t *testing.T) {
 		t.Fatalf("missing session must return nil,nil: %#v %v", value, err)
 	}
 }
+
+func TestSessionIncarnationCreateRejectsLostLeaseBeforeWriting(t *testing.T) {
+	key := session.Key{AppName: "tsa1:8:tenant-a:support", UserID: "user-a", SessionID: "session-a"}
+	inner := inmemory.NewSessionService()
+	t.Cleanup(func() { _ = inner.Close() })
+	service, err := NewStrictFencedSessionService(inner, &countingFenceAuthorizer{}, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, lease := incarnationLeaseContext(t, key)
+	if err := lease.Release(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.CreateSession(ctx, key, nil); !errors.Is(err, ErrStaleWriter) {
+		t.Fatalf("CreateSession with a lost lease = %v, want stale writer", err)
+	}
+	value, err := inner.GetSession(context.Background(), key)
+	if err != nil || value != nil || SessionIncarnationFromContext(ctx) != "" {
+		t.Fatalf("rejected creation persisted or bound a Session: value=%v err=%v", value, err)
+	}
+}

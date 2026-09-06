@@ -132,14 +132,7 @@ func (s *FencedSessionService) CreateSession(ctx context.Context, key session.Ke
 		if s.scope.strict && protectedSessionState(state) != nil {
 			return nil, ErrSessionIncarnation
 		}
-		value, err := s.inner.CreateSession(ctx, key, state, opts...)
-		if err != nil {
-			return nil, err
-		}
-		if err := s.validateReturnedSession(ctx, value); err != nil {
-			return nil, err
-		}
-		return s.bindSessionIncarnation(ctx, key, value)
+		return s.createSessionWithIncarnation(ctx, key, state, opts...)
 	})
 }
 

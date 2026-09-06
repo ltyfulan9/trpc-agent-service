@@ -297,8 +297,8 @@ func (c *Cache) RunJanitor(ctx context.Context, interval time.Duration) error {
 }
 
 // Close rejects new acquisitions, closes idle entries immediately and waits
-// for active references to release. Context expiry leaves active processors to
-// be closed by their eventual release function.
+// for active references to release. Context expiry lets in-flight cleanup
+// finish and leaves active processors to their eventual release function.
 func (c *Cache) Close(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -324,7 +324,10 @@ func (c *Cache) Close(ctx context.Context) error {
 	c.signalLocked()
 	c.trackCloseLocked(idle)
 	c.mu.Unlock()
-	_ = c.closeProcessorsTracked(idle)
+	if len(idle) > 0 {
+		// Provider cleanup has no context; keep the caller's deadline effective.
+		go func() { _ = c.closeProcessorsTracked(idle) }()
+	}
 
 	for {
 		c.mu.Lock()

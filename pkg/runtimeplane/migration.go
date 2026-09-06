@@ -63,8 +63,8 @@ func (c *Catalog) ValidateMigrationProfiles(tenantID, backend, sourceID, targetI
 			return fmt.Errorf("%w: source and target share a collection", ErrDataPlaneUnavailable)
 		}
 	case "s3":
-		if t.MaxBytes < s.MaxBytes {
-			return fmt.Errorf("%w: target object limit is smaller", ErrDataPlaneUnavailable)
+		if t.MaxBytes != s.MaxBytes {
+			return fmt.Errorf("%w: artifact object limits differ", ErrDataPlaneUnavailable)
 		}
 		if s.Endpoint == t.Endpoint && s.Bucket == t.Bucket {
 			return fmt.Errorf("%w: source and target share a bucket", ErrDataPlaneUnavailable)

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"maps"
 	"sync"
 
 	"github.com/google/uuid"
@@ -76,18 +77,13 @@ func protectedSessionState(state session.StateMap) error {
 	return nil
 }
 
-// Called only inside the strict Session service's execution fence.
-func (s *FencedSessionService) bindSessionIncarnation(ctx context.Context, key session.Key, value *session.Session) (*session.Session, error) {
-	if value == nil || !s.scope.strict {
-		return value, nil
-	}
-	id, err := SessionIncarnationID(value)
-	if err != nil {
-		return nil, err
+func (s *FencedSessionService) invocationBinding(ctx context.Context, key session.Key) (*sessionLeaseBinding, error) {
+	if !s.scope.strict {
+		return nil, nil
 	}
 	binding, _ := ctx.Value(sessionLeaseBindingKey{}).(*sessionLeaseBinding)
 	if binding == nil {
-		return value, nil
+		return nil, nil
 	}
 	if binding.key != key || binding.lease == nil || binding.lease.lock == nil || binding.lease.manager == nil ||
 		binding.lease.lock.Key != SessionInvocationLeaseKey(s.scope.tenantID, key) {
@@ -100,6 +96,70 @@ func (s *FencedSessionService) bindSessionIncarnation(ctx context.Context, key s
 	}
 	if binding.lease.Err() != nil || !binding.lease.manager.ValidateLock(ctx, binding.lease.lock) {
 		return nil, ErrStaleWriter
+	}
+	return binding, nil
+}
+
+// New Sessions persist their identity in the initial write. A database may
+// normalize CreatedAt precision between CreateSession and its first reread.
+func (s *FencedSessionService) createSessionWithIncarnation(ctx context.Context, key session.Key, state session.StateMap, opts ...session.Option) (*session.Session, error) {
+	binding, err := s.invocationBinding(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	var id string
+	if binding != nil {
+		binding.mu.Lock()
+		defer binding.mu.Unlock()
+		if _, err := s.invocationBinding(ctx, key); err != nil {
+			return nil, err
+		}
+		if binding.id != "" {
+			return nil, ErrSessionIncarnation
+		}
+		state = maps.Clone(state)
+		if state == nil {
+			state = make(session.StateMap)
+		}
+		id = uuid.NewString()
+		state[SessionIncarnationStateKey] = []byte(id)
+	}
+	value, err := s.inner.CreateSession(ctx, key, state, opts...)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.validateReturnedSession(ctx, value); err != nil {
+		return nil, err
+	}
+	if binding == nil {
+		return value, nil
+	}
+	returnedID, err := SessionIncarnationID(value)
+	if err != nil || returnedID != id {
+		return nil, ErrSessionIncarnation
+	}
+	if _, err := s.invocationBinding(ctx, key); err != nil {
+		return nil, err
+	}
+	binding.id = id
+	return value.Clone(), nil
+}
+
+// Called only inside the strict Session service's execution fence.
+func (s *FencedSessionService) bindSessionIncarnation(ctx context.Context, key session.Key, value *session.Session) (*session.Session, error) {
+	if value == nil || !s.scope.strict {
+		return value, nil
+	}
+	id, err := SessionIncarnationID(value)
+	if err != nil {
+		return nil, err
+	}
+	binding, err := s.invocationBinding(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	if binding == nil {
+		return value, nil
 	}
 	binding.mu.Lock()
 	defer binding.mu.Unlock()
@@ -122,6 +182,9 @@ func (s *FencedSessionService) bindSessionIncarnation(ctx context.Context, key s
 		return nil, ErrSessionIncarnation
 	}
 	if id == "" {
+		if _, err := s.invocationBinding(ctx, key); err != nil {
+			return nil, err
+		}
 		id = uuid.NewString()
 		if err := s.inner.UpdateSessionState(ctx, key, session.StateMap{SessionIncarnationStateKey: []byte(id)}); err != nil {
 			return nil, err

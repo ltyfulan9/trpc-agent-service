@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	redisv8 "github.com/go-redis/redis/v8"
 	"github.com/google/uuid"
 	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/controlplane"
 	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/fence"
@@ -40,6 +41,13 @@ func TestCrossBackendStorageAdapterSharesDataAcrossNodesAndIsolatesScopes(t *tes
 	dbA, dbB := openDatabase(t), openDatabase(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
+	redisOptions, err := redisv8.ParseURL(os.Getenv("TEST_REDIS_URL"))
+	if err != nil {
+		t.Fatalf("parse real Session lease Redis endpoint: %v", err)
+	}
+	redisClient := redisv8.NewClient(redisOptions)
+	t.Cleanup(func() { _ = redisClient.Close() })
+	sessionLocks := storage.NewSessionLockManager(redisClient)
 	profiles, err := storage.LoadBackendProfiles(`[
 		{"id":"cross-redis","backend":"redis","connectionEnv":"TEST_REDIS_URL","allowInsecure":true},
 		{"id":"cross-postgres","backend":"postgres","connectionEnv":"TEST_DATABASE_URL","allowInsecure":true}
@@ -83,8 +91,25 @@ func TestCrossBackendStorageAdapterSharesDataAcrossNodesAndIsolatesScopes(t *tes
 		}
 		key := crossBackendSessionKey(value)
 		actorCtx := fence.WithToken(ctx, value.tokens["alice"])
-		if _, err := first.sessions.CreateSession(actorCtx, key, session.StateMap{"tenant": []byte(value.value.ID)}); err != nil {
+		invocationLease, err := sessionLocks.AcquireLease(actorCtx, storage.SessionInvocationLeaseKey(value.value.ID, key), time.Minute)
+		if err != nil {
 			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			cleanup, stop := context.WithTimeout(context.Background(), 5*time.Second)
+			defer stop()
+			if err := invocationLease.Release(cleanup); err != nil {
+				t.Errorf("release Session invocation lease: %v", err)
+			}
+		})
+		actorCtx = storage.ContextWithSessionLease(actorCtx, key, invocationLease)
+		created, err := first.sessions.CreateSession(actorCtx, key, session.StateMap{"tenant": []byte(value.value.ID)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		incarnation, err := storage.SessionIncarnationID(created)
+		if err != nil || incarnation == "" || incarnation != storage.SessionIncarnationFromContext(actorCtx) {
+			t.Fatalf("strict %s creation did not bind its incarnation: id=%q err=%v", value.value.Storage.SessionBackend, incarnation, err)
 		}
 		// Cleanup borrows the second node until all test operations finish.
 		t.Cleanup(func() {
@@ -102,6 +127,10 @@ func TestCrossBackendStorageAdapterSharesDataAcrossNodesAndIsolatesScopes(t *tes
 		loaded, err := second.sessions.GetSession(actorCtx, key, session.WithEventNum(10))
 		if err != nil || loaded == nil || string(loaded.State["tenant"]) != value.value.ID {
 			t.Fatalf("node 2 missed committed %s Session: value=%v err=%v", value.value.Storage.SessionBackend, loaded, err)
+		}
+		loadedIncarnation, incarnationErr := storage.SessionIncarnationID(loaded)
+		if incarnationErr != nil || loadedIncarnation != incarnation {
+			t.Fatalf("node 2 missed committed %s incarnation: id=%q want=%q err=%v", value.value.Storage.SessionBackend, loadedIncarnation, incarnation, incarnationErr)
 		}
 		if err := second.sessions.AppendEvent(actorCtx, loaded, &event.Event{ID: "same-event-id", Timestamp: time.Now().UTC(),
 			Response: &model.Response{Choices: []model.Choice{{Message: model.Message{Role: model.RoleUser, Content: value.value.ID}}}}}); err != nil {
