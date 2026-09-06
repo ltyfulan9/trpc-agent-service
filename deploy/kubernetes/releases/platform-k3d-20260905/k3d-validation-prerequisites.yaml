@@ -34,7 +34,7 @@ spec:
         seccompProfile: {type: RuntimeDefault}
       containers:
       - name: postgres
-        image: trpc-v13-registry:5000/v13/postgres@sha256:68c8f729caca8638396647002948c0ab753fda787cbee9e887f7166169c6b87e
+        image: platform-registry:5000/infra/postgres@sha256:68c8f729caca8638396647002948c0ab753fda787cbee9e887f7166169c6b87e
         imagePullPolicy: IfNotPresent
         env:
         # A fresh local-path PVC root is owned by the provisioner. initdb must
@@ -99,7 +99,7 @@ spec:
         seccompProfile: {type: RuntimeDefault}
       containers:
       - name: redis
-        image: trpc-v13-registry:5000/v13/redis@sha256:1db42ccef14898aa29bae778452d567534b59c107129cbc1163fb552de184d3c
+        image: platform-registry:5000/infra/redis@sha256:1db42ccef14898aa29bae778452d567534b59c107129cbc1163fb552de184d3c
         imagePullPolicy: IfNotPresent
         command: [sh, -ec]
         args: ['exec redis-server --appendonly yes --requirepass "$REDIS_PASSWORD"']

@@ -29,7 +29,7 @@ spec:
         labelSelector: {matchLabels: {app: agent-worker}}
       containers:
       - name: worker
-        image: trpc-v13-registry:5000/platform/worker@sha256:858c68472ebdb57f00ac0d89f6ce74b083aee328b7489234879e807c1b2b49ea
+        image: platform-registry:5000/platform/worker@sha256:858c68472ebdb57f00ac0d89f6ce74b083aee328b7489234879e807c1b2b49ea
         imagePullPolicy: IfNotPresent
         securityContext:
           allowPrivilegeEscalation: false

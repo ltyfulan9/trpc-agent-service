@@ -3,7 +3,7 @@ kind: Deployment
 metadata:
   name: agent-consumer
   annotations:
-    agent.trpc.io/mesh-mtls-evidence: k3d-trpc-v13-linkerd-edge-26.8.4-all-authenticated-20260905
+    agent.trpc.io/mesh-mtls-evidence: k3d-platform-linkerd-edge-26.8.4-all-authenticated-20260905
     agent.trpc.io/validation-scope: local-k3d-only
 spec:
   replicas: 3
@@ -24,7 +24,7 @@ spec:
         labelSelector: {matchLabels: {app: agent-consumer}}
       containers:
       - name: consumer
-        image: trpc-v13-registry:5000/platform/consumer@sha256:9b4eadd4f2c6e61f170c4caa71c9485a5026fa3cc373bd2751dad627a657f201
+        image: platform-registry:5000/platform/consumer@sha256:9b4eadd4f2c6e61f170c4caa71c9485a5026fa3cc373bd2751dad627a657f201
         imagePullPolicy: IfNotPresent
         securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: ["ALL"]}}
         ports: [{name: http, containerPort: 9091}]
@@ -97,7 +97,7 @@ spec:
         labelSelector: {matchLabels: {app: agent-delivery}}
       containers:
       - name: delivery
-        image: trpc-v13-registry:5000/platform/delivery@sha256:b40e67600fb1410ea6ac121458ff48c563e467ee45d10ff404a6c4f2ba04a307
+        image: platform-registry:5000/platform/delivery@sha256:b40e67600fb1410ea6ac121458ff48c563e467ee45d10ff404a6c4f2ba04a307
         imagePullPolicy: IfNotPresent
         securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: ["ALL"]}}
         ports: [{name: http, containerPort: 9092}]

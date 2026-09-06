@@ -28,7 +28,7 @@ spec:
         labelSelector: {matchLabels: {app: agent-admin}}
       containers:
       - name: admin
-        image: trpc-v13-registry:5000/platform/admin@sha256:3703fc2379a4daba90650d59c23d889ee436fd5860562b5b8f648b759840d3e6
+        image: platform-registry:5000/platform/admin@sha256:3703fc2379a4daba90650d59c23d889ee436fd5860562b5b8f648b759840d3e6
         imagePullPolicy: IfNotPresent
         securityContext:
           allowPrivilegeEscalation: false
