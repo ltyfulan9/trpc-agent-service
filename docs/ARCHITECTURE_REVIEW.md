@@ -15,7 +15,8 @@ Artifact content. The control plane publishes references and immutable
 configuration instead of duplicating data-plane state.
 
 This review explains those ownership decisions and their trade-offs. The
-system sequence is documented in [ARCHITECTURE.md](ARCHITECTURE.md), validation
+system overview is documented in [架构设计](ARCHITECTURE.md), the complete sequence
+and protocols in [项目方案](COMPETITION_SUBMISSION.md#5-核心消息时序), validation
 results in [ACCEPTANCE_EVIDENCE.md](ACCEPTANCE_EVIDENCE.md), and deployment
 prerequisites in [EXTERNAL_ACCEPTANCE_RUNBOOK.md](EXTERNAL_ACCEPTANCE_RUNBOOK.md).
 
@@ -138,3 +139,26 @@ These operational constraints are captured as concrete failure modes and
 owners in [RISK_REGISTER.md](RISK_REGISTER.md). Environment-specific identity,
 HA/DR, network, capacity and provider checks follow the linked deployment
 runbook.
+
+## 6. 失败模式与门禁取舍
+
+| 风险 | 后果 | 缓解/验收证据 |
+|---|---|---|
+| Gateway 先回 200 后落库 | 消息丢失 | 只在 Inbox COMMIT 后 200；kill-point 集成测试 |
+| 同消息重复/ID 冲突 | 重复执行或静默丢失 | 复合唯一键 + payload hash，冲突 409 |
+| 旧 Worker 复活写 | 覆盖新结果 | lease_version + owner + expiry；stale fence 测试 |
+| Worker 成功后 Consumer 崩溃 | 重复模型/工具 | invocation result cache；工具自身幂等键 |
+| Worker 在 execution finish 前退出 | RUNNING 审计永久悬挂 | 有界 stale reconciler 标记 ABANDONED；只更新 RUNNING；终态回归测试 |
+| Runner 前 admission 超时 | 无副作用却阻塞同 session | `ErrExecutionPreflightTimedOut` → execution `SafeToRetry=true` → HTTP 503/Consumer retry |
+| `Runner.Run` 后超时 | 模型/Tool 副作用未知 | `ErrExecutionTimedOut` → execution `SafeToRetry=false` → HTTP 423/reconciliation |
+| IM 成功后 Delivery 崩溃 | 当前片段进入 `WAITING_RECONCILIATION`，等待外部核对 | provider 幂等键；审计 replay 后继续，明确 at-least-once |
+| 跨租户 session/memory 串数据 | 数据泄露 | tenant appName/session namespace、复合约束、隔离测试 |
+| 同 session 两次 Agent 并发或乱序 | Event/工具交错、因果倒置 | 持久化 session_sequence 前序门禁；全 invocation 可续约 lease；死信暂停/重放与跨 session 回归测试 |
+| Runner Plugin 未装配或被绕过 | 危险工具绕过 | Worker 构造固定注册 Plugin，Runner BeforeTool/AfterTool 回归测试 |
+| 内部 Worker 暴露 | 未授权模型调用 | body-bound HMAC、nonce replay store、NetworkPolicy/mTLS |
+| Admin 遮盖值回写 | 永久覆盖真实密钥 | preserve masked secrets 测试 |
+| 日志/URL 泄密 | 凭据泄露 | 固定遮盖、严格凭据格式、opaque transport error、无 raw prompt 审计 |
+| Redis 故障或并发预检穿透预算 | 失控成本 | Lua 原子预留、UTC 日账本、租约回收、usage 保守结算；任一落账失败 fail-closed |
+| 摘要乱序覆盖 | 上下文倒退 | max_event_sequence CAS 与晚到任务测试 |
+| 在线迁移源目标不一致 | 切换丢记录或读取旧版本 | 持久化 intent/journal、目标读回验证、全量规范记录比对、配置 CAS 与回滚窗口 |
+| 无基准容量数据 | 峰值雪崩 | 可复现 load test + SLO/error budget gate |

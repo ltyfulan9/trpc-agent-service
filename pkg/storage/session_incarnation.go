@@ -132,7 +132,7 @@ func (s *FencedSessionService) createSessionWithIncarnation(ctx context.Context,
 		return nil, err
 	}
 	if binding == nil {
-		return value, nil
+		return s.bindSessionIncarnation(ctx, key, value)
 	}
 	returnedID, err := SessionIncarnationID(value)
 	if err != nil || returnedID != id {

@@ -219,7 +219,7 @@ Profile catalog 在单个进程内不可变，各副本应部署相同定义，�
 
 | 场景 | 执行机制 | 准入与运行约束 |
 | --- | --- | --- |
-| 多节点处理同一 Session | 持久化 Inbox FIFO、完整 Runner Redis lease、存储操作周围的 PostgreSQL execution generation/fence 校验 | 各节点共用协调数据库与数据 profiles；直接 SDK 和旧版写入者不参与协议 |
+| 多节点处理同一 Session | 持久化 Inbox FIFO、完整 Runner Redis lease、存储操作周围的 PostgreSQL execution generation/fence 校验 | 各节点共用协调数据库与数据 profiles；直接 SDK 调用及未接入协议的写入者不受这些约束 |
 | Event / State / Summary 顺序 | Event/State 提交后发布 Summary job；稳定 cutoff、fenced checkpoint CAS；下一轮 Runner overlay | Summary 按 Session 代次隔离，生成期间的新回执登记后续目标解析；Session backend、模型调用和 checkpoint 通过协议衔接，各自提交 |
 | Memory 跨节点可见 | 官方共享 backend 与 tenant/app/actor 作用域 | 同 actor 的不同 Session 可并发写入，遵循 backend 更新语义；`memory_limit` 为 SDK/backend 限制，跨 Session 并发不保证硬上限 |
 | Memory 硬容量配额 | 待扩展的用户作用域原子 reservation/enforcement | token 预算账本独立计量，不承担 Memory 条目计数 |
@@ -270,7 +270,7 @@ Session 的 `platform:session_incarnation_id` UUID 随规范 State 迁移，Summ
 | 多节点同步与恢复 | `pkg/reliable`、`pkg/controlplane/session_fence.go`、`pkg/storage/lease.go`、`test/integration/postgres_reliable_test.go` | 副本共用依赖，覆盖同 Session 竞争、租约接管和陈旧提交 |
 | 数据归属与关联 | [DATA_MODEL.md](DATA_MODEL.md) | 核对平台 SQL 键、SDK 逻辑实体、摘要事件前缀及对象元数据/正文 |
 | 在线迁移 | `test/integration/online_session_migration_test.go`、`test/integration/online_dataplane_migration_test.go` | 验证实际捕获、目标读回、旧缓存路由、失败恢复及回滚；不支持的操作按准入契约拒绝 |
-| 两种 IM，包含企业微信 | `pkg/channel`、Gateway/Delivery 装配、[架构与消息时序](ARCHITECTURE.md) | 企业微信与 Telegram 文本适配由协议测试覆盖；目标账号单聊/群聊隔离、回调重试和回复收发需实际验收 |
+| 两种 IM，包含企业微信 | `pkg/channel`、Gateway/Delivery 装配、[项目方案与消息时序](COMPETITION_SUBMISSION.md#5-核心消息时序) | 企业微信与 Telegram 文本适配由协议测试覆盖；目标账号单聊/群聊隔离、回调重试和回复收发需实际验收 |
 | 治理、全链 trace 与至少八项风险 | `pkg/telemetry`、`pkg/governance`、[总体方案](COMPETITION_SUBMISSION.md)、[风险登记册](RISK_REGISTER.md) | 方案列出 12 项风险，登记册列出 29 项；验证 trace 跨队列传播、工具授权及脱敏，再验收实际告警接收端、HA/RTO 与容量 |
 | SDK 复用与平台新增 | 官方 Session/Memory 构造器和 Runner 接口；`pkg/storage`、`pkg/runtimeplane`、`pkg/migrationruntime` | 复用框架服务与执行接口；平台新增 profile catalog、作用域和生命周期、fencing、可靠队列、Summary 协调及迁移捕获/路由。其他 SDK 适配器须完成平台契约后接入 |
 | 配置改绑保护 | `pkg/tenant/storage_binding_test.go` | 四域改绑/清空拒绝、首次配置、普通更新与已完成迁移位置保护 |

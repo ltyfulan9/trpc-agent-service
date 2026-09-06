@@ -1036,6 +1036,7 @@ func (w *Worker) Process(ctx context.Context, req *Request) (response *Response,
 	t := w.tenant
 	start := w.collectorStart()
 	executionMayHaveStarted := false
+	validatedApprovalPause := false
 	// Every return before the Runner boundary must retain an explicit execution
 	// phase. Without this guard a transient budget/lease/backend error is
 	// recorded as retry-unsafe, causing the next Inbox delivery to be blocked
@@ -1046,7 +1047,7 @@ func (w *Worker) Process(ctx context.Context, req *Request) (response *Response,
 			return
 		}
 		if executionMayHaveStarted {
-			if _, paused := AsApprovalPause(err); !paused {
+			if !validatedApprovalPause {
 				err = errors.Join(ErrWorkerExecutionOutcomeUnknown, err)
 			}
 			return
@@ -1327,6 +1328,7 @@ func (w *Worker) Process(ctx context.Context, req *Request) (response *Response,
 		// the event stream and return that error synchronously. Preserve the
 		// typed challenge instead of collapsing it into a generic run failure.
 		if challenge, ok := approvalState.Challenge(); ok {
+			validatedApprovalPause = true
 			w.audit(ctx, req, "approval_required", start, "tool_confirmation_required", 0)
 			return nil, &governance.ApprovalRequiredError{Challenge: challenge}
 		}
@@ -1346,6 +1348,7 @@ func (w *Worker) Process(ctx context.Context, req *Request) (response *Response,
 			return nil, timeoutErr
 		}
 		if challenge, ok := approvalState.Challenge(); ok {
+			validatedApprovalPause = true
 			w.audit(ctx, req, "approval_required", start, "tool_confirmation_required", 0)
 			return nil, &governance.ApprovalRequiredError{Challenge: challenge}
 		}
@@ -1353,6 +1356,7 @@ func (w *Worker) Process(ctx context.Context, req *Request) (response *Response,
 		return nil, collectErr
 	}
 	if challenge, ok := approvalState.Challenge(); ok {
+		validatedApprovalPause = true
 		w.audit(ctx, req, "approval_required", start, "tool_confirmation_required", 0)
 		return nil, &governance.ApprovalRequiredError{Challenge: challenge}
 	}

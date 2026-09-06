@@ -100,7 +100,7 @@ func ValidateRelease(manifests [][]byte, networkPolicy []byte, releaseContext Re
 	if err := validateMigrationContext(workloads["agent-migrate"], releaseContext); err != nil {
 		return err
 	}
-	return validateNetworkPolicy(networkPolicy)
+	return validateNetworkPolicy(networkPolicy, workloads)
 }
 
 func validateMigrationContext(migration workload, releaseContext ReleaseContext) error {
@@ -147,6 +147,9 @@ type workload struct {
 	Data map[string]string `yaml:"data"`
 	Spec struct {
 		Template struct {
+			Metadata struct {
+				Labels map[string]string `yaml:"labels"`
+			} `yaml:"metadata"`
 			Spec podSpec `yaml:"spec"`
 		} `yaml:"template"`
 	} `yaml:"spec"`
@@ -542,7 +545,7 @@ func loadNetworkPolicies(data []byte) ([]networkPolicy, error) {
 	return policies, nil
 }
 
-func validateNetworkPolicy(data []byte) error {
+func validateNetworkPolicy(data []byte, workloads map[string]workload) error {
 	if len(bytes.TrimSpace(data)) == 0 {
 		return fmt.Errorf("production NetworkPolicy is required")
 	}
@@ -558,13 +561,15 @@ func validateNetworkPolicy(data []byte) error {
 			return fmt.Errorf("production NetworkPolicy has duplicate resource %q", policy.Metadata.Name)
 		}
 		seen[policy.Metadata.Name] = true
+		if err := policy.Spec.PodSelector.validate(); err != nil {
+			return fmt.Errorf("production NetworkPolicy %q has invalid Pod selector: %w", policy.Metadata.Name, err)
+		}
 		if policy.Metadata.Name == "default-deny" {
 			if !isDefaultDeny(policy) {
 				return fmt.Errorf("production NetworkPolicy %q must select every Pod and deny both ingress and egress", policy.Metadata.Name)
 			}
 			foundDefaultDeny = true
 		}
-		app := policy.Spec.PodSelector.MatchLabels["app"]
 		for _, rule := range policy.Spec.Egress {
 			if len(rule.To) == 0 {
 				return fmt.Errorf("production NetworkPolicy %q has an egress rule with no constrained destination", policy.Metadata.Name)
@@ -576,8 +581,12 @@ func validateNetworkPolicy(data []byte) error {
 				if err := validateEgressPeer(policy.Metadata.Name, peer); err != nil {
 					return err
 				}
-				if (app == "agent-worker" || app == "agent-summary-worker" || app == "agent-delivery") && isControlledEgressGateway(peer) {
-					foundControlledEgress[app] = true
+				if isControlledEgressGateway(peer) {
+					for _, app := range []string{"agent-worker", "agent-summary-worker", "agent-delivery"} {
+						if policy.Spec.PodSelector.matches(workloads[app].Spec.Template.Metadata.Labels) {
+							foundControlledEgress[app] = true
+						}
+					}
 				}
 			}
 		}
@@ -624,6 +633,13 @@ func isPublicCIDR(value string) bool {
 }
 
 func validateEgressPeer(policyName string, peer networkPeer) error {
+	for _, selector := range []*labelSelector{peer.NamespaceSelector, peer.PodSelector} {
+		if selector != nil {
+			if err := selector.validate(); err != nil {
+				return fmt.Errorf("production NetworkPolicy %q has invalid egress selector: %w", policyName, err)
+			}
+		}
+	}
 	if peer.IPBlock != nil {
 		if peer.NamespaceSelector != nil || peer.PodSelector != nil {
 			return fmt.Errorf("production NetworkPolicy %q mixes ipBlock and selectors in one egress peer", policyName)
@@ -683,7 +699,7 @@ func mustPrefixes(values ...string) []netip.Prefix {
 
 func isControlledEgressGateway(peer networkPeer) bool {
 	return peer.NamespaceSelector != nil &&
-		peer.NamespaceSelector.MatchLabels["agent-platform-access"] == "egress-gateway" &&
+		peer.NamespaceSelector.admitsRequiredLabel("agent-platform-access", "egress-gateway") &&
 		peer.PodSelector != nil &&
-		peer.PodSelector.MatchLabels["app"] == "agent-egress-gateway"
+		peer.PodSelector.admitsRequiredLabel("app", "agent-egress-gateway")
 }

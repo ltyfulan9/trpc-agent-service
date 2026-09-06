@@ -406,6 +406,8 @@ metadata:
   name: agent-gateway
 spec:
   template:
+    metadata:
+      labels: {app: agent-gateway}
     spec:
       containers:
       - name: gateway
@@ -423,6 +425,8 @@ metadata:
   name: agent-worker
 spec:
   template:
+    metadata:
+      labels: {app: agent-worker}
     spec:
       containers:
       - name: worker
@@ -458,6 +462,8 @@ metadata:
   name: agent-summary-worker
 spec:
   template:
+    metadata:
+      labels: {app: agent-summary-worker}
     spec:
       containers:
       - name: summary-worker
@@ -477,6 +483,8 @@ metadata:
     agent.trpc.io/mesh-mtls-evidence: CHANGE-1234
 spec:
   template:
+    metadata:
+      labels: {app: agent-consumer}
     spec:
       containers:
       - name: consumer
@@ -500,6 +508,8 @@ metadata:
   name: agent-delivery
 spec:
   template:
+    metadata:
+      labels: {app: agent-delivery}
     spec:
       containers:
       - name: delivery
@@ -517,6 +527,8 @@ metadata:
   name: agent-admin
 spec:
   template:
+    metadata:
+      labels: {app: agent-admin}
     spec:
       containers:
       - name: admin
@@ -541,6 +553,8 @@ metadata:
     agent.trpc.io/schema-class: compatible
 spec:
   template:
+    metadata:
+      labels: {app: agent-migrate}
     spec:
       containers:
       - name: migrate

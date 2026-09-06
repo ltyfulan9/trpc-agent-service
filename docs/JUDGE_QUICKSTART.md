@@ -60,7 +60,7 @@ go vet -p 1 ./...
 ## 4. 阅读顺序
 
 1. [竞赛方案](COMPETITION_SUBMISSION.md)：题目映射、总体设计和技术取舍。
-2. [架构](ARCHITECTURE.md) 与 [数据模型](DATA_MODEL.md)：组件边界与状态所有权。
+2. [架构设计](ARCHITECTURE.md)、[数据模型](DATA_MODEL.md)与[数据同步与幂等设计](DATA_SYNC_IDEMPOTENCY.md)：组件边界、状态所有权与同步恢复。
 3. [多后端设计](MULTI_BACKEND_DESIGN.md) 与 [在线迁移](ONLINE_MIGRATION.md)：租户组合、存储取舍和切换恢复。
 4. [验收证据](ACCEPTANCE_EVIDENCE.md)：功能对应的测试和验收断言。
 5. [安全设计](SECURITY_REVIEW.md) 与 [SLI/SLO](SLO.md)：授权、故障处置与服务目标。

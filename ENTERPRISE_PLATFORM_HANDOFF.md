@@ -43,7 +43,7 @@
 - 死信：记录原因及关联 trace，由操作者携带 actor/reason 重放。
 - Outbox resume：保留已确认 cursor；restart：从首段重发，操作前确认业务影响。
 
-同 Session 的阻塞前序暂停后续消息，其他 Session 独立推进。详细状态关系见 [架构](docs/ARCHITECTURE.md) 与 [风险登记册](docs/RISK_REGISTER.md)。
+同 Session 的阻塞前序暂停后续消息，其他 Session 独立推进。组件关系见 [架构设计](docs/ARCHITECTURE.md)，提交与恢复契约见 [数据同步与幂等设计](docs/DATA_SYNC_IDEMPOTENCY.md)，故障处理见 [风险登记册](docs/RISK_REGISTER.md)。
 
 ## 验证记录
 

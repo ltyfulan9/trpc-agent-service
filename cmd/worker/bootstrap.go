@@ -594,22 +594,14 @@ func runWorker() {
 				http.Error(w, "Session requires operator reconciliation", http.StatusLocked)
 				return
 			}
-			var approvalErr *governance.ApprovalRequiredError
-			if errors.As(err, &approvalErr) {
+			if writeHTTPApprovalPause(w, err, func() {
 				// Approval is an operator-gated pause, not an uncertain external
 				// side effect. Mark this attempt retry-safe so the same durable
 				// invocation can continue after the grant is consumed.
 				if executionHandle.ID != 0 && !heartbeatFailed.Load() {
 					failExecution(r.Context(), executionRecorder, executionHandle, "tool_approval_required", true)
 				}
-				// The challenge is intentionally returned as a bounded JSON control
-				// response. It contains no approval secret and can be acknowledged by
-				// an IM adapter or an authenticated admin flow.
-				if approvalErr == nil {
-					http.Error(w, "Tool approval required", http.StatusPreconditionRequired)
-					return
-				}
-				writeApprovalRequiredResponse(w, approvalErr.Challenge)
+			}) {
 				return
 			}
 			if errors.Is(err, worker.ErrApprovalResumeUnsafe) {

@@ -10,7 +10,7 @@
 |---|---|
 | 租户级数据面组合 | Session/Memory 独立选择引擎与 profile，例如租户 A 使用 Redis Session + PostgreSQL Memory，租户 B 使用相反组合；profile 指定共享或专属部署位置。见[配置与 SDK 调用链](docs/MULTI_BACKEND_DESIGN.md) |
 | 可恢复的数据迁移协议 | 创建时捕获增量，源端写入前持久化 intent，以 journal 追平并验证目标；配置 CAS 切换后，在回滚窗口继续写入源端。见[在线迁移](docs/ONLINE_MIGRATION.md) |
-| 跨节点执行一致性 | 请求绑定不可变版本，副本共享 Session/Memory；FIFO、lease/fence 和结果记录约束故障接管，Consumer 事务完成 Inbox/Outbox。见[架构](docs/ARCHITECTURE.md)与[验收入口](docs/ACCEPTANCE_EVIDENCE.md) |
+| 跨节点执行一致性 | 请求绑定不可变版本，副本共享 Session/Memory；FIFO、lease/fence 和结果记录约束故障接管，Consumer 事务完成 Inbox/Outbox。见[架构设计](docs/ARCHITECTURE.md)与[验收入口](docs/ACCEPTANCE_EVIDENCE.md) |
 
 平台按 PostgreSQL、Redis、Qdrant、S3-compatible 四类存储分工。profile 表达实例、命名空间与授权配置；各类状态的权威所有者和恢复协议保持明确。
 
@@ -20,8 +20,8 @@
 |---|---|
 | 项目概览与演示顺序 | [评审指南](docs/JUDGE_QUICKSTART.md) |
 | 完整方案与框架复用边界 | [项目方案](docs/COMPETITION_SUBMISSION.md) |
-| 模块边界与设计取舍 | [架构](docs/ARCHITECTURE.md)、[设计决策](docs/ARCHITECTURE_REVIEW.md) |
-| 数据所有权与一致性 | [数据模型](docs/DATA_MODEL.md) |
+| 模块边界与设计取舍 | [架构设计](docs/ARCHITECTURE.md)、[设计决策](docs/ARCHITECTURE_REVIEW.md) |
+| 数据所有权与一致性 | [数据模型](docs/DATA_MODEL.md)、[数据同步与幂等设计](docs/DATA_SYNC_IDEMPOTENCY.md) |
 | 租户选择与后端组合 | [多后端适配方案](docs/MULTI_BACKEND_DESIGN.md) |
 | 在线数据迁移与恢复 | [迁移运行指南](docs/ONLINE_MIGRATION.md) |
 | 安全、故障和运行指标 | [安全设计](docs/SECURITY_REVIEW.md)、[风险登记册](docs/RISK_REGISTER.md)、[SLO](docs/SLO.md) |
@@ -56,7 +56,7 @@ flowchart LR
 
 Inbox/Outbox 由 PostgreSQL 持久化；Worker 返回执行结果后，由 Consumer 提交完成事务。
 
-Admin 管理不可变版本与部署；Worker 进程内的 Storage Adapter 选择官方 Redis/PostgreSQL Session/Memory Service，独立的数据面 Resolver 注入 Qdrant Knowledge 和 PostgreSQL 元数据 + S3/MinIO 对象的 Artifact Service。Summary 由独立 Summary Worker 消费任务并发布 checkpoint，下一轮 Runner 读取摘要。接线与存储所有权见[架构分图](docs/ARCHITECTURE.md#21-session--memory-适配)。
+Admin 管理不可变版本与部署；Worker 进程内的 Storage Adapter 选择官方 Redis/PostgreSQL Session/Memory Service，独立的数据面 Resolver 注入 Qdrant Knowledge 和 PostgreSQL 元数据 + S3/MinIO 对象的 Artifact Service。Summary 由独立 Summary Worker 消费任务并发布 checkpoint，下一轮 Runner 读取摘要。接线与存储所有权见[项目方案分图](docs/COMPETITION_SUBMISSION.md#251-session--memory-适配)。
 
 PostgreSQL 另持有控制面、执行 guard、审计和迁移 fence。Runner 缓存按租户、配置、版本和部署标识绑定，并具有容量、TTL 和排空约束。
 
@@ -153,7 +153,7 @@ Kubernetes 的镜像 digest、Secret、网络策略、传输和迁移门禁见 [
 
 | 题目要求 | 实现与核验入口 |
 |---|---|
-| 多租户节点部署、治理和故障恢复 | [架构与部署单元](docs/ARCHITECTURE.md)、[设计决策](docs/ARCHITECTURE_REVIEW.md) |
+| 多租户节点部署、治理和故障恢复 | [架构设计](docs/ARCHITECTURE.md)、[独立部署单元](docs/COMPETITION_SUBMISSION.md#24-独立部署单元与组合根)、[设计决策](docs/ARCHITECTURE_REVIEW.md) |
 | Tenant、Agent、Binding、Session、Event、Memory、Summary、Audit 关系 | [数据模型与物理 ER](docs/DATA_MODEL.md) |
 | 两种 IM，包含微信或企业微信 | 企业微信与 Telegram 文本 Adapter；[完整消息时序](docs/COMPETITION_SUBMISSION.md#5-核心消息时序) |
 | 至少三类存储及同步策略 | PostgreSQL、Redis、Qdrant、S3-compatible；[配置、选型与迁移](docs/MULTI_BACKEND_DESIGN.md) |

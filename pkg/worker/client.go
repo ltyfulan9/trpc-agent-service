@@ -155,6 +155,9 @@ type ApprovalPause struct {
 // represents the same result as HTTP 428. Keeping this translation in worker
 // prevents queue orchestration from depending on a specific transport.
 func AsApprovalPause(err error) (ApprovalPause, bool) {
+	if errors.Is(err, ErrWorkerExecutionOutcomeUnknown) {
+		return ApprovalPause{}, false
+	}
 	var statusErr *HTTPStatusError
 	if errors.As(err, &statusErr) && statusErr != nil && statusErr.StatusCode == http.StatusPreconditionRequired {
 		return ApprovalPause{

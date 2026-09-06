@@ -14,7 +14,7 @@
 | `deploy/` | Compose、Kubernetes 源模板、监控和容器构建 |
 | `scripts/` | 构建、验证、接入配置、发布和打包工具 |
 | `test/` | PostgreSQL/Redis/Qdrant/MinIO 集成测试 |
-| `docs/` | 方案、架构、数据模型、安全、运行和验收 |
+| `docs/` | 项目方案、架构设计、数据模型、数据同步与幂等、安全、运行和验收 |
 | `.github/workflows/` | 自动化验证流程 |
 | `go.mod` / `go.sum` / `LICENSE` | 依赖版本、校验与许可 |
 
@@ -57,6 +57,8 @@ Admin/Worker 在进程启动时封存 runtime registry；配置、HTTP、策略�
 Worker 装配 Session/Knowledge/Artifact 迁移装饰器，Summary Worker 装配相同 Session 装饰器；`cmd/data-migrate` 驱动生产协调器，`cmd/migrate` 负责 schema。集成入口为 `test/integration/online_session_migration_test.go` 和 `online_dataplane_migration_test.go`。支持范围、完整记录比对、扫描延迟、源写目标读的回滚窗口和恢复命令见[迁移运行指南](docs/ONLINE_MIGRATION.md)，对应运行结果保存在交付证据中。
 
 ## 验证与配置
+
+[项目方案](docs/COMPETITION_SUBMISSION.md)包含组件与协议细节，[架构设计](docs/ARCHITECTURE.md)说明系统边界和设计取舍，[数据同步与幂等设计](docs/DATA_SYNC_IDEMPOTENCY.md)定义逐域提交、可见性、摘要顺序与恢复契约。
 
 [验证方法](docs/VERIFICATION.md) 说明测试环境与命令，[验收矩阵](docs/ACCEPTANCE_EVIDENCE.md) 说明各能力的检查项，[交付指南](ENTERPRISE_PLATFORM_HANDOFF.md) 说明启动和接入顺序。
 

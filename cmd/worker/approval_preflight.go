@@ -22,6 +22,21 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/worker"
 )
 
+func writeHTTPApprovalPause(w http.ResponseWriter, err error, markPaused func()) bool {
+	if _, paused := worker.AsApprovalPause(err); !paused {
+		return false
+	}
+	var approvalErr *governance.ApprovalRequiredError
+	if !errors.As(err, &approvalErr) || approvalErr == nil {
+		return false
+	}
+	if markPaused != nil {
+		markPaused()
+	}
+	writeApprovalRequiredResponse(w, approvalErr.Challenge)
+	return true
+}
+
 // preflightApprovalResume checks a durable retry before the caller creates an
 // execution record. A pending challenge is only claimable after its grant is
 // visible in the same durable approval store; all inspection failures fail
