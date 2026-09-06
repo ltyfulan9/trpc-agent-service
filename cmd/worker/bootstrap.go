@@ -31,6 +31,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/fence"
 	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/governance"
 	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/health"
+	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/migrationruntime"
 	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/platformtool"
 	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/resultcache"
 	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/runtimeplane"
@@ -212,8 +213,16 @@ func runWorker() {
 		controlDB.Close()
 		log.Fatalf("failed to ping control-plane database: error=%s", telemetry.StableErrorCode(err))
 	}
-	dataPlaneResolver, err := runtimeplane.NewProfileResolver(dataPlaneProfiles, controlDB)
+	migrationRuntime, err := migrationruntime.New(migrationruntime.Options{
+		DB: controlDB, StorageProfiles: backendProfiles, DataPlaneProfiles: dataPlaneProfiles,
+	})
 	if err != nil {
+		controlDB.Close()
+		log.Fatalf("initialize online migration runtime: error=%s", telemetry.StableErrorCode(err))
+	}
+	dataPlaneResolver, err := runtimeplane.NewProfileResolver(dataPlaneProfiles, controlDB, migrationRuntime.DataPlaneOption())
+	if err != nil {
+		_ = migrationRuntime.Close()
 		controlDB.Close()
 		log.Fatalf("initialize runtime data plane: error=%s", telemetry.StableErrorCode(err))
 	}
@@ -266,6 +275,7 @@ func runWorker() {
 	shutdown := health.NewCoordinator()
 	shutdown.OnShutdown("redis", func(context.Context) error { return redisClient.Close() })
 	shutdown.OnShutdown("control-plane-database", func(context.Context) error { return controlDB.Close() })
+	shutdown.OnShutdown("migration-runtime", func(context.Context) error { return migrationRuntime.Close() })
 	// MCP sessions are process-owned and shared by immutable Worker runners.
 	// Register their cleanup before the Worker cache so reverse-order shutdown
 	// first drains every active Runner, then closes remote MCP transports.
@@ -311,6 +321,7 @@ func runWorker() {
 	// model/tool execution ordering.
 	baseAdapter := storage.NewMultiTenantStorageAdapterImplWithOptions(storage.StorageCacheOptions{
 		BackendProfiles:           backendProfiles,
+		SessionDecorator:          migrationRuntime.SessionDecorator(),
 		WriteFence:                controlplane.NewPostgresSessionFence(controlDB),
 		ConfiguredTenants:         tenantService.ListTenants,
 		RequireBackendHealthProbe: true,

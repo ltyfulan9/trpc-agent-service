@@ -19,8 +19,8 @@
 | R-13 | Summary 已生成但下一轮 Runner 未消费 | 4/2 | prompt 中无 summary、历史无限增长 | migration 042 精确边界；Session clone overlay；`WithAddSessionSummary(true)` + `BranchFilterModeAll`；捕获真实 Runner request | 源码闭环 / Worker |
 | R-14 | 向量库数据串租户或保留 metadata 被覆盖 | 5/2 | scope violation、异常 hit | tenant+agent+logical ID 的 SHA-256 物理 ID；保留字段拒绝用户覆盖 | 源码闭环 / Knowledge |
 | R-15 | Artifact 对象与 SQL 元数据不一致/损坏 | 4/3 | object 404、hash mismatch | 独立写入标识、advisory xact lock、SHA-256、提交未知核对、tombstone 清理重试 | 源码闭环 / Artifact |
-| R-16 | 迁移 lease 过期后旧 projector 写目标并标记成功 | 5/2 | fence failure、marker drift | 副作用前后检查 fence；目标成功后才写 projected_at；幂等版本冲突 | 源码闭环 / Migration |
-| R-17 | Redis→SQL、Qdrant/S3 大规模迁移追不上增量 | 4/3 | watermark lag、dual-write backlog | 分片/限速、checkpoint、shadow read、延后 cutover、回滚窗 | 小规模闭环；容量待外部 / Migration |
+| R-16 | 迁移 lease 过期后旧 projector 写目标并标记成功 | 5/2 | fence failure、marker drift、pending journal | tenant/domain gate、副作用前后 fence 检查；真实目标 payload/hash 读回匹配后才写 projected_at；路由/配置/阶段原子 CAS | IMPLEMENTED，含生产集成入口 / Migration |
+| R-17 | 在线迁移遗漏增量、目标失败或扫描长期阻塞租户 | 4/3 | unresolved intent、journal 水位、目标错误、gate 等待及请求延迟 | 创建时捕获，源写前提交 intent；先恢复未完成记录，再按版本同步镜像；全量记录比对后切换；源写目标读回滚窗；按真实负载验收延迟和恢复 | IMPLEMENTED；目标容量/故障验收待执行 / Migration |
 | R-18 | token 预算并发穿透或未知 usage 被少计 | 4/3 | pending/uncertain、provider 差异 | Redis Lua reservation；dispatch 一次性；usage 不明按完整预留；落账失败拒绝成功 | 源码闭环；真实 Provider 待验收 / Governance |
 | R-19 | 恶意 Tool 参数或危险操作未经批准 | 5/2 | denied/challenge/audit | BeforeTool 唯一拦截；白名单；参数 canonical hash；持久审批一次性消费 | 源码闭环 / Governance |
 | R-20 | 附件 URL SSRF/DNS rebinding | 5/3 | blocked URL、异常 egress | Worker 只透传经验证的引用；实际出网侧配置域名/IP allowlist、DNS 与重定向校验 | Worker 无下载操作 / Security |
@@ -37,3 +37,7 @@
 ## 发布准入
 
 发布准入检查不可变镜像、进程级 Secret 范围、支持的数据库连接池模式、最小网络策略、单调 Summary checkpoint 和未知副作用恢复策略。真实 IM、KMS、OTLP TLS、告警接收端与备份恢复按部署验收运行手册保存证据；任一关键控制失败时暂停发布。
+
+在线迁移入口为 `cmd/data-migrate`，生产 Worker/Summary Worker 装饰器负责捕获和动态路由。上线前所有写入副本须升级并使用相同不可变 profile；持久化的实际存储身份/兼容性用于拒绝跨节点 profile 漂移，直接 SDK 或旧外部写入仍不受协议保护。`cmd/migrate` 单独负责 schema 迁移。
+
+活跃迁移串行化该租户数据域的操作，全量 inventory/规范记录比对和切换扫描可能暂时阻塞请求；同步镜像把目标延迟与故障带入调用路径，报错时源端可能已提交。READ_SHADOW 尚不覆盖真实查询流量和检索排名抽样。Session shared state/native summary/TTL、达到配置安全上限的数据和 Memory 在线迁移会被拒绝或不支持。回滚窗口源写目标读，完成后停止镜像并保留源数据；恢复命令、保留与清理职责见 [ONLINE_MIGRATION.md](ONLINE_MIGRATION.md)，最新验证结论见 [ACCEPTANCE_EVIDENCE.md](ACCEPTANCE_EVIDENCE.md)。

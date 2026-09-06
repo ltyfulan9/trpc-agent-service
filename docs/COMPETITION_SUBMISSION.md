@@ -17,16 +17,16 @@
 项目仓库与验证入口：
 
 ```text
-公开仓库：https://github.com/ltyfulan9/trpc-agent-service/tree/submission-fixes-20260906
+公开仓库：https://github.com/ltyfulan9/trpc-agent-service/tree/submission-online-migration-20260906
 提交校验：在评审 checkout 后执行 `git rev-parse HEAD`，并将结果记录到验收证据。
-提交分支：submission-fixes-20260906
+提交分支：submission-online-migration-20260906
 许可证：Apache-2.0（见 LICENSE）
 ```
 
 从全新目录执行：
 
 ```bash
-git clone --branch submission-fixes-20260906 --single-branch https://github.com/ltyfulan9/trpc-agent-service
+git clone --branch submission-online-migration-20260906 --single-branch https://github.com/ltyfulan9/trpc-agent-service
 cd trpc-agent-service
 git rev-parse HEAD
 ./scripts/validate.sh
@@ -36,64 +36,59 @@ Windows 本地验证入口是 `scripts/run_c_local_stack.ps1 -ProjectName trpc-p
 
 ## 2. 系统架构图
 
-```mermaid
-flowchart LR
-  subgraph EXT[外部入口]
-    WX[企业微信]
-    TG[Telegram]
-  end
-  subgraph EDGE[接入层]
-    CA[Channel Adapter\n验签/解密/规范化/去重]
-    GW[Agent Gateway\n限流/身份映射/Inbox 提交]
-  end
-  subgraph EXEC[执行层]
-    C[Consumer Pool\n公平调度/FIFO/fence]
-    W[Agent Worker Pool\nRunner + Plugin/Guardrail]
-    SW[Summary Worker Pool\n生成/预算/CAS/排空]
-    D[Delivery Pool\n分段/限流/重试/fence]
-  end
-  subgraph CTRL[控制面]
-    A[Admin API\nTenant/App/Version/Canary/Rollback]
-    CFG[(加密配置与审计)]
-    PROF[Storage Profile Catalog\n公开元数据 + 作用域 SecretRef]
-  end
-  subgraph ADAPT[Storage Adapter / 进程内租户数据适配]
-    SM[Session / Memory Services]
-    KS[Knowledge Service]
-    AS[Artifact Service]
-  end
-  subgraph DATA[共享数据层]
-    PG[(PostgreSQL\n可靠队列/控制面/执行栅栏权威/Audit/Session/Memory/Artifact metadata)]
-    R[(Redis\nSession/Memory/lease/nonce/budget)]
-    Q[(Qdrant\nKnowledge vectors)]
-    S3[(S3/MinIO\nArtifact objects)]
-  end
-  OT[OTel Collector]
-  PM[Prometheus / Alertmanager]
+包含 Channel Adapter、无状态 Worker、Storage Adapter、Plugin/Guardrail、Telemetry 与四类后端的 [系统总览图](ARCHITECTURE.md#12-系统总览) 展示完整关系，以下分图展开消息、数据和治理职责。租户配置样例与实际 SDK 调用路径见 [多后端适配方案](MULTI_BACKEND_DESIGN.md)。
 
-  WX & TG --> CA --> GW --> PG
-  PG --> C -->|HMAC + nonce + traceparent| W
-  W --> SM & KS & AS
-  SM -->|Session / Memory| R & PG
-  KS -->|Knowledge vectors| Q
-  AS -->|Artifact metadata| PG
-  AS -->|Artifact objects| S3
-  W -->|lease / nonce / budget| R
-  W -->|执行记录 / 审计| PG
-  C --> PG --> D --> CA --> WX & TG
-  PG --> SW --> SM
-  SW -->|lease / budget| R
-  SW -->|Summary job / checkpoint| PG
-  A --> CFG --> PG
-  A --> PROF
-  PROF --> SM & KS & AS
-  GW & C & W & SW & D & A --> OT
-  GW & C & W & SW & D & A --> PM
+### 2.1 可靠消息与执行
+
+```mermaid
+%%{init: {"theme":"neutral","flowchart":{"curve":"linear","nodeSpacing":28,"rankSpacing":35}}}%%
+flowchart TB
+  IM[企业微信 / Telegram 回调] --> GW[Gateway + Channel Adapter<br/>验签 · 解密 · 租户与会话映射]
+  GW -->|提交成功才确认| IN[(PostgreSQL Inbox<br/>幂等 · Session FIFO)]
+  IN -->|租约领取| C[Consumer Pool]
+  C -->|HMAC · nonce · traceparent| W[Worker Pool<br/>tRPC Runner + Governance Plugin]
+  W -->|持久化结果后返回| C
+  C -->|同一事务完成 Inbox| OUT[(PostgreSQL Outbox<br/>同时登记 Summary job)]
+  OUT --> D[Delivery Pool<br/>dispatch fence · 分段 cursor · 重试]
+  D --> REPLY[企业微信 / Telegram 文本回复]
 ```
 
 对进入执行链路的文本消息，Gateway 只在 Inbox 事务提交成功后返回 2xx；数据库不可用时返回可重试错误，不能先确认再异步落库。Consumer 使用 `FOR UPDATE SKIP LOCKED`、单调 `lease_version` 和持久化 `session_sequence`，既允许不同会话并行，也禁止同一会话乱序。Worker 的整次 Runner 生命周期持有可续约 Session lease，Session/Memory 存在共享后端，因此任意副本都能继续处理。
 
 Storage Adapter 是执行进程内的数据适配边界：Session/Memory 按租户 profile 选择 Redis 或 PostgreSQL；Knowledge 连接 Qdrant；Artifact 将版本元数据与对象正文分别写入 PostgreSQL 和 S3/MinIO。各服务注入 Runner 时已绑定租户作用域，Summary Worker 复用同一 Session/Memory 后端选择规则。
+
+### 2.2 Storage Adapter 与共享后端
+
+```mermaid
+%%{init: {"theme":"neutral","flowchart":{"curve":"linear","nodeSpacing":28,"rankSpacing":35}}}%%
+flowchart LR
+  subgraph ADAPT[Storage Adapter / Worker 进程内]
+    SM[Session / Memory Services]
+    KS[Knowledge Service]
+    AS[Artifact Service]
+  end
+  SM -->|租户 profile 二选一| SHARED[(Redis 或 PostgreSQL<br/>Session / Event / State / Memory)]
+  KS --> VEC[(Qdrant<br/>tenant / app 向量)]
+  AS --> META[(PostgreSQL<br/>Artifact 版本元数据)]
+  AS --> OBJ[(S3 / MinIO<br/>正文 · 精确对象版本)]
+```
+
+独立 Summary Worker 从 PostgreSQL 领取 job，复用租户 Session/Memory 适配，生成结果经 fenced CAS 写入 checkpoint；下一轮 Worker 将其叠加到 Session。Summary 的异步流程、Redis 的 lease/nonce/budget 协调职责见 [详细架构](ARCHITECTURE.md)。图中 PostgreSQL 节点按数据所有权分开表示，不代表必须部署多个数据库实例。
+
+### 2.3 控制、治理与观测
+
+```mermaid
+%%{init: {"theme":"neutral","flowchart":{"curve":"linear","nodeSpacing":28,"rankSpacing":35}}}%%
+flowchart LR
+  A[Admin API] --> CP[(PostgreSQL 控制面<br/>Tenant / App / Version / Deployment)]
+  CP -.->|固定版本与作用域| W[Worker / Runner]
+  W --> G[Governance Plugin<br/>白名单 · 预算 · 审批 · 脱敏]
+  G --> AUDIT[(PostgreSQL 审计)]
+  OPS[运行进程<br/>Gateway / Consumer / Worker<br/>Summary Worker / Delivery / Admin] -.->|OTLP| OT[OTel Collector]
+  OPS -.->|metrics| PM[Prometheus / Alertmanager]
+```
+
+每类运行进程可独立部署与扩缩容；虚线表示配置读取或遥测关系。profile catalog 与 SecretRef 由运维提供，解析器按租户、用途和进程职责授予实际秘密，不经过模型输入。Kubernetes/mesh、真实告警接收端和容量参数需要在目标环境验收。
 
 ## 3. 租户与隔离模型
 
@@ -140,7 +135,7 @@ sequenceDiagram
   C->>W: HMAC(method/path/body/traceparent)+nonce
   W->>SM: 获取共享 Session + 整次执行 lease
   W->>K: tenant/app scoped Knowledge search / Artifact service
-  W->>W: Plugin 校验白名单、预算、用户权限、审批
+  W->>W: Worker 预留预算；Plugin 校验工具权限与审批
   W->>T: tool call(idempotency key, timeout)
   T-->>W: result
   W->>SM: Runner 提交 Event/State/Memory
@@ -156,7 +151,7 @@ sequenceDiagram
 
 ## 6. 数据模型、一致性与多后端
 
-核心关系是 `Tenant 1-N ChannelBinding`、`Tenant 1-N AgentApp 1-N AgentVersion`、`AgentApp 1-N Deployment`、`Session 1-N Event 1-N Summary`、`Tenant/User 1-N Memory`、`Inbox 1-0..1 Outbox`、`Tenant/App 1-N KnowledgeDocument`、`Tenant/Session 1-N ArtifactVersion`。实际字段见 [DATA_MODEL.md](DATA_MODEL.md) 与 migrations 001–044。
+核心关系是 `Tenant 1-N ChannelBinding`、`Tenant 1-N AgentApp 1-N AgentVersion`、`AgentApp 1-N Deployment`、`Session 1-N Event`、`Session 1-N Summary`、`Tenant/User 1-N Memory`、`Inbox 1-0..1 Outbox`、`Tenant/App 1-N KnowledgeDocument`、`Tenant/Session 1-N ArtifactVersion`。Agent 用 App、不可变 Version 和 Deployment 表达；Summary 按 Session 与事件覆盖边界关联，不是单个 Event 的子记录。逻辑关系、物理键和 SDK 管理的数据边界见 [DATA_MODEL.md](DATA_MODEL.md) 与 migrations 001–045。
 
 | 数据 | 推荐后端 | 一致性 | 关键策略 |
 |---|---|---|---|
@@ -168,11 +163,17 @@ sequenceDiagram
 
 Summary 固定顺序为：`Event/State commit → 在 Inbox 完成事务中 upsert job → lease 下冻结 target → 重读稳定事件前缀 → 生成/预算结算 → fenced checkpoint CAS → job complete → 下一轮 Worker overlay Session.Summaries`。平台生成的是全会话 checkpoint，因此 Worker 同时开启 `WithAddSessionSummary(true)` 与 `BranchFilterModeAll`，避免框架默认分支前缀模式跳过空 filter key。集成测试捕获下一次真实 Runner 发出的 messages，证明摘要和 cutoff 后消息保留、cutoff 前原始 Event 被裁剪。旧任务不能覆盖较新序号；生成超时使用脱离请求取消但有界的失败写入，进程收到终止信号后停止 claim 并排空活跃 job。
 
-迁移由 `(tenant, domain)` owner lease、单调 fence、cursor、watermark 和 projection ledger 驱动。Redis→PostgreSQL Session 通过官方 Redis Service 读取规范化 Session-owned State/Event/Track，以版本化 journal 捕获 snapshot/catch-up，再由专用 projector 通过官方 PostgreSQL Service 落地；重复版本只补严格历史后缀，目标分叉或读取疑似截断立即阻断。平台 Summary checkpoint 位于独立 PostgreSQL 权威表，与 Session 后端切换解耦。Knowledge/Artifact 分别写 Qdrant 和精确 S3 版本。目标副作用前后均检查 fence；只有目标应用成功才写 `projected_at`。流程是 COPY → DUAL_WRITE → CATCH_UP → VALIDATE → SHADOW_READ → `config_version` CAS CUTOVER → 保留回滚窗；各类物理 schema 由专用 projector 转换并验证。
+在线迁移由 `(tenant, domain)` owner lease、单调 fence、持久化 route/intent/journal 和 cursor/watermark 驱动。Worker 的 Session/Knowledge/Artifact 和 Summary Worker 的 Session 服务已接入生产装饰器；创建迁移即开始捕获，写源前提交 intent，随后读取规范记录、同步投影目标并真实读回校验。未完成 intent 会在后续操作前恢复；删除和重建保留独立版本。存储身份及兼容性随路由持久化，阻止同名 profile 在不同节点指向不同存储。
+
+Session projector 通过官方 Service 转换 session-owned State/Event/Track，并从原生元数据发现历史会话；重复版本只补严格历史后缀，目标分叉或疑似截断立即阻断。当前拒绝 App/User shared state、SDK native summary、TTL 和达到配置安全上限的数据；平台 Summary checkpoint 位于独立 PostgreSQL 权威表。Memory 在线迁移尚未实现。Knowledge 在兼容 embedding 定义和维度的 Qdrant 之间投影，Artifact 保留精确 S3/MinIO 版本、正文、元数据和 tombstone。
+
+`cmd/data-migrate` 驱动 PREPARE → SNAPSHOT_COPY → DUAL_WRITE → CATCH_UP → VALIDATE → READ_SHADOW → CUTOVER → ROLLBACK_WINDOW，支持状态查询、暂停、恢复、终止、回滚和完成。VALIDATE/READ_SHADOW 全量比较规范记录与 inventory，真实查询流量、检索排名和用户响应抽样尚未实现。切换在排他 gate 内排空并重新比对，将 tenant config_version CAS、持久化路由、阶段、fence 和审计合并为同一事务；回滚窗口读目标、写源并镜像目标，显式 `complete` 后读写目标且停止镜像，保留终态路由和源数据。
+
+所有写入副本必须先升级并共享不可变 profile，外部直接写入不受捕获保护。活跃迁移串行化该租户数据域操作，全量校验可能暂时阻塞请求；同步镜像增加目标延迟和故障依赖，源写入可能先于调用失败提交。运行说明见 [ONLINE_MIGRATION.md](ONLINE_MIGRATION.md)。能力状态为 `IMPLEMENTED`，新增生产装饰器集成入口与实际执行状态见 [ACCEPTANCE_EVIDENCE.md](ACCEPTANCE_EVIDENCE.md)；目标负载和恢复演练仍须验收。
 
 ## 7. 治理、监控与安全
 
-Plugin/Guardrail 在模型前做内容策略、IM 用户授权、预算 reservation；在 Tool 前做白名单、规范化参数 hash、危险操作 challenge；Tool 后和最终输出做递归脱敏、审计与 token settlement。审计至少记录 `tenant_id/channel/user_id/session_id/agent_name/tool_name/decision/latency/error_type/cost/trace_id`，并额外记录 Agent 版本、deployment、idempotency key 和 approval challenge。
+Worker 在执行生命周期中校验内容与身份策略，完成预算 reservation、dispatch 和 token settlement。治理 Plugin 在 Tool 前校验白名单、规范化参数 hash 和危险操作 challenge，在 Tool 后及模型输出回调执行递归脱敏与审计。审计至少记录 `tenant_id/channel/user_id/session_id/agent_name/tool_name/decision/latency/error_type/cost/trace_id`，并额外记录 Agent 版本、deployment、idempotency key 和 approval challenge。
 
 指标包括入口 QPS/错误率、Inbox/Outbox depth/oldest age、Runner 与模型耗时、Tool 耗时、IM 成功率、token/租户成本、Session/Memory 延迟、Summary 失败率/耗时、migration lag、lease/fence rejection。W3C trace context 进入 Inbox 后持久化，并在 Consumer→Worker 的 HMAC body 和 Outbox 中传播。Prometheus 规则覆盖队列积压、SLO burn rate、retry storm、Summary 突发失败/高延迟；Alertmanager receiver 连接部署组织的告警接收端。
 
@@ -198,3 +199,48 @@ Plugin/Guardrail 在模型前做内容策略、IM 用户授权、预算 reservat
 交付包的 `verification-evidence/current-validation.log` 记录 Go 1.26.7 下的模块校验、build/vet/unit/race 和本地状态机演示。PostgreSQL/Redis/Qdrant/MinIO 集成、Compose、镜像及 Prometheus 规则由完整验证脚本执行；各项测试入口和验收断言见 [ACCEPTANCE_EVIDENCE.md](ACCEPTANCE_EVIDENCE.md)。
 
 企业微信/Telegram 账号接入、生产身份与网络、HA/DR、容量和备份恢复的环境配置与验收步骤统一见 [EXTERNAL_ACCEPTANCE_RUNBOOK.md](EXTERNAL_ACCEPTANCE_RUNBOOK.md)。
+
+## 10. 生产风险与缓解
+
+| 风险 | 缓解与恢复 | 当前边界 |
+|---|---|---|
+| 先确认回调后落库导致消息丢失 | Inbox COMMIT 后才返回成功；数据库失败允许 IM 重试 | 已实现 |
+| 重复消息或同 ID 内容冲突 | tenant/channel/account/message 唯一键与 payload hash | 已实现 |
+| 同 Session 乱序或旧 Worker 晚提交 | FIFO、可续约 lease、owner/fence/expiry 条件写入 | 已实现 |
+| 模型或工具已执行但响应丢失 | 结果缓存、未知结果暂停至 reconciliation；工具使用业务幂等键 | 平台已实现；业务工具需验收 |
+| IM 已发送但 cursor 未落库 | 发送前记录 DISPATCH_STARTED；未知结果外部核对后审计重放 | 已实现；真实 IM 待验收 |
+| 跨租户数据或工具越权 | profile/SecretRef 作用域、复合键、白名单、BeforeTool 审批 | 已实现 |
+| Redis 故障或预算并发穿透 | lease/nonce/budget fail-closed；Lua 原子预留与保守结算 | 已实现；目标容量待验收 |
+| 旧摘要覆盖新上下文 | 固定事件边界、job lease、checkpoint fenced CAS | 已实现 |
+| 对象正文与元数据不一致 | 不可变版本、SHA-256、提交未知核对、tombstone 清理重试 | 已实现 |
+| 在线迁移增量遗漏或目标失败 | 创建时捕获、intent 恢复、同步镜像、全量规范记录比对、CAS 与源写回滚窗 | 生产装配已实现；旧外部写入不覆盖，目标延迟/容量待验收 |
+| 遥测高基数或敏感内容泄漏 | 有界标签、租户 HMAC 假名、稳定错误类和脱敏 | 已实现；OTLP TLS 待验收 |
+| HA、PITR 或备份恢复失败 | 目标环境 restore drill，测量 RPO/RTO 并保留恢复证据 | 待外部验收 |
+
+完整风险、观测信号与责任模块见 [风险登记册](RISK_REGISTER.md)。
+
+## 11. tRPC-Agent-Go 复用与平台新增
+
+| 能力 | 直接复用 | 平台新增 |
+|---|---|---|
+| Agent 执行 | Runner、LLMAgent、Chain/Graph/Parallel/Cycle、Event 流 | 版本快照、发布准入、拓扑与调用预算、执行身份绑定 |
+| Session / Memory | 官方 Redis/PostgreSQL Service | 租户命名空间、profile/SecretRef、共享后端缓存、Session lease |
+| Knowledge | 官方 Knowledge/VectorStore 与 Qdrant 适配 | tenant/app ScopedStore、保留字段校验、投影 ledger |
+| Artifact | 官方 `artifact.Service` 接口及 Runner 注入点 | PostgreSQL 元数据 + S3/MinIO 实现、版本/hash/删除恢复 |
+| 治理与工具 | Plugin/Callbacks、Tool、官方 MCP ToolSet | 白名单、预算账本、持久审批、审计、MCP profile 与秘密解析 |
+| Summary | 官方 Summarizer 与 Session summary 接口 | 异步 job、固定事件边界、预算结算、fenced checkpoint 与 overlay |
+| 企业消息与运维 | OpenTelemetry 接口 | IM Adapter、Inbox/Outbox、控制面、部署门禁、在线迁移捕获/协调器/命令与投影器 |
+
+实现入口主要在 `pkg/worker`、`pkg/storage`、`pkg/governance`、`pkg/runtimeplane`、`pkg/platformtool`；独立服务在 `cmd/*` 装配。复用接口不表示相关平台后端也由 SDK 提供。
+
+## 12. 七项要求对照
+
+| 要求 | 方案位置 | 实现与验收判断 |
+|---|---|---|
+| 多租户、节点部署、同步、多后端、IM、治理与恢复 | 第 2–8 节 | 主消息链、专用数据面和在线迁移生产入口已装配；最新执行及目标验收见验收证据 |
+| tenant/agent/binding/session/event/memory/summary/audit 关系 | 第 6 节、DATA_MODEL | 均有模型表达；Session/Event/Memory 由 SDK 后端管理 |
+| 两种 IM，至少含微信或企业微信 | 第 4 节 | 企业微信与 Telegram 文本 Adapter 已实现；真实账号收发待验收 |
+| 至少三类后端的存储和同步策略 | 第 6 节 | SQL、Redis、Qdrant、S3/MinIO 分工、生产捕获和迁移投影已实现；支持与性能边界见第 6 节 |
+| 完整消息时序及 trace_id 或 request_id | 第 5、7 节 | traceparent 持久化并恢复到 trace_id；真实 IM 端到端记录待验收 |
+| 至少 8 个生产风险和缓解 | 第 10 节、RISK_REGISTER | 本方案列出 12 项，并标明已实现与待完成控制 |
+| tRPC-Agent-Go 复用与新增平台模块 | 第 11 节 | 按实际接口调用与平台实现逐项区分 |

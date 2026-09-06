@@ -308,9 +308,21 @@ func TestTRPCSessionRedisToPostgresMigrationVerticalSlice(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				value.Storage.SessionBackend = "postgres"
-				value.Storage.SessionProfile = "session-postgres"
-				return repository.Update(tenant.ContextWithAuditActor(hookCtx, "session-migration-worker"), value)
+				// This library fixture owns its synthetic cutover. Production
+				// changes use LiveCoordinator; ordinary tenant updates reject
+				// storage relocation even after a caller has copied data.
+				result, err := db.ExecContext(hookCtx, `UPDATE tenants SET
+					config=jsonb_set(jsonb_set(config,'{storage,sessionBackend}','"postgres"'),
+					'{storage,sessionProfile}','"session-postgres"'),config_version=config_version+1
+					WHERE id=$1 AND config_version=$2`, tenantID, value.ConfigVersion)
+				if err != nil {
+					return err
+				}
+				rows, err := result.RowsAffected()
+				if err != nil || rows != 1 {
+					return fmt.Errorf("test cutover CAS failed: rows=%d error=%v", rows, err)
+				}
+				return nil
 			},
 			Complete: func(context.Context, datamigration.Job, datamigration.LeaseFence) error { return assertTarget() },
 		},

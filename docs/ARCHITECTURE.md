@@ -11,7 +11,7 @@
 ### 1.1 独立部署单元与组合根
 
 仓库中的 `cmd/admin`、`cmd/gateway`、`cmd/consumer`、`cmd/worker`、
-`cmd/summary-worker`、`cmd/delivery`、`cmd/migrate`、`cmd/replay` 和
+`cmd/summary-worker`、`cmd/delivery`、`cmd/migrate`、`cmd/data-migrate`、`cmd/replay` 和
 `cmd/releaseverify` 分别编译为独立二进制和部署单元。每个入口只负责读取
 配置、构造依赖、注册 HTTP/后台循环、处理信号和关闭资源；租户隔离、状态机、
 fence、治理和适配器契约全部位于 `pkg/` 深模块中。入口之间不通过进程内全局
@@ -28,6 +28,28 @@ Admin/Worker 的 `cmd/*/main.go` 仅调用进程组合根；
 `config.go` 负责配置解析。跨进程共享的租户、队列、执行、治理和存储不放回
 `cmd`，仍由 `pkg/*` 深模块提供。
 
+### 1.2 系统总览
+
+```mermaid
+flowchart LR
+    IM["企业微信 / Telegram"] --> GW["Gateway<br/>Channel Adapter"]
+    GW --> PIPE["可靠消息链路<br/>Inbox / Consumer<br/>Outbox / Delivery"]
+    PIPE --> W["无状态 Worker Pool<br/>tRPC Runner<br/>Plugin / Guardrail"]
+    W --> TOOL["Tool / MCP<br/>模型服务"]
+    W --> ADAPT["租户数据访问适配<br/>Storage Adapter<br/>Runtime Data Plane"]
+    ADAPT --> SM[("Redis / PostgreSQL<br/>Session / Memory")]
+    ADAPT --> VEC[("Qdrant<br/>Knowledge")]
+    ADAPT --> OBJ[("S3 / MinIO<br/>Artifact 正文")]
+    ADMIN["Admin API<br/>Tenant / App / Version"] --> CP[("PostgreSQL<br/>配置 / 队列 / Summary<br/>Artifact 元数据 / Audit")]
+    CP -.->|配置与版本| W
+    PIPE --> CP
+    W -.->|OTLP| OT["Telemetry Collector<br/>Trace / Metrics"]
+    GW -.->|OTLP| OT
+    PIPE -.->|OTLP| OT
+```
+
+总览图将可靠消息组件按职责分组；Consumer、Delivery、Gateway 和 Worker 是独立可扩缩容进程，Storage Adapter 与 Runtime Data Plane 位于 Worker 内。回复方向、事务提交与 `traceparent` 传播见第 3 节时序图；后端 profile 选择与租户组合见 [多后端适配方案](MULTI_BACKEND_DESIGN.md)。
+
 ## 2. 组件职责
 
 - Gateway：使用非密钥 `webhookKey` 查租户，恢复并解析所选 channel 的加密凭据/SecretRef，验签/解密，限制 body/JSON 深度/内容长度；用户文本消息生成租户作用域 session，提交 Inbox 后才回复 200，通过验签的非文本回调确认并忽略。缺少 scoped tenant reader 时直接拒绝，不加载完整租户配置。
@@ -36,9 +58,77 @@ Admin/Worker 的 `cmd/*/main.go` 仅调用进程组合根；
 - Worker：验证 Consumer HMAC 与 nonce，解析 Channel 绑定的 Agent App，将幂等请求固定到不可变版本，连接租户 Session/Memory，运行 Runner 与治理 Plugin，持久化 execution/audit/result；没有 active stable deployment 时拒绝执行。不可变 Runner 由带容量和空闲 TTL 的并发安全缓存复用，key 包含 tenant/config/app/version/deployment；引用计数确保使用中实例不被关闭。Worker 在构造/执行前校验 immutable snapshot 中的 runtime capability fingerprint，拒绝 Admin 与 Worker 安装集不一致的执行；生产 strict Worker 与 Admin admission 对非内置 runtime 拒绝 type-only 注册，自定义 runtime 必须提供稳定 capability identity。
 - Delivery：领取 Outbox，按 tenant/channel/account 恢复并解析单个 Channel 密钥，调用 Adapter；区分永久错误、普通重试和 provider Retry-After。分段消息每次只发送一段并 fenced 持久化 `delivery_cursor`，永久错误直接 DLQ，完整成功后更新 REPLIED。缺少 scoped tenant reader 时 fail-closed。
 - Admin：管理 Tenant 与 Agent App/Version/Deployment。bootstrap token 和可选 scoped token 均解析为 Principal；角色权限和 tenant allowlist 在数据访问前校验，审计 actor 来自服务端身份。`pkg/adminauth` 提供 `PrincipalResolver`，允许组合根接入经验证的 OIDC/IAP/mTLS 短期主体；解析器返回的 Principal 继续接受 ID、角色与租户范围归一化校验。默认二进制使用 bootstrap bearer。响应遮盖模型、IM 和存储凭据，遮盖值 PUT 保留原密钥。
-- Storage Adapter：执行进程内按租户 StorageConfig/profile 选择官方 Redis/PostgreSQL Session/Memory Service，Knowledge Service 连接 Qdrant，Artifact Service 组合 PostgreSQL 版本元数据与 S3/MinIO 对象正文。服务在注入 Runner 前绑定租户作用域，由框架完成对应数据访问；共享 Session/Memory 使执行副本无需 sticky session，Summary Worker 复用相同后端选择规则。
+- Storage Adapter：执行进程内按租户 StorageConfig/profile 选择官方 Redis/PostgreSQL Session/Memory Service，通过 service lease 管理后端客户端生命周期；共享 Session/Memory 使执行副本无需 sticky session，Summary Worker 复用相同后端选择规则。
+- Runtime Data Plane Resolver：Worker 进程内按 tenant/app 与 operator-owned profile 装配 Knowledge 和 Artifact。Knowledge Service 连接 Qdrant，Artifact Service 组合 PostgreSQL 版本元数据与 S3/MinIO 对象正文；服务在注入框架前绑定租户作用域。
+- Summary Worker：独立领取 PostgreSQL Summary job，按任务固定版本和事件边界重新读取共享 Session，生成摘要并 fenced 发布 checkpoint，供下一轮 Worker 读取。
 - Memory 工具从租户实际 `memory.Service.Tools()` 动态解析；只有同时进入 Agent 版本快照和租户 whitelist 的工具才暴露，并继续经过 Runner governance plugin。默认 recall 预算为 10，避免无界上下文增长；不会无条件把每条原始输入保存成长期记忆。
 - Telemetry：Prometheus 指标、PostgreSQL 审计、OTLP trace。异步边界把 traceparent 写入 Inbox/Outbox，再由下游恢复。
+
+### 2.1 Session / Memory 适配
+
+下图是进程内的构造与后端选择关系。Storage Adapter 是 `pkg/storage` 的接口边界，不是独立网络服务。Worker 与 Summary Worker 分别装配自己的 Adapter；返回的租户作用域 Service 由调用方注入 Runner 或摘要运行时，引用释放后才允许回收空闲后端。
+
+```mermaid
+flowchart LR
+    CONFIG["租户 StorageConfig<br/>operator-owned profile"] --> SA["Storage Adapter<br/>进程内租户路由 / service lease"]
+    SA --> SESSION["官方 Session Service"]
+    SA --> MEMORY["官方 Memory Service"]
+    SESSION --> SESSIONDB[(Redis 或 PostgreSQL<br/>Session Event / State)]
+    MEMORY --> MEMORYDB[(Redis 或 PostgreSQL<br/>长期 Memory)]
+```
+
+两类 Service 可按各自 profile 选择后端；图中存储节点表示逻辑数据所有权，不要求独立物理实例。Worker 的执行 fence、Redis Session lease 与 Adapter 客户端引用是不同层面的约束。
+
+### 2.2 Knowledge / Artifact 适配
+
+`pkg/runtimeplane` 在 Worker 构造阶段解析 profile，并获取绑定 tenant/app 的框架服务：Knowledge 注入需要检索的 Agent 节点，Artifact 注入 Runner。它与 Session/Memory 的 Storage Adapter 分工独立。
+
+```mermaid
+flowchart LR
+    PROFILE["租户数据面 profile<br/>operator-owned catalog"] --> RESOLVER["Runtime Data Plane Resolver<br/>Worker 进程内 / tenant + app"]
+    RESOLVER --> KNOWLEDGE["Knowledge Service"]
+    RESOLVER --> ARTIFACT["Artifact Service"]
+    KNOWLEDGE --> QDRANT[(Qdrant<br/>作用域向量)]
+    ARTIFACT --> META[(PostgreSQL<br/>版本元数据 / SHA-256)]
+    ARTIFACT --> OBJECTS[(S3 / MinIO<br/>对象正文)]
+```
+
+Knowledge 的查询 embedding 使用 profile 配置的模型服务；上图只画数据存储关系。Artifact 的元数据和对象正文是两个提交边界，读取时按版本与哈希校验。
+
+### 2.3 控制面与执行治理
+
+Admin 写入控制面，Worker 从共享控制面解析并固定版本；两者之间没有每次请求都要经过的 Admin RPC。
+
+```mermaid
+flowchart LR
+    OPERATOR["管理主体<br/>Principal / RBAC"] --> ADMIN["Admin API"]
+    ADMIN -->|事务 / CAS / 审计| CONFIGDB[(PostgreSQL 控制面<br/>Tenant / App / Version / Deployment)]
+    CONFIGDB -->|读取并绑定不可变版本| WORKER["Worker<br/>版本解析 / Runner 缓存"]
+```
+
+Worker 在执行生命周期中完成预算预留、dispatch 授权和结算；治理插件在 Runner 的 BeforeTool/AfterTool 与 AfterModel 回调执行工具授权、审计和输出脱敏。图中的预算、审批和工具节点表示不同职责，不是另一个统一治理服务。
+
+```mermaid
+flowchart LR
+    LIFECYCLE["Worker 执行生命周期"] --> RUNNER["tRPC Runner"]
+    LIFECYCLE --> BUDGET[(Redis<br/>预算 reservation / settlement)]
+    RUNNER --> GOVERNANCE["Governance Plugin<br/>工具白名单 / 脱敏 / 审计"]
+    GOVERNANCE --> CALLS["Tool / MCP"]
+    GOVERNANCE --> APPROVAL[(PostgreSQL<br/>工具审批 challenge / grant)]
+    APPROVER["Admin<br/>有权限的审批主体"] -->|授权| APPROVAL
+```
+
+### 2.4 观测与审计
+
+每类观测信号只画一次来源，避免把所有进程的指标与 trace 连到消息主链上。`traceparent` 随 Inbox/Outbox 持久化并由下游恢复；审计与普通遥测有不同的持久化和失败语义。
+
+```mermaid
+flowchart LR
+    METRICS["服务 /metrics<br/>受保护的抓取端点"] --> PROM[Prometheus]
+    PROM --> GRAFANA[Grafana]
+    SPANS["服务 span<br/>跨队列恢复 traceparent"] -->|OTLP| OTEL[OTel Collector]
+    AUDIT["Admin 控制操作<br/>Worker 执行与工具审计"] --> AUDITDB[(PostgreSQL<br/>追加审计记录)]
+```
 
 ## 3. 核心时序
 
@@ -170,30 +260,47 @@ Consumer→Worker 默认 `WORKER_TRANSPORT_MODE=production`，启动时只接受
 
 ## 7. Event → State → Summary 顺序
 
-强制顺序是：Runner 把 Event/State 提交共享 SessionService → 提交 summary job（记录目标 max sequence）→ `summary.Processor` 领取带 lease 的 job → 注入的 Generator 重新从主存储读取 → 生成 → CAS 发布到 `summary.Sink` → 只有 checkpoint 已达到目标序号时才将 job 标记完成。Memory 在事务提交后对其他节点可见；若选向量后端，则元数据 SQL 成功与 embedding 成功通过 job 状态最终收敛。
+```mermaid
+flowchart LR
+    RECEIPT["Consumer<br/>收到 Worker 摘要回执"] -->|完成 Inbox 的同一事务| JOB[(PostgreSQL<br/>Summary job)]
+    JOB -->|claim / lease| SW["独立 Summary Worker<br/>固定版本 / 冻结事件边界"]
+    SESSION[(共享 Session Service<br/>已提交 Event / State)] -->|重读目标事件前缀| SW
+    SW -->|fenced CAS 发布| CHECKPOINT[(PostgreSQL<br/>Summary checkpoint)]
+    CHECKPOINT -->|下一轮 overlay| NEXT["Worker / Runner<br/>Session.Summaries"]
+```
+
+强制顺序是：Runner 把 Event/State 提交共享 SessionService → Consumer 根据 Worker 回执在 Inbox/Outbox 完成事务中提交 summary job → `summary.Processor` 领取带 lease 的 job，必要时冻结目标序号 → 注入的 Generator 重新从主存储读取 → 生成 → CAS 发布到 `summary.Sink` → 只有 checkpoint 已达到目标序号时才将 job 标记完成。
 
 `summaryruntime.Runtime` 按 job 固定的 Agent 版本解析 tenant model 和 Session/Memory profile，在同一 Session lease 下冻结目标序号、重读稳定事件前缀，通过 tRPC-Agent-Go Summarizer 生成并进行预算 reservation/dispatch/settlement。migration 042 保存最后覆盖事件的 `cutoff_at` 与 `last_event_id`；PostgreSQL `FencedSink` 在同一事务锁定 job lease 后发布 checkpoint，拒绝失效 Worker 晚到写入。下一轮 Worker 在访问后端前校验 tenant/app/owner/session scope，把 checkpoint overlay 到克隆 Session 的 `Session.Summaries`，并显式启用 `WithAddSessionSummary(true)`；读取失败 fail-closed。独立 `cmd/summary-worker` 停止时先停止新 claim，再有界排空活跃 job，超时/取消后的 FAILED 状态使用独立短 deadline 持久化。
 
 ## 8. 后端迁移状态机
 
-每个 tenant/backend-domain 独立记录迁移状态：
+`pkg/datamigration.LiveCoordinator` 持有在线迁移状态、租约/fence、持久化 route、intent 和 journal。`pkg/migrationruntime` 把 Session、Knowledge、Artifact 装饰器接入生产 Worker，Summary Worker 使用相同 Session 装饰器；`cmd/data-migrate` 提供 create/run/step/status/list/pause/resume/abort/rollback/complete。`cmd/migrate` 单独负责数据库 schema 迁移。部署前置条件和操作步骤见 [ONLINE_MIGRATION.md](ONLINE_MIGRATION.md)。
+
+创建迁移时校验租户当前 backend/profile/config_version、源目标兼容性、实际存储身份不同及目标租户命名空间为空，并在复制前开启增量捕获。实际存储身份和兼容性持久化到 route；每次解析后端时重新核对，拒绝同名 profile 在节点间指向不同存储。所有装饰后的操作取得 PostgreSQL tenant/domain advisory gate 后重读路由；活跃迁移使用排他 gate，使已有缓存客户端也跟随当前路由。
+
+写入按固定顺序执行：先恢复前次未完成 intent/journal，再提交本次受影响记录的 intent → 写源端 → 读取完整规范记录 → 追加有序 journal → 应用目标 → 真实目标读回并比较 payload/hash → 写 `projected_at`。未知源写入结果保留 intent，下一次操作或协调器步骤重读源端恢复；删除以独立版本 tombstone 保留，后续重建不能越过未完成删除。
+
+状态按 tenant/backend-domain 隔离：
 
 ```text
 PREPARE → SNAPSHOT_COPY → DUAL_WRITE → CATCH_UP → VALIDATE
         → READ_SHADOW → CUTOVER → ROLLBACK_WINDOW → COMPLETE
 ```
 
-- PREPARE：冻结 schema version，验证目标 capability 与容量。
-- SNAPSHOT_COPY：按稳定游标分页；目标写使用源 record ID/version 幂等 upsert；保存 checkpoint。
-- DUAL_WRITE：主写旧端，Outbox 异步写新端；记录每条差异和 retry_at。
-- CATCH_UP：消费 snapshot watermark 后增量日志。
-- VALIDATE：比较 count、hash sample、tenant/session 最大版本和向量维度。
-- READ_SHADOW：线上仍读旧端，同时抽样读新端并比较，不影响用户。
-- CUTOVER：租户 config_version CAS 切读；写仍双写。
-- ROLLBACK_WINDOW：观察 SLO；回滚只切读旧端，增量仍保留。
-- COMPLETE：停止旧端写，保留审计 checkpoint，延迟清理。
+- PREPARE：再次检查实际源端 inventory 能力；创建事务已保存配置和后端身份约束。
+- SNAPSHOT_COPY：从实际后端发现创建迁移前的记录，以稳定 key 游标复制，目标验证后推进 cursor/watermark；同期写入已被捕获。
+- DUAL_WRITE：确认源写路由、同步镜像和快照完成状态，并排空未完成记录。
+- CATCH_UP：消费持久化 journal 的有序版本并保存投影水位。
+- VALIDATE：排空增量，全量比较源目标 inventory、规范记录、内容哈希和删除状态。
+- READ_SHADOW：再次执行完整规范记录读比对；当前未实现真实查询、检索排名或用户响应流量抽样。
+- CUTOVER：排他 gate 内排空并重新验证源目标，把租户 config_version CAS、持久化路由、阶段、lease/fence 和审计提交在同一 PostgreSQL 事务。
+- ROLLBACK_WINDOW：读目标，继续写源并同步镜像目标；`run` 在此停止，操作者观察后显式选择 `complete` 或 `rollback`。
+- COMPLETE：最终验证后读写均指向目标并停止镜像，保留终态路由供已有缓存客户端使用。`rollback` 让读写回源；切换前可用 `abort`。三种终止方式均不删除源数据。
 
-各阶段通过 owner lease、单调 migration fence、pause/resume、错误分类和 DLQ 协调；Session、Knowledge、Artifact 使用对应的 source/projector 执行数据复制与增量应用。
+Session 通过官方 Service 迁移 session-owned State、按序 Event 和 Track，从 Redis/PostgreSQL 原生元数据发现历史会话；App/User shared state、SDK native summary、TTL 和达到配置上限的 inventory/history 会被拒绝。平台 Summary checkpoint 保持 PostgreSQL 权威，Memory 在线迁移尚未实现。Knowledge 要求兼容的 embedding 定义与向量维度；Artifact 保留精确版本、内容和 tombstone。
+
+所有 Worker/Summary Worker 副本必须先升级并共享不可变 profile 定义；直接 SDK 调用、维护脚本或旧版外部写入不受此协议保护。活跃迁移会串行化该租户数据域的操作，全量校验和切换扫描会暂时阻塞其请求；同步镜像增加目标延迟和故障依赖，调用失败时源写入可能已经提交。pause 只暂停协调推进，仍持续捕获。实现状态为 `IMPLEMENTED`，真实后端入口见 `test/integration/online_session_migration_test.go`、`online_dataplane_migration_test.go`；最新执行结论与目标容量、恢复验收见 [ACCEPTANCE_EVIDENCE.md](ACCEPTANCE_EVIDENCE.md)。
 
 Session/Memory 的控制面 fencing 使用连接级 PostgreSQL advisory lock；因此生产数据库连接必须是直连 PostgreSQL 或 PgBouncer session pooling。transaction/statement pooling 会把加锁、guard 校验、续租和解锁分配到不同物理连接，属于不支持的配置，部署应 fail closed。
 
@@ -237,7 +344,7 @@ Session/Memory 的控制面 fencing 使用连接级 PostgreSQL advisory lock；�
 | 日志/URL 泄密 | 凭据泄露 | 固定遮盖、严格凭据格式、opaque transport error、无 raw prompt 审计 |
 | Redis 故障或并发预检穿透预算 | 失控成本 | Lua 原子预留、UTC 日账本、租约回收、usage 保守结算；任一落账失败 fail-closed |
 | 摘要乱序覆盖 | 上下文倒退 | max_event_sequence CAS 与晚到任务测试 |
-| 向量/SQL 双写不一致 | 检索缺失 | Outbox、checkpoint、shadow read、差异表 |
+| 在线迁移源目标不一致 | 切换丢记录或读取旧版本 | 持久化 intent/journal、目标读回验证、全量规范记录比对、配置 CAS 与回滚窗口 |
 | 无基准容量数据 | 峰值雪崩 | 可复现 load test + SLO/error budget gate |
 
 ## 12. 最小部署与生产部署

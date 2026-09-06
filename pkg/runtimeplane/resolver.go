@@ -15,6 +15,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/tenant"
 	"trpc.group/trpc-go/trpc-agent-go/knowledge"
 	openaiembedder "trpc.group/trpc-go/trpc-agent-go/knowledge/embedder/openai"
+	"trpc.group/trpc-go/trpc-agent-go/knowledge/vectorstore"
 )
 
 // Request is the immutable scope and capability set for one cached Worker.
@@ -42,15 +43,33 @@ type Resolver interface {
 }
 
 type ProfileResolver struct {
-	catalog *Catalog
-	db      *sql.DB
+	catalog            *Catalog
+	db                 *sql.DB
+	knowledgeDecorator KnowledgeDecorator
+	artifactDecorator  ArtifactDecorator
 }
 
-func NewProfileResolver(catalog *Catalog, db *sql.DB) (*ProfileResolver, error) {
+type KnowledgeDecorator func(context.Context, string, string, string, vectorstore.VectorStore) (vectorstore.VectorStore, error)
+type ArtifactDecorator func(context.Context, string, string, artifact.Service) (artifact.Service, error)
+type ProfileResolverOption func(*ProfileResolver)
+
+func WithMigrationDecorators(knowledgeDecorator KnowledgeDecorator, artifactDecorator ArtifactDecorator) ProfileResolverOption {
+	return func(r *ProfileResolver) {
+		r.knowledgeDecorator, r.artifactDecorator = knowledgeDecorator, artifactDecorator
+	}
+}
+
+func NewProfileResolver(catalog *Catalog, db *sql.DB, options ...ProfileResolverOption) (*ProfileResolver, error) {
 	if catalog == nil || catalog.validator == nil || db == nil {
 		return nil, ErrDataPlaneUnavailable
 	}
-	return &ProfileResolver{catalog: catalog, db: db}, nil
+	resolver := &ProfileResolver{catalog: catalog, db: db}
+	for _, option := range options {
+		if option != nil {
+			option(resolver)
+		}
+	}
+	return resolver, nil
 }
 
 func (r *ProfileResolver) Acquire(ctx context.Context, request Request) (Lease, error) {
@@ -112,7 +131,7 @@ func (r *ProfileResolver) Acquire(ctx context.Context, request Request) (Lease, 
 		if err != nil {
 			return cleanup(ErrDataPlaneUnavailable)
 		}
-		store, err := knowledgeplane.NewQdrantScopedStore(ctx, request.Tenant.ID, request.AgentAppID, knowledgeplane.QdrantConfig{
+		store, err := knowledgeplane.NewSynchronousQdrantScopedStore(ctx, request.Tenant.ID, request.AgentAppID, knowledgeplane.QdrantConfig{
 			Host: host, Port: port, APIKey: profile.apiKey, TLS: profile.definition.TLS,
 			AllowInsecure: profile.definition.AllowInsecure, Collection: profile.definition.Collection,
 			Dimension: profile.definition.Dimension,
@@ -121,6 +140,17 @@ func (r *ProfileResolver) Acquire(ctx context.Context, request Request) (Lease, 
 			return cleanup(fmt.Errorf("%w: initialize knowledge profile", ErrDataPlaneUnavailable))
 		}
 		closers = append(closers, store.Close)
+		var vectorStore vectorstore.VectorStore = store
+		if r.knowledgeDecorator != nil {
+			vectorStore, err = r.knowledgeDecorator(ctx, request.Tenant.ID, request.AgentAppID, storage.KnowledgeProfile, store)
+			if err != nil {
+				return cleanup(err)
+			}
+			if vectorStore == nil {
+				return cleanup(ErrDataPlaneUnavailable)
+			}
+			closers = append(closers, vectorStore.Close)
+		}
 		embedder := openaiembedder.New(
 			openaiembedder.WithModel(profile.definition.EmbeddingModel),
 			openaiembedder.WithDimensions(profile.definition.Dimension),
@@ -128,7 +158,7 @@ func (r *ProfileResolver) Acquire(ctx context.Context, request Request) (Lease, 
 			openaiembedder.WithBaseURL(profile.definition.EmbeddingEndpoint),
 		)
 		lease.Knowledge = knowledge.New(
-			knowledge.WithVectorStore(store), knowledge.WithEmbedder(embedder),
+			knowledge.WithVectorStore(vectorStore), knowledge.WithEmbedder(embedder),
 		)
 	}
 
@@ -155,6 +185,18 @@ func (r *ProfileResolver) Acquire(ctx context.Context, request Request) (Lease, 
 			return cleanup(fmt.Errorf("%w: initialize artifact service", ErrDataPlaneUnavailable))
 		}
 		lease.Artifact = service
+		if r.artifactDecorator != nil {
+			lease.Artifact, err = r.artifactDecorator(ctx, request.Tenant.ID, storage.ArtifactProfile, service)
+			if err != nil {
+				return cleanup(err)
+			}
+			if lease.Artifact == nil {
+				return cleanup(ErrDataPlaneUnavailable)
+			}
+			if closer, ok := lease.Artifact.(interface{ Close() error }); ok {
+				closers = append(closers, closer.Close)
+			}
+		}
 	}
 	return lease, nil
 }

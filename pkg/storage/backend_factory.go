@@ -44,6 +44,19 @@ func NewBackendFactoryWithProfiles(profiles BackendProfileResolver) *BackendFact
 	return &BackendFactory{profiles: profiles}
 }
 
+// CreateSessionServiceForTenant creates an undecorated official service for
+// a migration operator. The caller owns its lifecycle and must establish the
+// tenant scope and migration authority before accessing it.
+func (f *BackendFactory) CreateSessionServiceForTenant(tenantID string, config *tenant.StorageConfig) (session.Service, error) {
+	if f == nil || config == nil {
+		return nil, ErrBackendOptionInvalid
+	}
+	if err := tenant.ValidateTenantID(tenantID); err != nil {
+		return nil, ErrBackendOptionInvalid
+	}
+	return f.createSessionService(tenantID, config.SessionBackend, config.SessionProfile, config.SessionConfig)
+}
+
 // CreateBackend creates a backend instance from configuration.
 func (f *BackendFactory) CreateBackend(config *tenant.StorageConfig) (*backendInstance, error) {
 	return f.CreateBackendForTenant("", config)

@@ -18,7 +18,7 @@
 | `.github/workflows/` | 自动化验证流程 |
 | `go.mod` / `go.sum` / `LICENSE` | 依赖版本、校验与许可 |
 
-数据库初始化包含 `migrations/001..044`，由嵌入式迁移器按顺序执行并校验 checksum。
+数据库初始化包含 `migrations/001..045`，由嵌入式迁移器按顺序执行并校验 checksum。
 
 ## 命令入口
 
@@ -31,6 +31,7 @@
 | `cmd/delivery` | Outbox dispatch fence、分段、重试、核对和 DLQ |
 | `cmd/admin` | 租户与 Agent 生命周期、审批和审计 |
 | `cmd/migrate` | schema 迁移与状态查询 |
+| `cmd/data-migrate` | 在线数据迁移创建、推进、状态查询、暂停、终止、切换回滚与完成 |
 | `cmd/replay` | 带 actor/reason 的 Inbox/Outbox 恢复 |
 | `cmd/releaseverify` | Kubernetes workload、digest、传输和网络策略门禁 |
 | `cmd/demo` | MemoryStore 本地故障状态演示 |
@@ -48,9 +49,12 @@ Admin/Worker 在进程启动时封存 runtime registry；配置、HTTP、策略�
 | `governance` / `platformtool` | Plugin、预算、审批、脱敏、MCP 准入与工具白名单 |
 | `summary` / `summaryruntime` | 事件边界、固定版本生成、checkpoint CAS、Runner overlay |
 | `runtimeplane` / `knowledgeplane` / `artifactplane` | operator profile、Qdrant 作用域、S3/MinIO 对象及版本元数据 |
-| `datamigration` / `dataprojection` | 复制、journal、catch-up、投影 ledger、shadow 和 CAS cutover |
+| `datamigration` / `dataprojection` | 迁移状态机、持久化 intent/journal/route、snapshot/catch-up、Session/Knowledge/Artifact 投影、完整比对、配置 CAS 与 lease/fence |
+| `migrationruntime` | Session/Knowledge/Artifact 生产装饰器、实际后端 inventory/record 适配及跨缓存路由 |
 | `telemetry` / `health` | trace、指标、审计、readiness、drain |
 | `releaseverify` | 受控应用发布物及网络、密钥和迁移前置条件 |
+
+Worker 已安装 Session/Knowledge/Artifact 迁移装饰器，Summary Worker 安装相同 Session 装饰器；`cmd/data-migrate` 驱动生产协调器。新增集成入口为 `test/integration/online_session_migration_test.go` 和 `online_dataplane_migration_test.go`，执行状态以交付证据为准。`cmd/migrate` 单独负责 schema 迁移。在线迁移支持范围、完整记录比对与请求阻塞边界、源写目标读的回滚窗口和恢复命令见[迁移运行指南](docs/ONLINE_MIGRATION.md)；目标负载、切换和故障恢复仍须按实际环境验收。
 
 ## 验证与配置
 

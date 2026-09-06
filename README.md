@@ -1,6 +1,6 @@
 # Enterprise Multi-Tenant Agent Platform
 
-[![verify](https://github.com/ltyfulan9/trpc-agent-service/actions/workflows/verify.yml/badge.svg?branch=submission-fixes-20260906)](https://github.com/ltyfulan9/trpc-agent-service/actions/workflows/verify.yml?query=branch%3Asubmission-fixes-20260906)
+[![verify](https://github.com/ltyfulan9/trpc-agent-service/actions/workflows/verify.yml/badge.svg?branch=submission-online-migration-20260906)](https://github.com/ltyfulan9/trpc-agent-service/actions/workflows/verify.yml?query=branch%3Asubmission-online-migration-20260906)
 
 面向企业场景的多租户 Agent 部署与运行平台，基于 tRPC-Agent-Go 构建，提供消息接入、可靠执行、租户隔离、版本发布、知识与对象数据面、治理审批和运行观测。
 
@@ -14,6 +14,8 @@
 | 完整方案与框架复用边界 | [项目方案](docs/COMPETITION_SUBMISSION.md) |
 | 模块边界与设计取舍 | [架构](docs/ARCHITECTURE.md)、[设计决策](docs/ARCHITECTURE_REVIEW.md) |
 | 数据所有权与一致性 | [数据模型](docs/DATA_MODEL.md) |
+| 租户选择不同数据后端 | [多后端适配方案](docs/MULTI_BACKEND_DESIGN.md)、[在线迁移](docs/ONLINE_MIGRATION.md) |
+| 在线数据迁移与恢复 | [迁移运行指南](docs/ONLINE_MIGRATION.md) |
 | 安全、故障和运行指标 | [安全设计](docs/SECURITY_REVIEW.md)、[风险登记册](docs/RISK_REGISTER.md)、[SLO](docs/SLO.md) |
 | 运行及验证 | [交付指南](ENTERPRISE_PLATFORM_HANDOFF.md)、[验证方法](docs/VERIFICATION.md)、[验收矩阵](docs/ACCEPTANCE_EVIDENCE.md) |
 
@@ -29,28 +31,28 @@
 | Session / Memory | 共享 Redis/PostgreSQL 服务、完整调用租约、跨节点恢复的会话和长期记忆 |
 | Summary | 独立任务、事件边界冻结、固定版本生成、fenced checkpoint、下一轮 Runner overlay |
 | Knowledge / Artifact | Qdrant tenant/app 检索；PostgreSQL 元数据与 S3/MinIO 对象、版本、SHA-256 和 tombstone |
-| 数据迁移 | Session/Knowledge/Artifact 复制、追赶、校验、影子读、CAS 切换与回滚窗口 |
+| 数据迁移 | Session/Knowledge/Artifact 生产写入捕获、持久化 journal、同步镜像、全量规范记录比对、配置 CAS 切换与回滚；独立 `cmd/data-migrate` 命令 |
 | 工具与治理 | Runner Plugin、预算 reservation、危险操作审批、递归脱敏、审计及 MCP profile 白名单 |
 | 运维 | 健康与排空、Prometheus、OpenTelemetry、Compose、Kubernetes 发布门禁和默认拒绝网络策略 |
 
 ```mermaid
 flowchart LR
-    IM[企业微信 / Telegram] --> GW[Gateway]
-    GW --> IN[(PostgreSQL Inbox)]
-    IN --> C[Consumer]
-    C -->|HMAC + nonce| W[Worker / tRPC Runner]
-    A[Admin] --> CP[(App / Version / Deployment)]
-    CP --> W
-    W --> SM[(Session / Memory)]
-    W --> DATA[(Summary / Knowledge / Artifact)]
-    W --> TOOL[Governance / Tool / MCP]
-    W --> C
-    C -->|事务完成 Inbox| OUT[(PostgreSQL Outbox)]
-    OUT --> D[Delivery]
-    D --> IM
+    INBOUND["企业微信 / Telegram<br/>入站消息"] --> GW["Gateway<br/>验签与租户路由"]
+    GW -->|提交后确认| IN[(Inbox)]
+    IN -->|FIFO / lease| C[Consumer]
+    C <-->|HMAC 请求 / 结果回执| W["Worker<br/>tRPC Runner"]
+    C -->|完成 Inbox 的同一事务| OUT[(Outbox)]
+    OUT --> D["Delivery<br/>分段投递 / fence"]
+    D --> REPLY["企业微信 / Telegram<br/>回复接口"]
 ```
 
-PostgreSQL 持有队列、控制面、执行 guard、审计和迁移 fence；租户 Session/Memory 使用所选共享后端，Qdrant 持有向量，S3/MinIO 持有对象正文。Runner 缓存按租户、配置、版本和部署标识绑定，并具有容量、TTL 和排空约束。
+图中 Inbox/Outbox 均由 PostgreSQL 持久化；Worker 返回执行结果后，由 Consumer 提交完成事务。入站消息与回复接口是同一 IM 平台的两个交互方向。
+
+Admin 管理不可变版本与部署；Worker 进程内的 Storage Adapter 选择官方 Redis/PostgreSQL Session/Memory Service，独立的数据面 Resolver 注入 Qdrant Knowledge 和 PostgreSQL 元数据 + S3/MinIO 对象的 Artifact Service。Summary 由独立 Summary Worker 消费任务并发布 checkpoint，下一轮 Runner 读取摘要。接线与存储所有权见[架构分图](docs/ARCHITECTURE.md#21-session--memory-适配)。
+
+PostgreSQL 另持有控制面、执行 guard、审计和迁移 fence。Runner 缓存按租户、配置、版本和部署标识绑定，并具有容量、TTL 和排空约束。
+
+在线迁移从创建时捕获增量；回滚窗口读目标、写源并镜像目标，`complete` 后读写目标且保留旧数据。活跃迁移会串行化该租户数据域的操作，全量记录校验可能暂时阻塞请求；Memory 在线迁移、Session shared state/native summary/TTL 不在支持范围。前置条件、命令和验证边界见[迁移运行指南](docs/ONLINE_MIGRATION.md)。
 
 各 `cmd/*` 是独立进程组合根，共享协议和领域规则位于 `pkg/*`。Admin/Worker 在 bootstrap、HTTP、policy 和 config 文件中完成装配、协议适配和策略解析；运行时注册表在启动时封存。
 

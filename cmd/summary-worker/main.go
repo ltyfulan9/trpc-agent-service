@@ -19,6 +19,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/controlplane"
 	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/health"
+	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/migrationruntime"
 	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/runtimeplane"
 	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/storage"
 	summarycoord "trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/summary"
@@ -180,8 +181,17 @@ func run() error {
 		return fmt.Errorf("configure tenant service: %w", err)
 	}
 
+	migrationRuntime, err := migrationruntime.New(migrationruntime.Options{DB: db, StorageProfiles: profiles})
+	if err != nil {
+		_ = tenantRepo.Close()
+		_ = db.Close()
+		_ = redisClient.Close()
+		return fmt.Errorf("configure online session migration: %w", err)
+	}
+	defer migrationRuntime.Close()
 	adapter := storage.NewMultiTenantStorageAdapterImplWithOptions(storage.StorageCacheOptions{
 		BackendProfiles: profiles, ConfiguredTenants: tenantService.ListTenants,
+		SessionDecorator:          migrationRuntime.SessionDecorator(),
 		RequireBackendHealthProbe: true,
 	})
 	sink := summarycoord.NewPostgresSink(db)
@@ -238,6 +248,7 @@ func run() error {
 	shutdown := health.NewCoordinator()
 	shutdown.OnShutdown("redis", func(context.Context) error { return redisClient.Close() })
 	shutdown.OnShutdown("control-database", func(context.Context) error { return db.Close() })
+	shutdown.OnShutdown("migration-runtime", func(context.Context) error { return migrationRuntime.Close() })
 	shutdown.OnShutdown("tenant-repository", func(context.Context) error { return tenantRepo.Close() })
 	shutdown.OnShutdown("storage", func(context.Context) error { return adapter.Close() })
 	shutdown.OnShutdown("summary-poller", func(ctx context.Context) error {

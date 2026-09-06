@@ -236,7 +236,7 @@ func TestComposeDistributesPublicDataPlaneProfilesAndRestrictsCredentials(t *tes
 	if err := yaml.Unmarshal(data, &compose); err != nil {
 		t.Fatal(err)
 	}
-	profileConsumers := []string{"gateway", "worker", "summary-worker", "consumer", "delivery", "admin"}
+	profileConsumers := []string{"gateway", "worker", "summary-worker", "consumer", "delivery", "admin", "data-migrate"}
 	credentialNames := []string{
 		"DATA_PLANE_QDRANT_API_KEY",
 		"DATA_PLANE_EMBEDDING_API_KEY",
@@ -254,11 +254,12 @@ func TestComposeDistributesPublicDataPlaneProfilesAndRestrictsCredentials(t *tes
 		}
 		for _, name := range credentialNames {
 			_, present := config.Environment[name]
-			if service == "worker" && !present {
-				t.Errorf("Worker is missing runtime data-plane credential %s", name)
+			isDataWriter := service == "worker" || service == "data-migrate"
+			if isDataWriter && !present {
+				t.Errorf("data writer %s is missing runtime data-plane credential %s", service, name)
 			}
-			if service != "worker" && present {
-				t.Errorf("non-Worker service %s receives runtime data-plane credential %s", service, name)
+			if !isDataWriter && present {
+				t.Errorf("non-data writer service %s receives runtime data-plane credential %s", service, name)
 			}
 		}
 	}
@@ -392,7 +393,7 @@ func TestComposeOnlyDataPlaneWorkersReceiveTenantStorageConnections(t *testing.T
 	for service, config := range compose.Services {
 		_, postgres := config.Environment["TENANT_POSTGRES_DSN"]
 		_, redis := config.Environment["TENANT_REDIS_URL"]
-		if service == "worker" || service == "summary-worker" {
+		if service == "worker" || service == "summary-worker" || service == "data-migrate" {
 			if !postgres || !redis {
 				t.Errorf("worker must receive both tenant storage connection variables")
 			}
@@ -567,8 +568,8 @@ func TestProductionDockerfilesPinSupportedBuildAndRuntimeImages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(files) != 7 {
-		t.Fatalf("production Dockerfile count = %d, want 7", len(files))
+	if len(files) != 8 {
+		t.Fatalf("production Dockerfile count = %d, want 8", len(files))
 	}
 	for _, filename := range files {
 		t.Run(filename, func(t *testing.T) {

@@ -10,13 +10,15 @@ Enterprise Multi-Tenant Agent Platform 基于 tRPC-Agent-Go，将多租户 Agent
   → PostgreSQL Inbox
   → Consumer 公平调度、Session FIFO、lease/fence
   → Worker 固定版本执行 tRPC Runner
-  → Session / Memory / Summary / Knowledge / Artifact / Tool
-  → Inbox 完成 + Outbox 创建
+  → Session / Memory / Knowledge / Artifact / Tool
+  → Worker 返回结果；Consumer 事务完成 Inbox + 创建 Outbox/摘要任务
   → Delivery 分段发送、重试或结果核对
   → IM 回复
 ```
 
 PostgreSQL 持有队列、版本、执行、审计和 fence；Session/Memory 使用共享 Redis 或 PostgreSQL；Knowledge 使用 Qdrant；Artifact 使用对象存储及 PostgreSQL 元数据。系统采用 at-least-once 处理，外部副作用结果未知时进入 reconciliation。
+
+Summary Worker 独立领取摘要任务、读取已提交 Session 并发布 checkpoint，下一轮 Worker 再读取摘要；它不处于单次 IM 回复的同步路径。
 
 ## 2. 两分钟故障演示
 
@@ -48,7 +50,11 @@ go vet -p 1 ./...
 | 消息可靠性 | 同 Session FIFO；旧 lease/fence 不能提交；Inbox/Outbox 原子衔接 | `pkg/reliable`、`pkg/pipeline` |
 | 外部副作用 | 已开始发送但结果未知时进入 reconciliation | `pkg/pipeline/delivery.go` |
 | 长会话 | 冻结摘要边界、fenced checkpoint、下轮请求裁剪已覆盖历史 | `pkg/summary`、`pkg/summaryruntime` |
-| 多后端迁移 | snapshot、增量、shadow 和 CAS cutover 有状态和 fence 约束 | `pkg/datamigration`、`pkg/dataprojection` |
+| 在线迁移与多后端投影 | 生产写入捕获、intent 恢复、snapshot/catch-up、完整记录比对、配置 CAS 和回滚；旧缓存随持久化路由切换 | `cmd/data-migrate`、`pkg/migrationruntime`、`pkg/datamigration`、`test/integration/online_session_migration_test.go`、`online_dataplane_migration_test.go` |
+
+在线迁移通过 `cmd/data-migrate` 和 Worker/Summary Worker 的生产装饰器运行，`cmd/migrate` 单独负责 schema。新增集成测试使用实际生产协调器与后端适配；旧 `datamigration_test.go` 仍保留库级 hook 验证。能力状态为 `IMPLEMENTED`，实际通过范围以[验收证据](ACCEPTANCE_EVIDENCE.md)中的日志和提交身份为准。
+
+评审迁移时应同时核对[运行边界](ONLINE_MIGRATION.md)：READ_SHADOW 是规范记录全量比对，尚无真实查询流量抽样；活跃迁移串行化租户数据域操作，回滚窗口源写目标读。Session shared state/native summary/TTL 与 Memory 在线迁移不在支持范围，完成迁移保留源数据。
 
 ## 4. 阅读顺序
 

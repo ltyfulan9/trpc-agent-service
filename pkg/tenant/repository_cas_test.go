@@ -22,9 +22,9 @@ func TestSQLRepositoryUpdateRejectsSnapshotAfterDelete(t *testing.T) {
 	}
 
 	mock.ExpectBegin()
-	mock.ExpectQuery(regexp.QuoteMeta("UPDATE tenants\n\t\tSET name = $1, status = $2, config = $3, updated_at = $4,\n\t\t    config_version = config_version + 1\n\t\tWHERE id = $5 AND config_version = $6 AND status <> $7\n\t\tRETURNING config_version")).
-		WithArgs("Acme", TenantStatusActive, sqlmock.AnyArg(), sqlmock.AnyArg(), "tenant-a", int64(1), TenantStatusDeleted).
-		WillReturnRows(sqlmock.NewRows([]string{"config_version"}))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT config FROM tenants")).
+		WithArgs("tenant-a", int64(1), TenantStatusDeleted).
+		WillReturnRows(sqlmock.NewRows([]string{"config"}))
 	mock.ExpectRollback()
 
 	err = repo.Update(ContextWithAuditActor(context.Background(), "operator"), tenant)
@@ -48,6 +48,9 @@ func TestSQLRepositoryUpdatePublishesVersionOnlyAfterCommit(t *testing.T) {
 	}
 
 	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT config FROM tenants")).
+		WithArgs("tenant-a", int64(7), TenantStatusDeleted).
+		WillReturnRows(sqlmock.NewRows([]string{"config"}).AddRow(`{"storage":{}}`))
 	mock.ExpectQuery(regexp.QuoteMeta("UPDATE tenants")).
 		WithArgs("Acme", TenantStatusActive, sqlmock.AnyArg(), sqlmock.AnyArg(), "tenant-a", int64(7), TenantStatusDeleted).
 		WillReturnRows(sqlmock.NewRows([]string{"config_version"}).AddRow(int64(8)))

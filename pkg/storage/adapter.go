@@ -74,6 +74,9 @@ type StorageCacheOptions struct {
 	IdleTTL         time.Duration
 	Clock           func() time.Time
 	BackendProfiles BackendProfileResolver
+	// SessionDecorator wraps the real service before the strict execution
+	// fence is installed. The returned service owns and closes its input.
+	SessionDecorator SessionServiceDecorator
 	// WriteFence is required for the strict production composition. When set,
 	// every Session/Memory service exposed by the adapter is wrapped with it.
 	WriteFence fence.Authorizer
@@ -89,6 +92,8 @@ type StorageCacheOptions struct {
 	// live probe. In-memory services remain locally healthy without a probe.
 	RequireBackendHealthProbe bool
 }
+
+type SessionServiceDecorator func(*tenant.Tenant, session.Service) (session.Service, error)
 
 var (
 	ErrBackendCacheSaturated      = errors.New("storage backend cache has no idle capacity")

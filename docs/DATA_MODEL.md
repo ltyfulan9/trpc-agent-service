@@ -11,7 +11,7 @@ AgentApp 1 ── N Deployment ── 1 AgentVersion
 Tenant 1 ── N Session 1 ── N Event
 Session 1 ── N Summary(max_event_sequence)
 Tenant/User 1 ── N Memory
-Tenant 1 ── N KnowledgeBase ── N KnowledgeDocument
+Tenant/AgentApp 1 ── N KnowledgeDocument
 Tenant/Session 1 ── N Artifact
 Tenant 1 ── N AuditLog / ControlPlaneAudit
 InboundMessage 1 ── 0..1 OutboundMessage
@@ -20,7 +20,9 @@ Invocation 1 ── 1 pinned AgentVersion/Deployment
 
 ## 可视化 ER 图（平台表与逻辑后端边界）
 
-下面的 Mermaid 图描述平台关系与后端逻辑实体边界；Session、Event、Memory 的物理表由所选 tRPC backend 管理，KnowledgeDocument 映射到 Qdrant，ArtifactVersion 对应平台元数据与对象存储版本。
+下面的 Mermaid 图列出平台表的实际字段子集，以及带 `_LOGICAL` 后缀的后端逻辑实体。平台 ID 按 SQL 类型表示：`string` 对应 VARCHAR/CHAR/TEXT，`bigint` 包括 BIGSERIAL；同一实体内多个 `PK` 字段共同组成复合主键，多个 `FK` 字段可能共同参与同一外键。`logical_` 关系由应用作用域或请求身份关联，不表示 SQL 外键；SDK 后端实体不标注平台 PK/FK。
+
+Agent 的稳定身份是 `agent_apps`，不可变配置保存在 `agent_versions.config_snapshot`，发布路由由 `deployments` 选择版本。ChannelBinding 的 `accountId`、`agentApp` 保存在 `tenants.config.channels` 内，通过 `tenant_channels.channel_index` 定位；`tenant_channels.config` 仅保存该绑定的扩展配置，两项身份都不是该表的独立列。
 
 ```mermaid
 erDiagram
@@ -31,48 +33,56 @@ erDiagram
     AGENT_VERSION ||--o{ DEPLOYMENT : selected_by
     TENANT ||--o{ INBOX_MESSAGE : receives
     INBOX_MESSAGE ||--o| OUTBOX_MESSAGE : produces
-    INBOX_MESSAGE ||--o{ EXECUTION_RECORD : attempts
-    INBOX_MESSAGE ||--o| INVOCATION_RESULT : caches
-    TENANT ||--o{ SESSION : scopes
-    SESSION ||--o{ EVENT : appends
-    SESSION ||--o{ SUMMARY_CHECKPOINT : summarizes
-    TENANT ||--o{ MEMORY : owns
-    TENANT ||--o{ KNOWLEDGE_DOCUMENT : indexes
+    INVOCATION_BINDING ||..o{ EXECUTION_RECORD : logical_request_attempts
+    EXECUTION_RECORD |o--o| INVOCATION_RESULT : result_source
+    TENANT ||..o{ SESSION_LOGICAL : logical_tenant_scope
+    SESSION_LOGICAL ||..o{ EVENT_LOGICAL : logical_event_stream
+    SESSION_LOGICAL ||..o{ SUMMARY_CHECKPOINT : logical_summary_scope
+    TENANT ||..o{ MEMORY_LOGICAL : logical_tenant_scope
+    AGENT_APP ||..o{ KNOWLEDGE_DOCUMENT_LOGICAL : logical_app_scope
+    AGENT_APP ||--o{ SUMMARY_CHECKPOINT : summary_owner
     TENANT ||--o{ ARTIFACT_VERSION : stores
-    TENANT ||--o{ AUDIT_LOG : audits
+    TENANT ||..o{ AUDIT_LOG : logical_audit_scope
     TENANT ||--o{ CONTROL_PLANE_AUDIT : changes
     AGENT_VERSION ||--o{ INVOCATION_BINDING : pins
     DEPLOYMENT ||--o{ INVOCATION_BINDING : resolves
     TENANT_CHANNEL {
-        uuid id PK
-        uuid tenant_id FK
+        bigint id PK
+        string tenant_id FK
         string channel_type
-        string account_id
+        int channel_index
+        string webhook_key UK
+        jsonb config
     }
     TENANT {
-        uuid id PK
+        string id PK
         bigint config_version
         string status
+        jsonb config
     }
     AGENT_APP {
-        uuid id PK
-        uuid tenant_id FK
+        string id PK
+        string tenant_id FK
         string name
     }
     AGENT_VERSION {
-        uuid id PK
-        uuid app_id FK
-        string immutable_hash
+        string id PK
+        string agent_app_id FK
+        bigint version_number
+        string config_hash
+        jsonb config_snapshot
     }
     DEPLOYMENT {
-        uuid id PK
-        uuid app_id FK
-        uuid version_id FK
+        string id PK
+        string tenant_id FK
+        string agent_app_id FK
+        string agent_version_id FK
         string kind
     }
     INBOX_MESSAGE {
         bigint id PK
-        uuid tenant_id FK
+        string tenant_id FK
+        string agent_app_name
         string session_id
         bigint session_sequence
         string status
@@ -80,68 +90,99 @@ erDiagram
     OUTBOX_MESSAGE {
         bigint id PK
         bigint inbox_id FK
+        string tenant_id FK
         int delivery_cursor
         string status
     }
     EXECUTION_RECORD {
-        uuid id PK
-        bigint inbox_id FK
+        bigint id PK
+        string tenant_id FK
+        string idempotency_key
+        string agent_app_id FK
+        string agent_version_id FK
+        string deployment_id FK
+        string session_id
+        int attempt_number
+        string execution_token
         string status
-        bigint lease_version
+        timestamptz lease_until
     }
     INVOCATION_RESULT {
-        uuid id PK
-        string idempotency_key
+        string tenant_id PK, FK
+        string idempotency_key PK
+        bigint execution_id FK
         string payload_hash
     }
-    SESSION {
-        string tenant_scope PK
+    SESSION_LOGICAL {
+        string tenant_id
         string app_name
+        string user_id
         string session_id
     }
-    EVENT {
-        string session_id FK
+    EVENT_LOGICAL {
+        string event_id
+        string session_scope
         bigint sequence
         string invocation_id
     }
     SUMMARY_CHECKPOINT {
-        string session_id FK
+        string tenant_id PK, FK
+        string agent_app_id PK, FK
+        string session_owner_id PK
+        string session_id PK
+        string filter_key PK
         bigint max_event_sequence
         string content_sha256
+        timestamptz cutoff_at
+        string last_event_id
     }
-    MEMORY {
-        string tenant_scope PK
+    MEMORY_LOGICAL {
+        string tenant_id
+        string app_name
+        string user_id
         string memory_id
-        bigint version
     }
-    KNOWLEDGE_DOCUMENT {
-        string tenant_scope PK
+    KNOWLEDGE_DOCUMENT_LOGICAL {
+        string tenant_id
+        string agent_app_id
         string document_id
-        string vector_version
     }
     ARTIFACT_VERSION {
-        string tenant_scope PK
-        string object_key
+        string tenant_id PK, FK
+        string app_name PK
+        string user_id PK
+        string session_id PK
+        string filename PK
+        int version PK
+        string object_key UK
         string content_sha256
     }
     AUDIT_LOG {
         bigint id PK
-        uuid tenant_id FK
+        string tenant_id
         string trace_id
         string decision
     }
     CONTROL_PLANE_AUDIT {
         bigint id PK
-        uuid tenant_id FK
+        string tenant_id FK
         string actor
         string action
     }
     INVOCATION_BINDING {
+        string tenant_id PK, FK
         string idempotency_key PK
-        uuid version_id FK
-        uuid deployment_id FK
+        string agent_app_id FK
+        string agent_version_id FK
+        string deployment_id FK
+        string session_id
+        string payload_hash
     }
 ```
+
+`execution_records` 以 `(tenant_id, idempotency_key, attempt_number)` 区分追加的执行尝试，通过 `execution_token` 和 `lease_until` 验证提交身份；它没有 `inbox_id` 或 `lease_version` 列。Worker 先锁定并核对 `invocation_bindings` 的请求、会话和版本身份，再创建执行记录，这一请求关联不是 SQL 外键。`invocation_results` 的主键是 `(tenant_id, idempotency_key)`，通过 `(execution_id, tenant_id)` 外键关联具体执行；`execution_id` 在 schema 中允许为空且非空时唯一，因此图中保留可选关系。实际迁移见 [执行尝试与结果来源](../migrations/018_execution_attempts.up.sql)，应用校验见 [Worker 执行记录器](../pkg/controlplane/resolver.go)。
+
+`audit_logs.tenant_id` 是应用填写的审计作用域，没有指向 `tenants` 的 SQL 外键；`control_plane_audit.tenant_id` 有该外键。`SUMMARY_CHECKPOINT` 与 `ARTIFACT_VERSION` 是平台真实表，其 Session 关联通过包含 app/user 的完整作用域解释，不存在跨 SDK 后端的 Session 外键。逻辑 Event 的 `sequence` 表示稳定转录中的绝对顺序，能否证明该顺序由所选 backend 的读取契约决定。
 
 ## 已落地平台表
 
@@ -153,31 +194,115 @@ erDiagram
 | `agent_versions` | `id`, unique app/version/hash | immutable secret-free snapshot | Agent control plane |
 | `deployments` | `id`, one active app/kind | stable/canary bps, actor | Agent control plane |
 | `invocation_bindings` | `(tenant_id,idempotency_key)` | exact version/deployment | Worker resolver |
-| `execution_records` | `id` | tenant/session/version/deployment, `RUNNING/SUCCEEDED/FAILED/ABANDONED` | Worker audit + stale reconciler |
+| `execution_records` | `id`；有效请求 unique `(tenant_id,idempotency_key,attempt_number)` | tenant/session/version/deployment、`execution_token`、`lease_until`、`RUNNING/SUCCEEDED/FAILED/ABANDONED` | Worker audit + stale reconciler |
 | `inbox_messages` | source composite unique key；unique `(tenant,app,session,session_sequence)` | authoritative `reply_to_id`, status, attempt, `lease_version` | Gateway/Consumer |
 | `inbox_session_sequences` | `(tenant_id,agent_app_name,session_id)` | monotonic `last_sequence` | Gateway/Reliable Store |
 | `tenant_queue_schedule` | `tenant_id` | weight、max_queued、max_inflight、virtual_runtime | Queue policy / Consumer |
 | `inbox_fair_queue_clock` | singleton | monotonic `virtual_time`，公平领取事务的共享时钟 | Consumer |
 | `outbox_messages` | unique `inbox_id` | status, attempt, `lease_version`, `delivery_cursor` | Consumer/Delivery |
-| `invocation_results` | `(tenant_id,idempotency_key)` | payload hash, expiry | Worker result cache |
+| `invocation_results` | `(tenant_id,idempotency_key)` | payload hash、`execution_id`、expiry | Worker result cache |
 | `message_replay_audit` | `id` | tenant, actor, reason, `replay_mode` | Replay command |
 | `audit_logs` | `id` | tenant/channel/session/tool/trace/cost，共享 HMAC 用户伪名 | Gateway / Worker telemetry |
 | `control_plane_audit` | `id` | tenant/actor/action/resource | Admin transactions |
 | `summary_jobs` | `id`, unique `(tenant_id,agent_app_id,session_owner_id,session_id,filter_key)` | pinned `agent_version_id`, target sequence（0=lease 下延迟冻结）, status, owner lease/fence, bounded attempts | Summary Processor |
 | `summary_checkpoints` | `(tenant_id,agent_app_id,session_owner_id,session_id,filter_key)` | monotonic `max_event_sequence`, `cutoff_at`, `last_event_id`, content SHA-256 | Summary Sink / Runner overlay |
-| `data_migrations` / `data_migration_records` | tenant/domain + record version | owner lease/fence、cursor、source hash、`projected_at` | Migration coordinator/projector |
+| `data_migrations` | `id`；活跃阶段 unique `(tenant_id,domain)` | source/target profile、phase、owner lease/fence、cursor/watermark | Migration coordinator |
+| `data_migration_records` | `(tenant_id,domain,record_key,migration_id)` | 最新 version、payload/hash、tombstone、`projected_at` | 通用投影 ledger |
+| `data_migration_live_routes` | `(tenant_id,domain)`；unique `migration_id` | 实际存储 identity/compatibility、read/write profile、mirroring、config_version、scan cursor | 生产迁移协调器及运行时装饰器 |
+| `data_migration_live_intents` | `(migration_id,key_hash)` | 源写前持久化的 record_key、created_at | 生产写入捕获与恢复 |
+| `data_migration_live_journal` | `sequence` | migration_id、record_key、完整 payload/hash、deleted、projected_at | 有序版本投影与目标读回验证 |
 | `artifact_versions` | `(tenant_id,app_name,user_id,session_id,filename,version)` | unique object key、MIME、size、SHA-256、tombstone | Artifact Service |
+
+## 在线迁移物理模型
+
+[迁移 045](../migrations/045_online_data_migrations.up.sql) 在既有 `data_migrations` 控制状态之外增加生产路由、写意图和有序日志。以下实体均为实际 PostgreSQL 表，关系线表示 SQL 外键；字段列出协议关键子集。
+
+```mermaid
+erDiagram
+    TENANT ||--o{ DATA_MIGRATION : owns
+    TENANT ||--o{ LIVE_ROUTE : routes
+    DATA_MIGRATION ||--o| LIVE_ROUTE : current_route
+    DATA_MIGRATION ||--o{ LIVE_INTENT : unresolved_writes
+    DATA_MIGRATION ||--o{ LIVE_JOURNAL : ordered_records
+    TENANT {
+        string id PK
+        bigint config_version
+    }
+    DATA_MIGRATION {
+        string id PK
+        string tenant_id FK
+        string domain
+        string source_profile
+        string target_profile
+        string phase
+        bigint lease_version
+        bigint applied_watermark
+    }
+    LIVE_ROUTE {
+        string tenant_id PK, FK
+        string domain PK
+        string migration_id FK, UK
+        string source_backend
+        string target_backend
+        string source_identity
+        string target_identity
+        string compatibility
+        string read_profile
+        string write_profile
+        boolean mirroring
+        bigint config_version
+        string scan_cursor
+        boolean scan_done
+    }
+    LIVE_INTENT {
+        string migration_id PK, FK
+        string key_hash PK
+        string record_key
+        timestamptz created_at
+    }
+    LIVE_JOURNAL {
+        bigint sequence PK
+        string migration_id FK
+        string key_hash
+        string record_key
+        bytea payload
+        string content_hash
+        boolean deleted
+        timestamptz projected_at
+        timestamptz created_at
+    }
+```
+
+| 表/字段 | 物理类型与约束 | 协议含义 |
+|---|---|---|
+| Route `tenant_id` / `domain` / `migration_id` | VARCHAR(64/32/128)；domain 限 session/knowledge/artifact；tenant 和 migration 外键 | 每租户数据域一条当前路由，一个迁移至多关联一条路由 |
+| Route `source_backend` / `target_backend` | VARCHAR(32)，非空 | 源目标后端类型 |
+| Route `source_identity` / `target_identity` / `compatibility` | TEXT；identity 各 1..2048 字节且互不相同，compatibility 1..4096 字节 | 不含凭据的实际存储身份与兼容协议；拒绝 profile 别名指向同一存储及跨节点定义漂移 |
+| Route `read_profile` / `write_profile` / `config_version` | VARCHAR(128)；BIGINT > 0 | 运行时每次调用读取的持久化路由和租户配置 CAS 版本 |
+| Route `mirroring` / `scan_cursor` / `scan_done` | BOOLEAN 默认 true；TEXT 默认空；BOOLEAN 默认 false | 捕获与同步镜像开关、原生 inventory 复制进度 |
+| Route `actor` / `reason` / `updated_at` | VARCHAR(256)、TEXT、TIMESTAMPTZ，均非空 | 创建审计身份和最后路由更新时间 |
+| Intent `migration_id` / `key_hash` / `record_key` | VARCHAR(128) 外键；CHAR(64) 小写 hex；TEXT 1..4096 字节 | 源写前提交的记录身份；进程中断或结果未知时供重读恢复 |
+| Journal `sequence` / `migration_id` / `key_hash` / `record_key` | BIGSERIAL 主键；VARCHAR(128) 外键；CHAR(64) 小写 hex；TEXT 1..4096 字节 | `sequence` 是规范 Record.Version，保留同 key 的每个持久化版本 |
+| Journal `payload` / `content_hash` / `deleted` | BYTEA 最大 16 MiB；CHAR(64) 小写 hex；BOOLEAN，均非空；deleted 要求空 payload | 规范正文及哈希，删除单独记录 tombstone |
+| Journal `projected_at` / Intent、Journal `created_at` | TIMESTAMPTZ；仅 projected_at 可空，created_at 默认数据库时钟 | 实际目标读回匹配后才标记投影；pending partial index 支持有序恢复 |
+
+`idx_live_journal_key` 索引 `(migration_id,key_hash,sequence DESC)`；`idx_live_journal_pending` 索引 `(migration_id,sequence)` 且仅包含 `projected_at IS NULL`。`data_migration_records` 是既有通用投影 ledger，保留每个迁移身份下的最新记录；新增 live journal 保留有序版本，不可混为同一张表。基础 `data_migrations.domain` 仍包含 memory/summary，但生产 live route 只允许上述三个已实现的数据域。
+
+切换事务同时更新租户配置版本、live route、迁移 phase 和审计并核对 fence。回滚窗口的 `read_profile` 为目标、`write_profile` 为源且 `mirroring=true`；完成后读写目标、`mirroring=false`，终态 route 保留供旧缓存客户端使用。运维步骤及部署写入边界见 [ONLINE_MIGRATION.md](ONLINE_MIGRATION.md)。
 
 ## Session/Event/State/Summary 逻辑契约
 
-不同 tRPC Session backend 的物理表名可以不同，但平台要求表达以下不可变关系：
+不同 tRPC Session backend 的物理表名可以不同，但平台要求保留完整 Session 作用域与已提交 Event 顺序；摘要检查点由平台表保存：
 
 ```sql
--- 逻辑示意，不由平台 migration 重复创建
+-- Session/Event 逻辑示意，不由平台 migration 重复创建
 Session(tenant_id, app_name, user_id, session_id, state_version, updated_at)
-Event(tenant_id, session_id, sequence, invocation_id, role, payload, created_at)
-Summary(tenant_id, app_id, owner_id, session_id, max_event_sequence,
-        cutoff_at, last_event_id, content, model_version, updated_at)
+Event(tenant_id, app_name, user_id, session_id, sequence,
+      invocation_id, role, payload, created_at)
+-- 平台 summary_checkpoints 实际字段
+SummaryCheckpoint(tenant_id, agent_app_id, session_owner_id, session_id,
+                  filter_key, max_event_sequence, cutoff_at, last_event_id,
+                  content, content_sha256, updated_at)
 ```
 
 - `(tenant_id, app_name, user_id, session_id)` 必须唯一；`app_name` 本身也带 tenant namespace。
@@ -188,10 +313,10 @@ Summary(tenant_id, app_id, owner_id, session_id, max_event_sequence,
 ## Memory/Knowledge/Artifact 逻辑契约
 
 ```text
-Memory: tenant_id + user_id + memory_id + content/version + created_at
-KnowledgeBase: tenant_id + kb_id + embedding_model/version + ACL
-KnowledgeDocument: tenant_id + kb_id + document_id + object_uri + vector_version
-Artifact: tenant_id + session_id + artifact_id + object_key + content_hash + metadata
+Memory: tenant_id + app_name + user_id + memory_id + content
+KnowledgeDocument: tenant_id + agent_app_id + document_id + content + metadata + embedding
+ArtifactVersion: tenant_id + app_name + user_id + session_id + filename + version
+                + object_key + content_sha256 + metadata
 ```
 
 - SQL 保存租户、ACL、版本和 Artifact 对象元数据；向量内容进入 Qdrant。Qdrant 物理 ID 是 tenant/app/logical document ID 的稳定 SHA-256，保留 scope metadata 不能由用户覆盖。
@@ -203,4 +328,5 @@ Artifact: tenant_id + session_id + artifact_id + object_key + content_hash + met
 - Inbox/Outbox/result/binding 的保留期必须按租户合规策略配置；删除顺序为 result/binding → Outbox → Inbox，并保留聚合审计。
 - AgentVersion、Deployment、ExecutionRecord 和控制面审计默认不可物理覆盖；法规要求删除时走审批任务并保留 tombstone。
 - Artifact 删除先提交 tombstone，再清理正文；重试包含已标记删除的对象，继续完成未成功的清理。Knowledge 删除与 migration projector 的目标副作用成功、最终 fence 校验共同决定是否写入 `projected_at`。
-- Session 迁移记录使用规范化 `session/v1` envelope，包含 session-owned State、按序 Event 和 Track；App/User shared state 不进入该 envelope，若租户启用共享作用域状态，必须由独立 scope record/adapter 完成迁移并验证后才允许 cutover。平台 `summary_checkpoints` 已是后端中立权威，不复制 Redis/PostgreSQL 私有 summary 表。读取达到配置上限时视为疑似截断并 fail-closed，目标只接受源历史的严格前缀追加。
+- Session 迁移记录使用规范化 `session/v1` envelope，包含 session-owned State、按序 Event 和 Track；实际实现拒绝 App/User shared state、SDK native summary、TTL，以及达到配置安全上限的 inventory/history。平台 `summary_checkpoints` 保持 PostgreSQL 权威，不随 Session store 迁移。目标只接受源历史的严格前缀追加，缺失记录形成 tombstone。
+- 在线迁移 complete、abort、rollback 均不删除源数据；终态路由持续服务已有缓存客户端。旧数据和 intent/journal 的保留、备份及清理由操作者单独安排，不能在仍需恢复或回滚时清除协议记录。

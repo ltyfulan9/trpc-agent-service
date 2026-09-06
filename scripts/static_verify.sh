@@ -9,7 +9,7 @@ if grep -Eq '^[[:space:]]*replace[[:space:]]' go.mod; then
   echo "go.mod must not contain replace directives" >&2
   exit 1
 fi
-for command in gateway worker summary-worker consumer delivery admin migrate replay; do
+for command in gateway worker summary-worker consumer delivery admin migrate data-migrate replay; do
   test -f "cmd/$command/main.go"
 done
 if grep -RIEq 'trpc\.group/trpc-go/trpc-agent-go/enterprise/cmd/' cmd pkg --include='*.go'; then

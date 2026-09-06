@@ -1,5 +1,10 @@
 # Kubernetes rollout contract
 
+Online tenant data migration uses the separate `cmd/data-migrate` operations
+entrypoint. Apply schema `045` and upgrade all domain writers before starting
+it; see [Online Data Migration](../../docs/ONLINE_MIGRATION.md) for profiles,
+the operational Job contract, cutover and recovery commands.
+
 These manifests define the application workloads, service boundaries and
 deployment policy. Use a dedicated namespace with a CNI that enforces
 Kubernetes `NetworkPolicy`, and render environment-specific configuration

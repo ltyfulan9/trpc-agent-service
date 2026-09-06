@@ -488,6 +488,29 @@ func (r *SQLRepository) Update(ctx context.Context, tenant *Tenant) error {
 	}
 	defer tx.Rollback()
 
+	// Lock the same row changed by migration cutover before checking its current
+	// typed storage binding. A stale snapshot cannot overwrite a completed route.
+	var currentConfig []byte
+	err = tx.QueryRowContext(ctx, `
+		SELECT config FROM tenants
+		WHERE id = $1 AND config_version = $2 AND status <> $3
+		FOR UPDATE`, tenant.ID, tenant.ConfigVersion, TenantStatusDeleted).Scan(&currentConfig)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrTenantConflict
+	}
+	if err != nil {
+		return fmt.Errorf("failed to lock tenant storage binding: %w", err)
+	}
+	var current struct {
+		Storage StorageConfig `json:"storage"`
+	}
+	if err := json.Unmarshal(currentConfig, &current); err != nil {
+		return fmt.Errorf("%w: persisted storage binding cannot be decoded", ErrInvalidTenantConfig)
+	}
+	if err := validateStorageBindingUpdate(current.Storage, tenant.Storage); err != nil {
+		return err
+	}
+
 	var nextConfigVersion int64
 	err = tx.QueryRowContext(ctx, query,
 		tenant.Name,

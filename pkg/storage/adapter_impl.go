@@ -44,6 +44,7 @@ type MultiTenantStorageAdapterImpl struct {
 	readinessProbeTTL         time.Duration
 	requireBackendHealthProbe bool
 	backendProfiles           BackendProfileResolver
+	sessionDecorator          SessionServiceDecorator
 	readinessMu               sync.Mutex
 	readinessInFlight         chan struct{}
 	lastReadinessProbe        time.Time
@@ -95,6 +96,7 @@ func NewMultiTenantStorageAdapterImplWithOptions(options StorageCacheOptions) *M
 		readinessProbeTTL:         options.ReadinessProbeTTL,
 		requireBackendHealthProbe: options.RequireBackendHealthProbe,
 		backendProfiles:           options.BackendProfiles,
+		sessionDecorator:          options.SessionDecorator,
 		refsDone:                  closedSignal(),
 		backendCloseDone:          closedSignal(),
 	}
@@ -607,6 +609,14 @@ func (m *MultiTenantStorageAdapterImpl) createBackend(t *tenant.Tenant, now time
 	backend, err := m.factory.CreateBackendForTenant(t.ID, &t.Storage)
 	if err != nil {
 		return nil, err
+	}
+	if m.sessionDecorator != nil {
+		decorated, wrapErr := m.sessionDecorator(t, backend.sessionService)
+		if wrapErr != nil || isNilStorageService(decorated) {
+			_ = closeBackends([]*backendInstance{backend})
+			return nil, fmt.Errorf("configure session decorator: %w", ErrBackendInitialization)
+		}
+		backend.sessionService = decorated
 	}
 	if m.writeFence != nil {
 		strictSession, wrapErr := NewStrictFencedSessionService(backend.sessionService, m.writeFence, t.ID)
