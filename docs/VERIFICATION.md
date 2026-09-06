@@ -46,6 +46,15 @@ go test -buildvcs=false -tags=integration -count=1 -p 1 ./test/integration
 bash ./scripts/validate.sh
 ```
 
+在同一测试环境下，可以单独验证租户级交叉后端组合：
+
+```bash
+go test -buildvcs=false -tags=integration -count=1 \
+  -run '^TestCrossBackendStorageAdapterSharesDataAcrossNodesAndIsolatesScopes$' ./test/integration
+```
+
+该测试使用真实 Redis/PostgreSQL、两个独立生产存储适配器和 PostgreSQL execution fence。两租户分别使用 Redis Session/PostgreSQL Memory 与相反组合，检查跨客户端可见性、tenant/app/actor 隔离、未选择后端无数据以及租约释放后的资源关闭。
+
 Windows 可使用隔离环境脚本启动应用栈：
 
 ```powershell

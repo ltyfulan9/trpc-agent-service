@@ -2,11 +2,11 @@
 
 ## 1. 设计目标与实现范围
 
-平台把 tRPC-Agent-Go 的 Runner、Session、Memory、Tool 和 Plugin 能力放进一个多租户控制面与可靠数据面。设计优先级依次是：不丢已确认消息、租户不可串数据、重复投递可判定、失效 Worker 不可复活写入、版本可追溯、故障可观测和可回滚。
+平台基于 tRPC-Agent-Go 的 Runner、Session、Memory、Tool 和 Plugin 构建多租户控制面与可靠数据面。核心设计约束包括：已确认消息的持久性、租户作用域隔离、重复投递的幂等性、失效执行者的写入隔离、版本可追溯性，以及故障观测与恢复能力。
 
-平台实现企业微信与 Telegram 接入、OpenAI 模型工厂、Redis/PostgreSQL Session/Memory、Qdrant Knowledge 和 S3/MinIO Artifact。InMemory 用于测试和显式单进程组合，生产 Admin/Worker 选择共享持久化后端；provider/backend 通过注册接口扩展。
+平台支持企业微信与 Telegram 接入、OpenAI 模型工厂、Redis/PostgreSQL Session/Memory、Qdrant Knowledge 和 S3/MinIO Artifact。InMemory 用于测试和显式单进程组合，生产 Admin/Worker 使用共享持久化后端；模型提供方和存储后端通过对应工厂与适配接口扩展。
 
-模型治理分为两层：本地零预算 fixture 使用确定性模型验证工厂与治理流程；不可变 AgentVersion 的 publish admission 必须命中本构建绑定的 operator-approved model catalog，并记录 revision/context window，确保执行能力在发布时完成校验。
+AgentVersion 发布准入要求模型命中构建绑定的运维批准目录（operator-approved model catalog），并将目录版本与 context window 写入不可变快照。模型执行能力及预算预留依据在发布阶段完成校验，运行阶段按快照执行。
 
 ### 1.1 独立部署单元与组合根
 
@@ -195,7 +195,7 @@ Worker 通用请求可携带经格式、地址和元数据校验的图片、音�
 
 领取在事务内完成。每次领取把 `lease_version + 1`；完成、重试和续租必须同时满足 status、owner、version、未过期四个条件。旧 Worker 即使恢复，也只能得到 `ErrStaleLease`。Claim 只负责领取，不在每次空轮询时扫描和更新全局过期行；Consumer 与 Delivery 每个进程各启动一个 `ReapExpired` 循环，启动立即执行、随后默认每分钟执行。PostgreSQL 用有界候选 CTE、专用 partial index 和 `FOR UPDATE SKIP LOCKED` 终结最终 lease/审批超时，每次最多处理 100 条 Inbox 与 100 条 Outbox（运行时上限 1000），因此多副本可以并行运行而不会等候或破坏 fence。最后一次租约过期会进入 DEAD_LETTERED，避免永久 PROCESSING；重放才递增 fence，终结状态本身已拒绝陈旧 Worker 提交。
 
-QueueInspector 是只读运维 seam：它只统计自动处理状态，排除终态和
+QueueInspector 是只读运维接口：统计自动处理状态，排除终态和
 `WAITING_RECONCILIATION`，并返回 Inbox/Outbox depth 与最早创建时间。每次
 有界 reaper 维护后，Pipeline 将该快照发布为不含 tenant 标签的 depth/oldest-age
 gauge；检查失败保留最后已知值并递增 failure counter，避免错误读数伪装成空队列。
@@ -236,8 +236,8 @@ Consumer 发送 `inbox:{id}` 与 payload hash。Worker 在模型完成后、HTTP
 6. 服务身份：Consumer 请求签名绑定 service、timestamp、nonce、method、path 和 body hash；Redis SETNX 消费 nonce，防五分钟窗口内跨节点重放。自定义模型 Endpoint 当前禁止；接入 SSRF-safe transport 与出网 allowlist 后才能开放。预算感知 Worker HTTP Client 另外跟踪请求写入边界：写入前连接失败可重试，写入后连接失败归类为结果未知并暂停到 reconciliation，避免已到达 Worker 的模型/Tool 调用被盲目重跑。
 7. 内容与日志：输入在 memory/model 前执行 block/warn/log 策略；工具输出和最终模型文本递归脱敏。审计结构没有 prompt/response/credential 字段；credential-bearing HTTP 请求的构造和 transport 错误在 Adapter 边界映射为稳定错误类，不传播原始 URL 或底层错误文本。
 8. 控制面：租户配置更新使用 `config_version` CAS；Tenant CRUD、Agent 创建、版本创建/发布和部署切换均与操作者审计同事务。认证 token 映射不可变 Principal、权限和 tenant scope；`X-Admin-Actor` 完全不参与授权或审计身份。生产可由 OIDC/IAP 发行短期主体，但必须保留同样的服务端 scope 校验。
-9. token 预算：控制面要求 `maxTokensPerDay` 与 `maxTokensPerRequest` 成对配置。硬预算仅接受 operator 不可变目录中的精确模型 ID，并把 catalog revision、context window 和最大输出限制写入版本快照；单请求 reservation 必须覆盖 `context window × MaxLLMCalls`。Redis Lua 在 UTC 日账本中原子验证 `used + pending + requested <= daily limit`。模型调用前的 dispatch 授权一次性使用，OpenAI SDK 隐式重试被禁用。只有从未 dispatched 的过期 reservation 可回收；已 dispatched 且结果未知的记录转为 uncertain，并持续占用当日日账本，不能因 Worker 崩溃自动释放。正常完成按 provider usage 结算：同 response ID 的累计流只取最大值，多 response ID 求和；缺失 usage、无稳定 response ID 或执行开始后的失败均按完整 reservation 计费。结算幂等但冲突 fail-closed，provider 超 reservation 仍先记录真实值再拒绝响应，预算存储失败绝不返回成功。该账本防止并发穿透，但不能撤销 provider 已产生的超额消费。
-10. 危险 Tool 审批：`BeforeTool` 先 canonicalize 参数并创建/复用 tenant-scoped challenge；Admin 通过带 scope 的 principal grant，数据库只保存 token hash，HTTP 响应仅返回 challenge ID 和过期时间。Worker 428 只返回 challenge ID 和过期时间，Consumer 将 Inbox 原子转为 `WAITING_APPROVAL`，按受限 `Retry-After` 轮询且不消耗普通 attempt；过期 challenge 转为可审计 DLQ。没有把 raw token 写进 Inbox/Session/模型输入。HTTP admission 通过 `ApprovalResumeStateInspector` 在同一一致性边界读取 challenge 与 grant，未授权轮询不创建 execution attempt；已授权请求携带内部 challenge fence，若并发 Worker 已消费或替换该 grant 则转入 reconciliation，不得降级为新的 user turn。重试时按完整 ApprovalRequest 原子消费已授予行，消费成功后才允许工具执行；重复、过期、错参数、错 actor、错 owner 或并发消费均拒绝。未实现审批等待 seam 的外部 Store 会 fail-closed 到 reconciliation，无 PostgreSQL ApprovalStore 的组合仍 fail-closed。
+9. token 预算：控制面要求 `maxTokensPerDay` 与 `maxTokensPerRequest` 成对配置。硬预算仅接受运维不可变目录中的精确模型 ID，并将 catalog revision、context window 和最大输出限制写入版本快照；单请求 reservation 必须覆盖 `context window × MaxLLMCalls`。Redis Lua 在 UTC 日账本中原子验证 `used + pending + requested <= daily limit`。模型调用前的 dispatch 授权一次性使用，OpenAI SDK 隐式重试被禁用。未 dispatch 的过期 reservation 可以回收；已 dispatch 且结果未知的记录转为 uncertain，并持续占用当日预算。正常完成按 provider usage 结算：同 response ID 的累计流取最大值，多 response ID 求和；缺失 usage、无稳定 response ID 或执行开始后失败，均按完整 reservation 扣减 token 账本。结算采用幂等校验，冲突或存储失败时返回错误；Provider 用量超过 reservation 时先记录实际值，再拒绝成功响应。该机制约束并发授权与预算结算，Provider 已发生的用量由实际账单记录。
+10. 危险 Tool 审批：`BeforeTool` 先规范化参数，再创建或复用 tenant-scoped challenge；Admin 根据具有相应作用域的 Principal 授权。数据库保存 token hash，HTTP 响应和 Worker 428 返回 challenge ID 与过期时间。Consumer 将 Inbox 原子转为 `WAITING_APPROVAL`，按有界 `Retry-After` 轮询且不消耗普通 attempt；过期 challenge 转为可审计 DLQ。审批 token 与 Inbox、Session、模型输入隔离。HTTP 准入通过 `ApprovalResumeStateInspector` 在同一一致性边界读取 challenge 与 grant，未授权轮询不创建 execution attempt；授权请求携带内部 challenge fence，并发消费或替换 grant 时转入 reconciliation。重试按完整 ApprovalRequest 原子消费授权记录，成功后执行工具；拒绝重复、过期、参数或主体不匹配及并发消费。外部 Store 须实现审批等待接口；缺失该接口时进入 reconciliation，缺失 PostgreSQL ApprovalStore 时拒绝危险工具执行。
 
 公网 TLS 在专用 Ingress/Gateway 终止；清单提供 default-deny 与 Gateway/Consumer/Worker/Delivery/Admin 的显式 NetworkPolicy。生产集群还应启用 service mesh mTLS、DB/Redis TLS，并把公网 443 egress 替换成受控 egress gateway/provider allowlist。Compose 的明文内部链路只用于本机集成。
 
@@ -254,7 +254,7 @@ Consumer→Worker 默认 `WORKER_TRANSPORT_MODE=production`，启动时只接受
 | Summary | SQL + 异步任务 | Event/State 提交后生成 | 生成结果必须携带 max_event_sequence，旧任务不得覆盖新摘要 |
 | Knowledge embeddings | Qdrant | 最终一致 | 租户/Agent 作用域向量，按版本与哈希校验 |
 | Artifact | S3/MinIO + SQL metadata | 最终一致 | 对象 key 含 tenant，不可变版本和 SHA-256 读校验 |
-| Audit | PostgreSQL/日志管道 | 追加写 | 当前 Worker 同步写 PostgreSQL并输出结构化日志 |
+| Audit | PostgreSQL/日志管道 | 追加写 | Worker 同步写 PostgreSQL 并输出结构化日志 |
 
 迁移 `001` 描述平台租户/审计逻辑模型；实际 Session/Memory 表生命周期由选中的 tRPC backend 负责。完整关系和逻辑字段见 [DATA_MODEL.md](DATA_MODEL.md)。
 
@@ -275,7 +275,7 @@ flowchart LR
 
 ## 8. 后端迁移状态机
 
-`pkg/datamigration.LiveCoordinator` 持有在线迁移状态、租约/fence、持久化 route、intent 和 journal。`pkg/migrationruntime` 把 Session、Knowledge、Artifact 装饰器接入生产 Worker，Summary Worker 使用相同 Session 装饰器；`cmd/data-migrate` 提供 create/run/step/status/list/pause/resume/abort/rollback/complete。`cmd/migrate` 单独负责数据库 schema 迁移。部署前置条件和操作步骤见 [ONLINE_MIGRATION.md](ONLINE_MIGRATION.md)。
+`pkg/datamigration.LiveCoordinator` 持有在线迁移状态、租约/fence、持久化 route、intent 和 journal。`pkg/migrationruntime` 将 Session、Knowledge、Artifact 装饰器接入 Worker，Summary Worker 使用相同 Session 装饰器；`cmd/data-migrate` 提供 create/run/step/status/pause/resume/abort/rollback/complete。`cmd/migrate` 负责数据库 schema 迁移。部署前置条件和操作步骤见 [ONLINE_MIGRATION.md](ONLINE_MIGRATION.md)。
 
 创建迁移时校验租户当前 backend/profile/config_version、源目标兼容性、实际存储身份不同及目标租户命名空间为空，并在复制前开启增量捕获。实际存储身份和兼容性持久化到 route；每次解析后端时重新核对，拒绝同名 profile 在节点间指向不同存储。所有装饰后的操作取得 PostgreSQL tenant/domain advisory gate 后重读路由；活跃迁移使用排他 gate，使已有缓存客户端也跟随当前路由。
 
@@ -293,14 +293,14 @@ PREPARE → SNAPSHOT_COPY → DUAL_WRITE → CATCH_UP → VALIDATE
 - DUAL_WRITE：确认源写路由、同步镜像和快照完成状态，并排空未完成记录。
 - CATCH_UP：消费持久化 journal 的有序版本并保存投影水位。
 - VALIDATE：排空增量，全量比较源目标 inventory、规范记录、内容哈希和删除状态。
-- READ_SHADOW：再次执行完整规范记录读比对；当前未实现真实查询、检索排名或用户响应流量抽样。
+- READ_SHADOW：再次执行完整规范记录读比对，校验对象为 inventory、内容、版本和删除状态；检索排名与响应质量通过单独的业务查询验收评估。
 - CUTOVER：排他 gate 内排空并重新验证源目标，把租户 config_version CAS、持久化路由、阶段、lease/fence 和审计提交在同一 PostgreSQL 事务。
 - ROLLBACK_WINDOW：读目标，继续写源并同步镜像目标；`run` 在此停止，操作者观察后显式选择 `complete` 或 `rollback`。
 - COMPLETE：最终验证后读写均指向目标并停止镜像，保留终态路由供已有缓存客户端使用。`rollback` 让读写回源；切换前可用 `abort`。三种终止方式均不删除源数据。
 
-Session 通过官方 Service 迁移 session-owned State、按序 Event 和 Track，从 Redis/PostgreSQL 原生元数据发现历史会话；App/User shared state、SDK native summary、TTL 和达到配置上限的 inventory/history 会被拒绝。平台 Summary checkpoint 保持 PostgreSQL 权威，Memory 在线迁移尚未实现。Knowledge 要求兼容的 embedding 定义与向量维度；Artifact 保留精确版本、内容和 tombstone。
+Session 通过官方 Service 迁移 session-owned State、按序 Event 和 Track，从 Redis/PostgreSQL 原生元数据发现已有会话；准入拒绝 App/User shared state、SDK native summary、TTL 和达到配置上限的 inventory/history。平台 Summary checkpoint 保持 PostgreSQL 权威。Knowledge 要求兼容的 embedding 定义与向量维度；Artifact 保留精确版本、内容和 tombstone。Memory 的后端选择与在线迁移能力分别列于[支持矩阵](MULTI_BACKEND_DESIGN.md)。
 
-所有 Worker/Summary Worker 副本必须先升级并共享不可变 profile 定义；直接 SDK 调用、维护脚本或旧版外部写入不受此协议保护。活跃迁移会串行化该租户数据域的操作，全量校验和切换扫描会暂时阻塞其请求；同步镜像增加目标延迟和故障依赖，调用失败时源写入可能已经提交。pause 只暂停协调推进，仍持续捕获。实现状态为 `IMPLEMENTED`，真实后端入口见 `test/integration/online_session_migration_test.go`、`online_dataplane_migration_test.go`；最新执行结论与目标容量、恢复验收见 [ACCEPTANCE_EVIDENCE.md](ACCEPTANCE_EVIDENCE.md)。
+迁移期间所有 Worker/Summary Worker 副本使用相同版本与不可变 profile，全部写入经过平台装饰器。活跃迁移会串行化该租户数据域的操作，全量校验和切换扫描会暂时阻塞其请求；同步镜像增加目标延迟和故障依赖，调用失败时源写入可能已经提交。pause 暂停协调推进并保持捕获。真实后端测试入口为 `test/integration/online_session_migration_test.go`、`online_dataplane_migration_test.go`；目标容量和恢复的测量项见 [ACCEPTANCE_EVIDENCE.md](ACCEPTANCE_EVIDENCE.md)。
 
 Session/Memory 的控制面 fencing 使用连接级 PostgreSQL advisory lock；因此生产数据库连接必须是直连 PostgreSQL 或 PgBouncer session pooling。transaction/statement pooling 会把加锁、guard 校验、续租和解锁分配到不同物理连接，属于不支持的配置，部署应 fail closed。
 

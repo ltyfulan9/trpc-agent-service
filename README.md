@@ -2,9 +2,17 @@
 
 [![verify](https://github.com/ltyfulan9/trpc-agent-service/actions/workflows/verify.yml/badge.svg?branch=submission-online-migration-20260906)](https://github.com/ltyfulan9/trpc-agent-service/actions/workflows/verify.yml?query=branch%3Asubmission-online-migration-20260906)
 
-面向企业场景的多租户 Agent 部署与运行平台，基于 tRPC-Agent-Go 构建，提供消息接入、可靠执行、租户隔离、版本发布、知识与对象数据面、治理审批和运行观测。
+基于 tRPC-Agent-Go 的企业多租户 Agent 平台，将企业微信与 Telegram 接入、版本发布、共享数据面、治理审批和运行观测接入同一条可恢复消息链路。
 
-系统围绕三个核心约束组织：消息提交后确认、执行绑定不可变版本、故障恢复验证租约与 fence。企业微信和 Telegram 共用 Gateway → Inbox → Consumer → Worker → Outbox → Delivery 主链路。
+## 核心设计
+
+| 设计机制 | 实现方式与阅读入口 |
+|---|---|
+| 租户级数据面组合 | Session/Memory 独立选择引擎与 profile，例如租户 A 使用 Redis Session + PostgreSQL Memory，租户 B 使用相反组合；profile 指定共享或专属部署位置。见[配置与 SDK 调用链](docs/MULTI_BACKEND_DESIGN.md) |
+| 可恢复的数据迁移协议 | 创建时捕获增量，源端写入前持久化 intent，以 journal 追平并验证目标；配置 CAS 切换后，在回滚窗口继续写入源端。见[在线迁移](docs/ONLINE_MIGRATION.md) |
+| 跨节点执行一致性 | 请求绑定不可变版本，副本共享 Session/Memory；FIFO、lease/fence 和结果记录约束故障接管，Consumer 事务完成 Inbox/Outbox。见[架构](docs/ARCHITECTURE.md)与[验收入口](docs/ACCEPTANCE_EVIDENCE.md) |
+
+平台按 PostgreSQL、Redis、Qdrant、S3-compatible 四类存储分工。profile 表达实例、命名空间与授权配置；各类状态的权威所有者和恢复协议保持明确。
 
 ## 阅读导航
 
@@ -14,8 +22,7 @@
 | 完整方案与框架复用边界 | [项目方案](docs/COMPETITION_SUBMISSION.md) |
 | 模块边界与设计取舍 | [架构](docs/ARCHITECTURE.md)、[设计决策](docs/ARCHITECTURE_REVIEW.md) |
 | 数据所有权与一致性 | [数据模型](docs/DATA_MODEL.md) |
-| 租户选择不同数据后端 | [多后端适配方案](docs/MULTI_BACKEND_DESIGN.md)、[在线迁移](docs/ONLINE_MIGRATION.md) |
-| 在线数据迁移与恢复 | [迁移运行指南](docs/ONLINE_MIGRATION.md) |
+| 多后端选择与迁移恢复 | [多后端适配方案](docs/MULTI_BACKEND_DESIGN.md)、[迁移运行指南](docs/ONLINE_MIGRATION.md) |
 | 安全、故障和运行指标 | [安全设计](docs/SECURITY_REVIEW.md)、[风险登记册](docs/RISK_REGISTER.md)、[SLO](docs/SLO.md) |
 | 运行及验证 | [交付指南](ENTERPRISE_PLATFORM_HANDOFF.md)、[验证方法](docs/VERIFICATION.md)、[验收矩阵](docs/ACCEPTANCE_EVIDENCE.md) |
 
@@ -28,7 +35,7 @@
 | 多租户 | 配置/RBAC、存储键、工具权限、SecretRef 和观测标签按租户作用域隔离 |
 | 版本发布 | Agent App → immutable Version → stable/canary Deployment；Session 稳定分桶和请求重试版本绑定 |
 | Agent 运行 | LLM、Chain、Graph、Parallel、Cycle；节点提示词、工具白名单、调用预算和拓扑校验 |
-| Session / Memory | 共享 Redis/PostgreSQL 服务、完整调用租约、跨节点恢复的会话和长期记忆 |
+| Session / Memory | 每租户独立配置 Redis/PostgreSQL 组合与部署 profile；完整调用租约、跨节点恢复的会话和长期记忆 |
 | Summary | 独立任务、事件边界冻结、固定版本生成、fenced checkpoint、下一轮 Runner overlay |
 | Knowledge / Artifact | Qdrant tenant/app 检索；PostgreSQL 元数据与 S3/MinIO 对象、版本、SHA-256 和 tombstone |
 | 数据迁移 | Session/Knowledge/Artifact 生产写入捕获、持久化 journal、同步镜像、全量规范记录比对、配置 CAS 切换与回滚；独立 `cmd/data-migrate` 命令 |
@@ -46,15 +53,15 @@ flowchart LR
     D --> REPLY["企业微信 / Telegram<br/>回复接口"]
 ```
 
-图中 Inbox/Outbox 均由 PostgreSQL 持久化；Worker 返回执行结果后，由 Consumer 提交完成事务。入站消息与回复接口是同一 IM 平台的两个交互方向。
+Inbox/Outbox 由 PostgreSQL 持久化；Worker 返回执行结果后，由 Consumer 提交完成事务。
 
 Admin 管理不可变版本与部署；Worker 进程内的 Storage Adapter 选择官方 Redis/PostgreSQL Session/Memory Service，独立的数据面 Resolver 注入 Qdrant Knowledge 和 PostgreSQL 元数据 + S3/MinIO 对象的 Artifact Service。Summary 由独立 Summary Worker 消费任务并发布 checkpoint，下一轮 Runner 读取摘要。接线与存储所有权见[架构分图](docs/ARCHITECTURE.md#21-session--memory-适配)。
 
 PostgreSQL 另持有控制面、执行 guard、审计和迁移 fence。Runner 缓存按租户、配置、版本和部署标识绑定，并具有容量、TTL 和排空约束。
 
-在线迁移从创建时捕获增量；回滚窗口读目标、写源并镜像目标，`complete` 后读写目标且保留旧数据。活跃迁移会串行化该租户数据域的操作，全量记录校验可能暂时阻塞请求；Memory 在线迁移、Session shared state/native summary/TTL 不在支持范围。前置条件、命令和验证边界见[迁移运行指南](docs/ONLINE_MIGRATION.md)。
+在线迁移覆盖 Session、Knowledge 和 Artifact；回滚窗口读目标、写源并镜像目标，`complete` 后读写目标且保留源数据。支持范围与迁移窗口要求见[运行指南](docs/ONLINE_MIGRATION.md)。
 
-各 `cmd/*` 是独立进程组合根，共享协议和领域规则位于 `pkg/*`。Admin/Worker 在 bootstrap、HTTP、policy 和 config 文件中完成装配、协议适配和策略解析；运行时注册表在启动时封存。
+各 `cmd/*` 独立部署，共享协议和领域规则位于 `pkg/*`；运行时注册表在启动时封存。
 
 ### 消息与故障处理
 
@@ -115,18 +122,20 @@ Worker 要求 Agent App 存在 active stable deployment。版本快照保存无�
 
 企业微信沙箱配置依次使用 `scripts/wecom_sandbox_tunnel.ps1`、`scripts/wecom_sandbox_setup.ps1`、`scripts/wecom_sandbox_bootstrap.ps1`，参数和控制台步骤见 [接入与部署验收](docs/EXTERNAL_ACCEPTANCE_RUNBOOK.md)。
 
-## 运行约束
+## 支持范围与部署条件
 
 - PostgreSQL 是共享协调依赖；执行 fencing 使用连接级 advisory lock，数据库连接使用直连或 PgBouncer session pooling。
 - Consumer→Worker 生产连接使用验证证书的 HTTPS，或具有身份认证的 service mesh；HMAC 负责请求完整性和 nonce 防重放。
 - `STORAGE_BACKEND_PROFILES` 与 `DATA_PLANE_PROFILES` 保存公开配置，SecretRef 绑定租户、用途、provider 和 model，实际秘密仅授予消费它的进程。
 - 工具同时受版本与租户白名单约束；危险工具按 tenant/actor/session/tool/args/invocation 一次性审批。
-- token 预算按 UTC 日账本原子预留；已 dispatch 但 usage 未知的调用保留预算占用。金额预算尚未接入，当前拒绝 `maxCostPerDay > 0` 的配置。
+- 预算以 token 计量（`maxCostPerDay=0`），按 UTC 日账本原子预留；已 dispatch 但 usage 未知的调用保留预算占用。
 - 公平调度使用 `FAIR_QUEUE_ENABLED`、权重、`max_inflight` 与 `max_queued`。外部 Store 需提供公平领取、原子准入及 Outbox dispatch fence 能力。
 - `/metrics` 使用 bearer 认证；tenant、agent 和 model 标签由有界 allowlist 管理。
 - 重放要求 actor/reason 和可恢复状态。Outbox resume 保留已确认 cursor，restart 从第 0 段发送；操作前核对外部投递结果。
 
 Kubernetes 的镜像 digest、Secret、网络策略、传输和迁移门禁见 [部署指南](deploy/kubernetes/README.md)。真实 IM、目标集群、外部密钥服务和 HA/容量验证统一记录在 [验收矩阵](docs/ACCEPTANCE_EVIDENCE.md)。
+
+在线迁移要求所有写入副本使用相同不可变 profile，并为域内串行操作、同步镜像和完整记录校验预留窗口。Session 迁移支持 session-owned State/Event/Track、关闭 TTL 的数据；其余支持细节见[多后端方案](docs/MULTI_BACKEND_DESIGN.md)与[迁移指南](docs/ONLINE_MIGRATION.md)。
 
 ## 验证与交付
 

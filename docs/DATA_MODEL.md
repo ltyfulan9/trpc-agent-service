@@ -18,11 +18,11 @@ InboundMessage 1 ── 0..1 OutboundMessage
 Invocation 1 ── 1 pinned AgentVersion/Deployment
 ```
 
-## 可视化 ER 图（平台表与逻辑后端边界）
+## 平台表与后端逻辑实体
 
-下面的 Mermaid 图列出平台表的实际字段子集，以及带 `_LOGICAL` 后缀的后端逻辑实体。平台 ID 按 SQL 类型表示：`string` 对应 VARCHAR/CHAR/TEXT，`bigint` 包括 BIGSERIAL；同一实体内多个 `PK` 字段共同组成复合主键，多个 `FK` 字段可能共同参与同一外键。`logical_` 关系由应用作用域或请求身份关联，不表示 SQL 外键；SDK 后端实体不标注平台 PK/FK。
+ER 图列出平台表的关键字段与带 `_LOGICAL` 后缀的后端逻辑实体。平台 ID 按 SQL 类型表示：`string` 对应 VARCHAR/CHAR/TEXT，`bigint` 包括 BIGSERIAL；同一实体内多个 `PK` 字段共同组成复合主键，多个 `FK` 字段可能共同参与同一外键。`logical_` 关系表示应用作用域或请求身份关联；SQL 外键与 SDK 后端逻辑关系分别标注，SDK 实体不标注平台 PK/FK。
 
-Agent 的稳定身份是 `agent_apps`，不可变配置保存在 `agent_versions.config_snapshot`，发布路由由 `deployments` 选择版本。ChannelBinding 的 `accountId`、`agentApp` 保存在 `tenants.config.channels` 内，通过 `tenant_channels.channel_index` 定位；`tenant_channels.config` 仅保存该绑定的扩展配置，两项身份都不是该表的独立列。
+Agent 的稳定身份是 `agent_apps`，不可变配置保存在 `agent_versions.config_snapshot`，发布路由由 `deployments` 选择版本。ChannelBinding 的 `accountId`、`agentApp` 保存在 `tenants.config.channels` 内，通过 `tenant_channels.channel_index` 定位；`tenant_channels.config` 保存该绑定的扩展配置。身份字段的解析以租户配置与通道索引的关联为准。
 
 ```mermaid
 erDiagram
@@ -180,11 +180,11 @@ erDiagram
     }
 ```
 
-`execution_records` 以 `(tenant_id, idempotency_key, attempt_number)` 区分追加的执行尝试，通过 `execution_token` 和 `lease_until` 验证提交身份；它没有 `inbox_id` 或 `lease_version` 列。Worker 先锁定并核对 `invocation_bindings` 的请求、会话和版本身份，再创建执行记录，这一请求关联不是 SQL 外键。`invocation_results` 的主键是 `(tenant_id, idempotency_key)`，通过 `(execution_id, tenant_id)` 外键关联具体执行；`execution_id` 在 schema 中允许为空且非空时唯一，因此图中保留可选关系。实际迁移见 [执行尝试与结果来源](../migrations/018_execution_attempts.up.sql)，应用校验见 [Worker 执行记录器](../pkg/controlplane/resolver.go)。
+`execution_records` 以 `(tenant_id, idempotency_key, attempt_number)` 区分追加的执行尝试，通过 `execution_token` 和 `lease_until` 验证提交身份；Inbox 的记录身份与 `lease_version` 由可靠队列独立管理。Worker 先锁定并核对 `invocation_bindings` 的请求、会话和版本身份，再创建执行记录，通过应用校验建立请求关联。`invocation_results` 以 `(tenant_id, idempotency_key)` 为主键，通过 `(execution_id, tenant_id)` 外键关联具体执行；`execution_id` 允许为空且非空时唯一，对应图中的可选关系。schema 定义见 [执行尝试与结果来源](../migrations/018_execution_attempts.up.sql)，身份校验见 [Worker 执行记录器](../pkg/controlplane/resolver.go)。
 
-`audit_logs.tenant_id` 是应用填写的审计作用域，没有指向 `tenants` 的 SQL 外键；`control_plane_audit.tenant_id` 有该外键。`SUMMARY_CHECKPOINT` 与 `ARTIFACT_VERSION` 是平台真实表，其 Session 关联通过包含 app/user 的完整作用域解释，不存在跨 SDK 后端的 Session 外键。逻辑 Event 的 `sequence` 表示稳定转录中的绝对顺序，能否证明该顺序由所选 backend 的读取契约决定。
+`audit_logs.tenant_id` 由应用填写并约束审计作用域；`control_plane_audit.tenant_id` 通过 SQL 外键关联 `tenants`。平台 `SUMMARY_CHECKPOINT` 与 `ARTIFACT_VERSION` 通过包含 app/user 的完整作用域关联 Session，跨 SDK 后端的 Session 关联由应用层维护。逻辑 Event 的 `sequence` 表示稳定转录中的绝对顺序，其可验证性由所选后端的数据读取契约决定。
 
-## 已落地平台表
+## 平台协调表
 
 | 表 | 主键/唯一键 | 关键版本或隔离字段 | 所有者 |
 |---|---|---|---|
@@ -215,7 +215,7 @@ erDiagram
 
 ## 在线迁移物理模型
 
-[迁移 045](../migrations/045_online_data_migrations.up.sql) 在既有 `data_migrations` 控制状态之外增加生产路由、写意图和有序日志。以下实体均为实际 PostgreSQL 表，关系线表示 SQL 外键；字段列出协议关键子集。
+[迁移 045](../migrations/045_online_data_migrations.up.sql) 定义生产路由、写意图和有序日志，与 `data_migrations` 共同保存迁移状态。以下实体均为 PostgreSQL 表，关系线表示 SQL 外键，字段列出协议关键子集。
 
 ```mermaid
 erDiagram
@@ -286,7 +286,7 @@ erDiagram
 | Journal `payload` / `content_hash` / `deleted` | BYTEA 最大 16 MiB；CHAR(64) 小写 hex；BOOLEAN，均非空；deleted 要求空 payload | 规范正文及哈希，删除单独记录 tombstone |
 | Journal `projected_at` / Intent、Journal `created_at` | TIMESTAMPTZ；仅 projected_at 可空，created_at 默认数据库时钟 | 实际目标读回匹配后才标记投影；pending partial index 支持有序恢复 |
 
-`idx_live_journal_key` 索引 `(migration_id,key_hash,sequence DESC)`；`idx_live_journal_pending` 索引 `(migration_id,sequence)` 且仅包含 `projected_at IS NULL`。`data_migration_records` 是既有通用投影 ledger，保留每个迁移身份下的最新记录；新增 live journal 保留有序版本，不可混为同一张表。基础 `data_migrations.domain` 仍包含 memory/summary，但生产 live route 只允许上述三个已实现的数据域。
+`idx_live_journal_key` 索引 `(migration_id,key_hash,sequence DESC)`；`idx_live_journal_pending` 索引 `(migration_id,sequence)` 且仅包含 `projected_at IS NULL`。`data_migration_records` 作为通用投影 ledger，保存每个迁移身份下的最新记录；`data_migration_live_journal` 保存不可变有序版本，用于在线捕获与恢复。`data_migrations.domain` 的 schema 包含 memory/summary，生产 live route 的准入范围限定为 session、knowledge、artifact。
 
 切换事务同时更新租户配置版本、live route、迁移 phase 和审计并核对 fence。回滚窗口的 `read_profile` 为目标、`write_profile` 为源且 `mirroring=true`；完成后读写目标、`mirroring=false`，终态 route 保留供旧缓存客户端使用。运维步骤及部署写入边界见 [ONLINE_MIGRATION.md](ONLINE_MIGRATION.md)。
 
@@ -328,5 +328,5 @@ ArtifactVersion: tenant_id + app_name + user_id + session_id + filename + versio
 - Inbox/Outbox/result/binding 的保留期必须按租户合规策略配置；删除顺序为 result/binding → Outbox → Inbox，并保留聚合审计。
 - AgentVersion、Deployment、ExecutionRecord 和控制面审计默认不可物理覆盖；法规要求删除时走审批任务并保留 tombstone。
 - Artifact 删除先提交 tombstone，再清理正文；重试包含已标记删除的对象，继续完成未成功的清理。Knowledge 删除与 migration projector 的目标副作用成功、最终 fence 校验共同决定是否写入 `projected_at`。
-- Session 迁移记录使用规范化 `session/v1` envelope，包含 session-owned State、按序 Event 和 Track；实际实现拒绝 App/User shared state、SDK native summary、TTL，以及达到配置安全上限的 inventory/history。平台 `summary_checkpoints` 保持 PostgreSQL 权威，不随 Session store 迁移。目标只接受源历史的严格前缀追加，缺失记录形成 tombstone。
+- Session 迁移记录使用规范化 `session/v1` envelope，包含 session-owned State、按序 Event 和 Track；迁移准入拒绝 App/User shared state、SDK native summary、TTL，以及达到配置安全上限的 inventory/history。平台 `summary_checkpoints` 保持 PostgreSQL 权威，不随 Session store 迁移。目标只接受源历史的严格前缀追加，缺失记录形成 tombstone。
 - 在线迁移 complete、abort、rollback 均不删除源数据；终态路由持续服务已有缓存客户端。旧数据和 intent/journal 的保留、备份及清理由操作者单独安排，不能在仍需恢复或回滚时清除协议记录。

@@ -1,4 +1,4 @@
-# Enterprise Multi-Tenant Agent Platform Security Review
+# 安全架构与审计设计
 
 范围：Go 源码、migrations、Compose/Kubernetes 模板和发布校验。本文说明租户隔离、消息 fence、治理、密钥最小暴露和专用数据面的安全控制及信任边界；验证记录见 [ACCEPTANCE_EVIDENCE.md](ACCEPTANCE_EVIDENCE.md)。
 
@@ -6,7 +6,7 @@
 
 不可信输入包括 IM webhook、消息正文/附件 URL、Tool 参数、模型输出、租户管理员提交的配置和第三方 Provider 响应。受信边界分为公网 Gateway、内部 Consumer/Worker、Admin 控制面、共享 PostgreSQL/Redis、Qdrant/S3 数据面以及 Telemetry 出口。主要攻击目标是跨租户读取、伪造回调/内部请求、重复副作用、权限提升、秘密泄露、SSRF、队列/预算耗尽和供应链替换。
 
-## 2. 已落地控制
+## 2. 安全控制
 
 | 领域 | 控制 | 证据入口 |
 |---|---|---|
@@ -17,7 +17,7 @@
 | Knowledge scope | Qdrant 物理 ID=`SHA256(tenant\0app\0logicalID)`；保留 metadata 不可覆盖 | `pkg/knowledgeplane` |
 | Artifact scope/integrity | tenant-scoped object key；不可变版本；最大 16 MiB；MIME/标识校验；SHA-256 load verify | `pkg/artifactplane` |
 | Secret handling | profile manifest 只存 env 名；JSON unknown fields/raw secret 拒绝；仅 Worker 解析；字段私有不可序列化 | `pkg/runtimeplane`, `pkg/releaseverify` |
-| Tool authorization | Runner BeforeTool 唯一 seam；tenant+version 双白名单；危险 Tool durable challenge 一次消费 | `pkg/governance/plugin.go`, `pkg/governance/approval_postgres.go` |
+| Tool authorization | Runner BeforeTool 统一授权接口；tenant+version 双白名单；危险工具持久审批一次性消费 | `pkg/governance/plugin.go`, `pkg/governance/approval_postgres.go` |
 | MCP boundary | operator-owned HTTPS profile；精确远端 Tool allowlist；Worker-only Header SecretRef；禁用 stdio/危险 Header | `pkg/platformtool/mcp.go`, MCP vertical-slice tests |
 | Cost control | Redis Lua 原子 token reservation/dispatch/settlement；未知 usage 保守计费 | `pkg/governance/budget.go`, `pkg/summaryruntime/budget_model.go` |
 | Idempotency/fencing | Inbox/Outbox unique+hash；owner/lease_version/expiry；结果未知进 reconciliation | `pkg/reliable`, `pkg/controlplane/session_fence.go`, `pkg/resultcache/postgres.go` |

@@ -95,7 +95,7 @@ Preflight 不调用模型或 IM 消息接口；失败时按报告检查 DNS、�
 2. 调用 `getWebhookInfo`，保存 URL host/path、pending count、last error code/time；遮盖 bot token 与 route key。
 3. 检查注册结果后再执行消息用例。
 
-### 5.2 闭环用例
+### 5.2 端到端验收用例
 
 | 用例 | 操作 | 断言 |
 |---|---|---|
@@ -115,7 +115,7 @@ Preflight 不调用模型或 IM 消息接口；失败时按报告检查 DNS、�
 3. 保存动作必须完成 `msg_signature` 校验、echostr 解密、receiver corp ID 校验并返回原文。
 4. 若失败，查看稳定错误类和脱敏 trace，在本地复现并修正后重新保存。
 
-### 6.2 闭环用例
+### 6.2 端到端验收用例
 
 | 用例 | 操作 | 断言 |
 |---|---|---|

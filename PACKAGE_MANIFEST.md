@@ -2,7 +2,7 @@
 
 项目：Enterprise Multi-Tenant Agent Platform
 
-交付包的 `platform-source/` 保存本仓库源码，`verification-evidence/` 保存本次验证日志；包根目录包含文件清单和 SHA-256 校验文件。
+交付包的 `platform-source/` 保存源码，`verification-evidence/` 保存对应提交的验证日志；包根目录包含文件清单和 SHA-256 校验文件。
 
 ## 目录职责
 
@@ -54,7 +54,7 @@ Admin/Worker 在进程启动时封存 runtime registry；配置、HTTP、策略�
 | `telemetry` / `health` | trace、指标、审计、readiness、drain |
 | `releaseverify` | 受控应用发布物及网络、密钥和迁移前置条件 |
 
-Worker 已安装 Session/Knowledge/Artifact 迁移装饰器，Summary Worker 安装相同 Session 装饰器；`cmd/data-migrate` 驱动生产协调器。新增集成入口为 `test/integration/online_session_migration_test.go` 和 `online_dataplane_migration_test.go`，执行状态以交付证据为准。`cmd/migrate` 单独负责 schema 迁移。在线迁移支持范围、完整记录比对与请求阻塞边界、源写目标读的回滚窗口和恢复命令见[迁移运行指南](docs/ONLINE_MIGRATION.md)；目标负载、切换和故障恢复仍须按实际环境验收。
+Worker 装配 Session/Knowledge/Artifact 迁移装饰器，Summary Worker 装配相同 Session 装饰器；`cmd/data-migrate` 驱动生产协调器，`cmd/migrate` 负责 schema。集成入口为 `test/integration/online_session_migration_test.go` 和 `online_dataplane_migration_test.go`。支持范围、完整记录比对、扫描延迟、源写目标读的回滚窗口和恢复命令见[迁移运行指南](docs/ONLINE_MIGRATION.md)，对应运行结果保存在交付证据中。
 
 ## 验证与配置
 
