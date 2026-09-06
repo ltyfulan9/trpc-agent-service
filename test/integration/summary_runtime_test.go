@@ -108,7 +108,8 @@ func TestSummaryRuntimePostgresRedisEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	sessionKey := session.Key{AppName: physicalApp, UserID: "owner-1", SessionID: "session-1"}
-	stored, err := sessionService.CreateSession(ctx, sessionKey, nil)
+	incarnationID := uuid.NewString()
+	stored, err := sessionService.CreateSession(ctx, sessionKey, session.StateMap{storage.SessionIncarnationStateKey: []byte(incarnationID)})
 	if err != nil {
 		t.Fatalf("create real Redis Session: %v", err)
 	}
@@ -198,6 +199,7 @@ func TestSummaryRuntimePostgresRedisEndToEnd(t *testing.T) {
 	enqueued, err := store.Enqueue(ctx, summarycoord.EnqueueRequest{
 		Key: summarycoord.Key{
 			TenantID: tenantID, AgentAppID: appID, SessionOwnerID: sessionKey.UserID, SessionID: sessionKey.SessionID,
+			SessionIncarnationID: incarnationID,
 		},
 		AgentVersionID: versionID, TargetEventSequence: 0,
 	})
@@ -261,6 +263,7 @@ func TestSummaryRuntimePostgresRedisEndToEnd(t *testing.T) {
 
 	checkpoint, found, err := sink.Get(ctx, summarycoord.Key{
 		TenantID: tenantID, AgentAppID: appID, SessionOwnerID: sessionKey.UserID, SessionID: sessionKey.SessionID,
+		SessionIncarnationID: incarnationID,
 	})
 	if err != nil || !found {
 		t.Fatalf("read durable Summary checkpoint: found=%v err=%v", found, err)

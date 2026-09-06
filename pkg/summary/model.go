@@ -16,6 +16,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/google/uuid"
 	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/tenant"
 )
 
@@ -77,6 +78,9 @@ type Key struct {
 	SessionOwnerID string
 	SessionID      string
 	FilterKey      string
+	// Empty identifies preserved pre-incarnation rows, never a production
+	// Session generation. New production receipts carry the backend UUID.
+	SessionIncarnationID string
 }
 
 func (k Key) Validate() error {
@@ -94,6 +98,12 @@ func (k Key) Validate() error {
 	}
 	if !validScopedText(k.FilterKey, MaxFilterKeyBytes, true) {
 		return fmt.Errorf("%w: filter key", ErrInvalidJob)
+	}
+	if k.SessionIncarnationID != "" {
+		id, err := uuid.Parse(k.SessionIncarnationID)
+		if err != nil || id == uuid.Nil || id.String() != k.SessionIncarnationID {
+			return fmt.Errorf("%w: session incarnation", ErrInvalidJob)
+		}
 	}
 	return nil
 }
@@ -132,6 +142,9 @@ type Job struct {
 	CompletedEventSequence int64
 	CreatedAt              time.Time
 	UpdatedAt              time.Time
+	// A deferred request received during a claim belongs to the next lease.
+	// Zero means no complete-transcript resolution remains outstanding.
+	TargetResolutionLeaseVersion int64
 }
 
 func (j Job) Validate() error {
@@ -151,7 +164,7 @@ func (j Job) Validate() error {
 	if !validStatus(j.Status) {
 		return fmt.Errorf("%w: status %q", ErrInvalidJob, j.Status)
 	}
-	if j.LeaseVersion < 0 || j.Attempts < 0 || j.MaxAttempts <= 0 || j.MaxAttempts > MaxAttempts || j.Attempts > j.MaxAttempts {
+	if j.LeaseVersion < 0 || j.TargetResolutionLeaseVersion < 0 || j.Attempts < 0 || j.MaxAttempts <= 0 || j.MaxAttempts > MaxAttempts || j.Attempts > j.MaxAttempts {
 		return fmt.Errorf("%w: lease or attempts", ErrInvalidJob)
 	}
 	if j.LeaseOwner != "" && (len(j.LeaseOwner) > 128 || !utf8.ValidString(j.LeaseOwner) ||

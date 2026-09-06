@@ -516,18 +516,19 @@ func (c *HTTPClient) ProcessMessage(ctx context.Context, req *Request) (*Respons
 		}
 	}
 
-	// A transport error is retry-safe only when the request was not written.
-	// Once the signed body crossed the write boundary, the Worker may have
-	// admitted a model or Tool invocation even if the response never made it
-	// back to this process. Track that boundary with httptrace instead of
-	// guessing from provider-controlled network error text.
-	var requestWritten atomic.Bool
+	// GotConn precedes dispatch; WroteRequest may arrive after Do returns.
+	// Once connected, a transport failure cannot prove that the Worker did
+	// not execute. Failures during DNS or connection setup remain retryable.
+	var mayHaveDispatched atomic.Bool
 	trace := &httptrace.ClientTrace{
+		GotConn: func(httptrace.GotConnInfo) {
+			mayHaveDispatched.Store(true)
+		},
 		WroteRequest: func(httptrace.WroteRequestInfo) {
 			// The callback itself means the transport reached its write hook. An
 			// error may indicate a partial write, which is still an unknown
 			// outcome for a side-effecting Worker request.
-			requestWritten.Store(true)
+			mayHaveDispatched.Store(true)
 		},
 	}
 	httpReq = httpReq.WithContext(httptrace.WithClientTrace(ctx, trace))
@@ -538,7 +539,7 @@ func (c *HTTPClient) ProcessMessage(ctx context.Context, req *Request) (*Respons
 		}
 		return nil, &workerTransportError{
 			cause:   err,
-			unknown: c.requireExecutionContract && requestWritten.Load(),
+			unknown: c.requireExecutionContract && mayHaveDispatched.Load(),
 		}
 	}
 	defer resp.Body.Close()

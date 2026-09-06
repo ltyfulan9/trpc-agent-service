@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/storage"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 )
 
@@ -121,10 +122,18 @@ func (s *CheckpointSessionService) hydrate(ctx context.Context, value *session.S
 	if err := s.validateSessionKey(session.Key{AppName: value.AppName, UserID: value.UserID, SessionID: value.ID}); err != nil {
 		return nil, err
 	}
+	incarnation, incarnationErr := storage.SessionIncarnationID(value)
+	if incarnationErr != nil {
+		return nil, ErrSummaryReadUnavailable
+	}
+	if incarnation == "" {
+		return value, nil
+	}
 	key := Key{
 		TenantID: s.tenantID, AgentAppID: s.agentAppID,
 		SessionOwnerID: value.UserID, SessionID: value.ID,
-		FilterKey: session.SummaryFilterKeyAllContents,
+		FilterKey:            session.SummaryFilterKeyAllContents,
+		SessionIncarnationID: incarnation,
 	}
 	checkpoint, found, err := s.checkpoints.Get(nonNilContext(ctx), key)
 	if err != nil {

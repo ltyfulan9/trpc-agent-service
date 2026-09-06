@@ -233,7 +233,7 @@ Consumer 发送 `inbox:{id}` 与 payload hash。Worker 在模型完成后、HTTP
 3. 数据：session appName 为 `tenantID:agentName`；session ID 含 tenant/channel/account；队列表与控制面有 tenant 外键/复合约束。
 4. 工具：Runner Plugin 是唯一真实执行拦截点；不保留不在 Runner 路径上的静态 Tool/Agent wrapper，以免它与审批和审计语义漂移。旧配置也必须是显式 whitelist；租户只能引用运维注册的工具目录，版本创建时再次验证可执行性。Plugin 在执行前记录授权决定、执行后记录 tool name/结果/耗时；审计不可用时阻断新工具执行。需人工批准的工具走持久化 challenge → operator grant → 一次性消费，未授权、过期或作用域不匹配时 fail-closed。
 5. 密钥：API Key、IM Token/Secret/AES Key 用 AES-GCM 加密且 Admin 响应固定遮盖；Channel.Config 仅允许已安装适配器的 `account_id`、`corp_id`、`encoding_aes_key`。租户保存 operator-owned Session/Memory profile ID，Worker 通过 SecretResolver 取连接串。内置 key-ring resolver 支持受限的 `env://TRPC_SECRET_*`；生产密钥来源、workload identity 与轮换步骤见外部验收运行手册。
-6. 服务身份：Consumer 请求签名绑定 service、timestamp、nonce、method、path 和 body hash；Redis SETNX 消费 nonce，防五分钟窗口内跨节点重放。自定义模型 Endpoint 当前禁止；接入 SSRF-safe transport 与出网 allowlist 后才能开放。预算感知 Worker HTTP Client 另外跟踪请求写入边界：写入前连接失败可重试，写入后连接失败归类为结果未知并暂停到 reconciliation，避免已到达 Worker 的模型/Tool 调用被盲目重跑。
+6. 服务身份：Consumer 请求签名绑定 service、timestamp、nonce、method、path 和 body hash；Redis SETNX 消费 nonce，防五分钟窗口内跨节点重放。自定义模型 Endpoint 当前禁止；接入 SSRF-safe transport 与出网 allowlist 后才能开放。Worker HTTP Client 通过 `httptrace.GotConn` 保守标记请求可能已发送：DNS 或连接建立阶段的失败可重试，取得连接后的传输错误归类为结果未知并暂停到 reconciliation。`WroteRequest` 可能晚于 `Do` 返回，缺少该回调不能证明 Worker 未执行；部分写入同样不能安全自动重试。
 7. 内容与日志：输入在 memory/model 前执行 block/warn/log 策略；工具输出和最终模型文本递归脱敏。审计结构没有 prompt/response/credential 字段；credential-bearing HTTP 请求的构造和 transport 错误在 Adapter 边界映射为稳定错误类，不传播原始 URL 或底层错误文本。
 8. 控制面：租户配置更新使用 `config_version` CAS；Tenant CRUD、Agent 创建、版本创建/发布和部署切换均与操作者审计同事务。认证 token 映射不可变 Principal、权限和 tenant scope；`X-Admin-Actor` 完全不参与授权或审计身份。生产可由 OIDC/IAP 发行短期主体，但必须保留同样的服务端 scope 校验。
 9. token 预算：控制面要求 `maxTokensPerDay` 与 `maxTokensPerRequest` 成对配置。硬预算仅接受运维不可变目录中的精确模型 ID，并将 catalog revision、context window 和最大输出限制写入版本快照；单请求 reservation 必须覆盖 `context window × MaxLLMCalls`。Redis Lua 在 UTC 日账本中原子验证 `used + pending + requested <= daily limit`。模型调用前的 dispatch 授权一次性使用，OpenAI SDK 隐式重试被禁用。未 dispatch 的过期 reservation 可以回收；已 dispatch 且结果未知的记录转为 uncertain，并持续占用当日预算。正常完成按 provider usage 结算：同 response ID 的累计流取最大值，多 response ID 求和；缺失 usage、无稳定 response ID 或执行开始后失败，均按完整 reservation 扣减 token 账本。结算采用幂等校验，冲突或存储失败时返回错误；Provider 用量超过 reservation 时先记录实际值，再拒绝成功响应。该机制约束并发授权与预算结算，Provider 已发生的用量由实际账单记录。
@@ -262,16 +262,20 @@ Consumer→Worker 默认 `WORKER_TRANSPORT_MODE=production`，启动时只接受
 
 ```mermaid
 flowchart LR
-    RECEIPT["Consumer<br/>收到 Worker 摘要回执"] -->|完成 Inbox 的同一事务| JOB[(PostgreSQL<br/>Summary job)]
-    JOB -->|claim / lease| SW["独立 Summary Worker<br/>固定版本 / 冻结事件边界"]
+    RECEIPT["Consumer<br/>摘要回执 / Session 代次 UUID"] -->|完成 Inbox 的同一事务| JOB[(PostgreSQL<br/>Summary job / 待解析标记)]
+    JOB -->|claim / lease| SW["独立 Summary Worker<br/>匹配代次 / 冻结事件边界"]
     SESSION[(共享 Session Service<br/>已提交 Event / State)] -->|重读目标事件前缀| SW
-    SW -->|fenced CAS 发布| CHECKPOINT[(PostgreSQL<br/>Summary checkpoint)]
-    CHECKPOINT -->|下一轮 overlay| NEXT["Worker / Runner<br/>Session.Summaries"]
+    SW -->|fenced CAS 发布| CHECKPOINT[(PostgreSQL<br/>按代次保存 checkpoint)]
+    CHECKPOINT -->|同代次下一轮 overlay| NEXT["Worker / Runner<br/>Session.Summaries"]
 ```
 
 强制顺序是：Runner 把 Event/State 提交共享 SessionService → Consumer 根据 Worker 回执在 Inbox/Outbox 完成事务中提交 summary job → `summary.Processor` 领取带 lease 的 job，必要时冻结目标序号 → 注入的 Generator 重新从主存储读取 → 生成 → CAS 发布到 `summary.Sink` → 只有 checkpoint 已达到目标序号时才将 job 标记完成。
 
 `summaryruntime.Runtime` 按 job 固定的 Agent 版本解析 tenant model 和 Session/Memory profile，在同一 Session lease 下冻结目标序号、重读稳定事件前缀，通过 tRPC-Agent-Go Summarizer 生成并进行预算 reservation/dispatch/settlement。migration 042 保存最后覆盖事件的 `cutoff_at` 与 `last_event_id`；PostgreSQL `FencedSink` 在同一事务锁定 job lease 后发布 checkpoint，拒绝失效 Worker 晚到写入。下一轮 Worker 在访问后端前校验 tenant/app/owner/session scope，把 checkpoint overlay 到克隆 Session 的 `Session.Summaries`，并显式启用 `WithAddSessionSummary(true)`；读取失败 fail-closed。独立 `cmd/summary-worker` 停止时先停止新 claim，再有界排空活跃 job，超时/取消后的 FAILED 状态使用独立短 deadline 持久化。
+
+Session 另保存平台管理的 `platform:session_incarnation_id` UUID。Worker 在完整 Session lease 与 execution fence 内初始化该 State 键，并将所观察到的 UUID 写入摘要回执；job 唯一键与 checkpoint 主键包含 `session_incarnation_id`。删除或 TTL 到期后重建生成新 UUID，Generator 与 overlay 拒绝跨代次使用摘要；Session 数据迁移保留规范 State 中的 UUID。
+
+046 的 `target_resolution_lease_version` 保存重新解析请求。正在生成时收到零序号回执，将解析标记登记给后续租约，当前生成保持已冻结的事件边界；完成后仍有标记则回到 PENDING，由下一次领取刷新目标。047 保存未绑定的旧记录用于诊断，但生产不生成或 overlay 空代次摘要；其唯一键变更要求按 breaking migration 流程排空、停止写入、执行 schema 再部署。字段、遗留数据和降级限制见 [数据模型](DATA_MODEL.md#summary-代次与调度字段)。
 
 ## 8. 后端迁移状态机
 
@@ -349,6 +353,10 @@ Session/Memory 的控制面 fencing 使用连接级 PostgreSQL advisory lock；�
 
 ## 12. 最小部署与生产部署
 
-最小集成栈：1 PostgreSQL、1 Redis、1 Gateway、1 Worker、1 Consumer、1 Delivery、1 Admin、Migrate、Prometheus、Grafana、OTel Collector。
+最小集成栈：1 PostgreSQL、1 Redis、1 Gateway、1 Worker、1 Summary Worker、1 Consumer、1 Delivery、1 Admin、Migrate、Prometheus、Grafana、OTel Collector。Summary Worker 独立消费摘要任务，是异步摘要链路的必要部署单元。
 
-Redis 运行时使用 `redis.NewClient`/`*redis.Client` 的单 endpoint 接线，可连接托管 HA 服务的稳定代理地址；运行时不执行 Cluster/Sentinel 拓扑发现。生产拓扑采用托管 HA PostgreSQL/PITR、带 TLS/ACL 的托管 Redis 稳定 endpoint；Gateway/Consumer/Worker/Delivery 分别 HPA；Consumer/Delivery 按 queue lag 扩容；PDB 与 topology spread；独立 Admin ingress；KMS/Vault；service mesh mTLS；OTel Collector gateway + Tempo/供应商后端；Prometheus Alertmanager。迁移 Job 先于 workload 发布，镜像使用不可变 digest 和 SBOM/签名，NetworkPolicy overlay 为托管数据库配置精确 CIDR。环境配置与验收步骤统一见 [EXTERNAL_ACCEPTANCE_RUNBOOK.md](EXTERNAL_ACCEPTANCE_RUNBOOK.md)。
+Redis 运行时使用 `redis.NewClient`/`*redis.Client` 的单 endpoint 接线，可连接托管 HA 服务的稳定代理地址；运行时不执行 Cluster/Sentinel 拓扑发现。生产拓扑采用托管 HA PostgreSQL/PITR、带 TLS/ACL 的托管 Redis 稳定 endpoint、PDB 与 topology spread、独立 Admin ingress、KMS/Vault、service mesh mTLS、OTel Collector gateway + Tempo/供应商后端及 Prometheus Alertmanager。
+
+当前 Kubernetes 模板为 Gateway、Worker、Summary Worker 配置基于应用容器 CPU/内存的 `ContainerResource` HPA；Consumer/Delivery 使用显式副本数。生产部署需为 Consumer/Delivery 按 queue lag 伸缩配置外部指标适配器与独立 HPA overlay，并验收指标可用性、缩容稳定窗口、并发配额及 Provider 限流。该 overlay 由集群运维独立管理，不加入当前应用 release bundle 的对象 allowlist。副本数和伸缩上下限仍按第 10 节容量模型、业务负载测试及故障演练确定。
+
+迁移 Job 先于 workload 发布，镜像使用不可变 digest 和 SBOM/签名，NetworkPolicy overlay 为托管数据库配置精确 CIDR。环境配置与验收步骤统一见 [EXTERNAL_ACCEPTANCE_RUNBOOK.md](EXTERNAL_ACCEPTANCE_RUNBOOK.md)。

@@ -20,7 +20,7 @@ Knowledge 数据访问契约保留已安装 SDK 的操作能力：Qdrant 支持�
 
 ## 部署前置条件
 
-1. 执行至 `045` 的 schema 迁移，再部署所有 Worker 与 Summary Worker 副本。全部数据访问副本必须支持迁移装饰器与协调 gate，旧版本写入者无法参与该协议。
+1. 执行完整 schema 至 `047`，再部署所有 Worker、Summary Worker 与 Consumer 副本。045 提供在线迁移表，046/047 提供摘要目标刷新与 Session 代次绑定；047 改变写入唯一键，已有部署按 breaking migration 流程排空并停止写入后升级。全部数据访问副本必须支持迁移装饰器与协调 gate。
 2. 创建迁移前，向迁移进程和所有写入副本发布源目标连接配置。跨节点定义必须一致且在进程内保持不可变；回滚窗口内保留两端配置和凭据。profile 的租户 allowlist 持续生效。
 3. 迁移进程需要 `DATABASE_URL`、`STORAGE_BACKEND_PROFILES`、`DATA_PLANE_PROFILES`，以及清单所引用的秘密环境变量。生产数据库连接要求 TLS；控制数据库连接池至少允许 3 个连接，命令配置的最大连接数为 10。
 4. PostgreSQL 连接级 advisory lock 要求直连或 session pooling；transaction/statement pooling 不受支持。加锁、数据库校验和解锁必须落在同一物理连接。
@@ -29,22 +29,34 @@ Knowledge 数据访问契约保留已安装 SDK 的操作能力：Qdrant 支持�
 
 ## 创建与推进
 
-Compose 的 `operations` profile 提供迁移命令镜像。下面示例使用隔离栈的本地 Redis/PostgreSQL 连接配置；进程获取数据面凭据，IM 与聊天模型凭据无需注入。
+Compose 的 `operations` profile 提供迁移命令镜像。操作前确认目标栈的 schema 迁移已完成，PostgreSQL 和 Redis 健康。下面示例使用隔离栈的本地 Redis/PostgreSQL 连接配置；迁移容器获取数据面凭据，IM 与聊天模型凭据无需注入。
+
+在源码根目录准备受保护的 `deploy/.env`，字段参考 `deploy/.env.example`，填写**已有目标栈正在使用的值**。Compose 会先解析完整配置，需要 `POSTGRES_PASSWORD`、`MASTER_KEY`、`SERVICE_AUTH_SECRET`、`ADMIN_API_TOKEN` 和 `GRAFANA_PASSWORD` 等插值变量；这些变量与直接执行 `cmd/data-migrate` 所需的进程变量不同，仅设置 `DATABASE_URL` 不足以运行 Compose 示例。
+
+`COMPOSE_PROJECT_NAME` 必须与启动目标栈时的项目名完全一致。使用 `run_c_local_stack.ps1 -ProjectName agent-platform-review` 时，项目名就是 `agent-platform-review`；脚本结束后会恢复其临时环境变量，因此运维进程仍需提供同一组验证配置。若启动时覆盖了端口，环境文件中的 `PLATFORM_*` 端口也应保持一致。其他 Compose 部署应将下列项目名、环境文件和 `-f` 配置文件集合替换为该部署的实际值。
 
 ```bash
-docker compose -f deploy/docker-compose.yml --profile operations build data-migrate
-docker compose -f deploy/docker-compose.yml --profile operations run --rm data-migrate \
+COMPOSE_PROJECT_NAME=agent-platform-review
+COMPOSE_ENV_FILE=deploy/.env
+migration_compose=(docker compose
+  --project-name "$COMPOSE_PROJECT_NAME" --env-file "$COMPOSE_ENV_FILE"
+  -f deploy/docker-compose.yml -f deploy/docker-compose.isolated.yml
+  --profile operations)
+
+"${migration_compose[@]}" config --quiet
+"${migration_compose[@]}" build data-migrate
+"${migration_compose[@]}" run --rm --no-deps data-migrate \
   create --id tenant-a-session-1 --tenant tenant-a --domain session \
   --source-profile local-redis --target-profile local-postgres \
   --source-backend redis --target-backend postgres --config-version 7 \
   --actor operator-name --reason "replace session backend"
-docker compose -f deploy/docker-compose.yml --profile operations run --rm data-migrate \
+"${migration_compose[@]}" run --rm --no-deps data-migrate \
   run --id tenant-a-session-1 --batch-size 100 --timeout 30m
-docker compose -f deploy/docker-compose.yml --profile operations run --rm data-migrate \
+"${migration_compose[@]}" run --rm --no-deps data-migrate \
   status --id tenant-a-session-1
 ```
 
-`tenant`、迁移 ID、源目标 backend/profile 及预期 `config_version` 应替换为实际值。创建事务校验当前配置，陈旧版本会被拒绝。批大小为 `1..1000`；全量校验扫描受命令 deadline 约束，其工作量不受单次 copy batch 限制。
+`--no-deps` 复用已启动的数据库和网络，不启动或重建依赖服务；连接失败时先检查目标项目与基础设施。`tenant`、迁移 ID、源目标 backend/profile 及预期 `config_version` 应替换为实际值。创建事务校验当前配置，陈旧版本会被拒绝。批大小为 `1..1000`；全量校验扫描受命令 deadline 约束，其工作量不受单次 copy batch 限制。
 
 | 命令 | 行为 | 停止与恢复条件 |
 | --- | --- | --- |
@@ -53,7 +65,7 @@ docker compose -f deploy/docker-compose.yml --profile operations run --rm data-m
 | `step` | 推进一步状态机 | 适合受控维护；以同一 ID 重复调用继续持久化进度 |
 | `status` | 查询迁移状态 | 核对 phase、paused、watermark、last_error 与恢复条件 |
 
-单步命令示例：
+以下单步和运维动作以已安装的 `data-migrate` 二进制为例，进程变量按部署前置条件注入；使用 Compose 时，将 `data-migrate` 替换为 `"${migration_compose[@]}" run --rm --no-deps data-migrate`，保留同一组目标参数。单步命令示例：
 
 ```bash
 data-migrate step --id tenant-a-session-1 --batch-size 100 --timeout 30m

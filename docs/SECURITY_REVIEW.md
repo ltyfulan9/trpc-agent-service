@@ -38,7 +38,7 @@ Knowledge/Artifact migration 在副作用前后读取 lease fence，过期执行
 
 ## 5. 执行与网络安全
 
-Gateway 必须在 durable commit 后 ack。Consumer→Worker 的 HMAC 不替代传输加密：生产只接受 HTTPS，或在已验收严格 peer authentication 的 mesh 中显式开启 mesh 模式。Worker 对模型/Tool 调用设置 deadline；连接失败只有在确认请求未越过写入边界时才可重试。危险 Tool 的批准绑定 tenant、actor、owner、session、tool、canonical args 和 invocation，raw approval token 不进入 Inbox、Session 或 HTTP 响应。
+Gateway 必须在 durable commit 后 ack。Consumer→Worker 的 HMAC 不替代传输加密：生产只接受 HTTPS，或在已验收严格 peer authentication 的 mesh 中显式开启 mesh 模式。Worker 对模型/Tool 调用设置 deadline；Consumer 与 IM Adapter 仅把 DNS/连接建立阶段的传输失败判为可重试，`GotConn` 后的错误保守视为可能已发送。`WroteRequest` 回调缺失或晚到不能证明没有执行，未知结果进入 reconciliation。危险 Tool 的批准绑定 tenant、actor、owner、session、tool、canonical args 和 invocation，raw approval token 不进入 Inbox、Session 或 HTTP 响应。
 
 Worker 通用请求中的附件 URL 以经验证的引用传给模型 Provider，Worker 不下载；生产请求校验拒绝 userinfo、fragment、localhost 和字面量私网/链路本地地址。出网地址与凭据由平台运维管理，模型使用已安装 Provider；MCP profile 采用 HTTPS、精确 Tool allowlist 和受控 Header。目标网络通过 egress allowlist、DNS 与重定向策略约束实际连接；各 MCP profile 按目标系统认证、权限和配额独立验收。
 

@@ -113,13 +113,10 @@ func (c *Cache) Acquire(ctx context.Context, key CacheKey, factory func(context.
 	}
 	for {
 		processor, release, wait, evicted, err := c.acquireOrReserve(key)
-		if closeErr := c.closeProcessorsTracked(evicted); closeErr != nil {
-			// The new key may already have a reserved build slot. Returning here
-			// would strand that entry in a permanently-not-ready state and block
-			// every waiter. Record retirement failures for Close() but continue
-			// constructing the replacement.
-			c.recordCloseError(closeErr)
-		}
+		// The new key may already have a reserved build slot. Retirement
+		// failures are retained for Close(), while replacement construction
+		// must continue so that slot and its waiters are not stranded.
+		_ = c.closeProcessorsTracked(evicted)
 		if err != nil || !isNilProcessor(processor) {
 			return processor, release, err
 		}
@@ -257,9 +254,7 @@ func (c *Cache) release(key CacheKey, entry *cacheEntry) {
 	c.signalLocked()
 	c.mu.Unlock()
 	if closeTarget != nil {
-		if err := c.closeProcessorsTracked([]Processor{closeTarget}); err != nil {
-			c.recordCloseError(err)
-		}
+		_ = c.closeProcessorsTracked([]Processor{closeTarget})
 	}
 }
 
@@ -329,9 +324,7 @@ func (c *Cache) Close(ctx context.Context) error {
 	c.signalLocked()
 	c.trackCloseLocked(idle)
 	c.mu.Unlock()
-	if err := c.closeProcessorsTracked(idle); err != nil {
-		c.recordCloseError(err)
-	}
+	_ = c.closeProcessorsTracked(idle)
 
 	for {
 		c.mu.Lock()
@@ -394,16 +387,6 @@ func (c *Cache) signalLocked() {
 	}
 }
 
-func (c *Cache) recordCloseError(err error) {
-	if err == nil {
-		return
-	}
-	c.mu.Lock()
-	c.closeErrs = append(c.closeErrs, err)
-	c.signalLocked()
-	c.mu.Unlock()
-}
-
 func (c *Cache) trackCloseLocked(processors []Processor) {
 	count := 0
 	for _, processor := range processors {
@@ -416,11 +399,15 @@ func (c *Cache) trackCloseLocked(processors []Processor) {
 	}
 }
 
-func (c *Cache) finishClose(count int) {
+func (c *Cache) finishClose(count int, err error) {
 	if count <= 0 {
 		return
 	}
 	c.mu.Lock()
+	// Publish the sanitized error before a waiter can observe all closes done.
+	if err != nil {
+		c.closeErrs = append(c.closeErrs, err)
+	}
 	if count > c.closeInFlight {
 		count = c.closeInFlight
 	}
@@ -440,7 +427,7 @@ func (c *Cache) closeProcessorsTracked(processors []Processor) error {
 		return nil
 	}
 	err := closeProcessors(processors)
-	c.finishClose(count)
+	c.finishClose(count, err)
 	return err
 }
 

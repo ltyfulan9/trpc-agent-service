@@ -63,33 +63,7 @@ func (s *MemoryStore) Enqueue(ctx context.Context, request EnqueueRequest) (Enqu
 	now := s.clock().UTC()
 	if id, ok := s.byKey[request.Key]; ok {
 		job := s.byID[id]
-		oldTarget := job.TargetEventSequence
-		if request.TargetEventSequence == job.TargetEventSequence && request.AgentVersionID != job.AgentVersionID {
-			return EnqueueResult{}, ErrSummaryVersionConflict
-		}
-		if request.TargetEventSequence > job.TargetEventSequence {
-			job.TargetEventSequence = request.TargetEventSequence
-			job.AgentVersionID = request.AgentVersionID
-		}
-		reset := request.Force
-		if job.Status == StatusCompleted && job.TargetEventSequence > job.CompletedEventSequence {
-			reset = true
-		}
-		if job.Status == StatusFailed &&
-			(request.Force || request.TargetEventSequence > oldTarget) {
-			reset = true
-		}
-		if reset && job.Status != StatusProcessing {
-			job.Status = StatusPending
-			job.Attempts = 0
-			job.LastError = ""
-			job.NextAttemptAt = time.Time{}
-		}
-		if request.MaxAttempts > 0 && request.MaxAttempts > job.MaxAttempts {
-			job.MaxAttempts = request.MaxAttempts
-		}
-		job.UpdatedAt = now
-		if err := job.Validate(); err != nil {
+		if _, err := mergeEnqueue(&job, request, now); err != nil {
 			return EnqueueResult{}, err
 		}
 		s.byID[id] = job
@@ -110,6 +84,9 @@ func (s *MemoryStore) Enqueue(ctx context.Context, request EnqueueRequest) (Enqu
 		MaxAttempts:         maxAttempts,
 		CreatedAt:           now,
 		UpdatedAt:           now,
+	}
+	if request.TargetEventSequence == 0 {
+		job.TargetResolutionLeaseVersion = 1
 	}
 	if err := job.Validate(); err != nil {
 		return EnqueueResult{}, err
@@ -200,8 +177,11 @@ func (s *MemoryStore) ResolveTarget(ctx context.Context, claimed Job, sequence i
 	if !validLease(current, claimed, now) {
 		return Job{}, ErrStaleLease
 	}
-	if current.TargetEventSequence == 0 {
-		current.TargetEventSequence = sequence
+	if current.TargetEventSequence == 0 || (claimed.TargetResolutionLeaseVersion > 0 && current.TargetResolutionLeaseVersion > 0) {
+		current.TargetEventSequence = max(current.TargetEventSequence, sequence)
+		if current.TargetResolutionLeaseVersion <= claimed.LeaseVersion {
+			current.TargetResolutionLeaseVersion = 0
+		}
 		current.UpdatedAt = now
 		if err := current.Validate(); err != nil {
 			return Job{}, err
@@ -259,10 +239,11 @@ func (s *MemoryStore) Complete(ctx context.Context, claimed Job, observedSequenc
 	if observedSequence < current.CompletedEventSequence {
 		return Job{}, ErrSummaryStale
 	}
-	if observedSequence >= current.TargetEventSequence {
+	if observedSequence >= current.TargetEventSequence && current.TargetResolutionLeaseVersion == 0 {
 		current.Status = StatusCompleted
 	} else {
 		current.Status = StatusPending
+		current.Attempts = 0
 		current.NextAttemptAt = time.Time{}
 	}
 	if observedSequence > current.CompletedEventSequence {

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/storage"
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 	sessioninmemory "trpc.group/trpc-go/trpc-agent-go/session/inmemory"
@@ -28,7 +29,8 @@ func TestCheckpointSessionServiceHydratesRunnerVisibleSummary(t *testing.T) {
 	inner := sessioninmemory.NewSessionService()
 	appName := "tsa1:8:tenant-a:support"
 	key := session.Key{AppName: appName, UserID: "owner-1", SessionID: "session-1"}
-	value, err := inner.CreateSession(ctx, key, nil)
+	incarnation := "00000000-0000-4000-8000-000000000001"
+	value, err := inner.CreateSession(ctx, key, session.StateMap{storage.SessionIncarnationStateKey: []byte(incarnation)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +45,7 @@ func TestCheckpointSessionServiceHydratesRunnerVisibleSummary(t *testing.T) {
 		}
 	}
 	reader := &overlayCheckpointReader{found: true, checkpoint: Checkpoint{
-		Key:           Key{TenantID: "tenant-a", AgentAppID: "app-1", SessionOwnerID: key.UserID, SessionID: key.SessionID},
+		Key:           Key{TenantID: "tenant-a", AgentAppID: "app-1", SessionOwnerID: key.UserID, SessionID: key.SessionID, SessionIncarnationID: incarnation},
 		EventSequence: 2, Content: "durable summary", ContentSHA256: HashContent("durable summary"),
 		CutoffAt: firstAt.Add(time.Second), LastEventID: "event-2", UpdatedAt: firstAt.Add(2 * time.Second),
 	}}
@@ -74,7 +76,7 @@ func TestCheckpointSessionServiceFailsClosedWhenCheckpointReadFails(t *testing.T
 	inner := sessioninmemory.NewSessionService()
 	appName := "tsa1:8:tenant-a:support"
 	key := session.Key{AppName: appName, UserID: "owner-1", SessionID: "session-1"}
-	if _, err := inner.CreateSession(ctx, key, nil); err != nil {
+	if _, err := inner.CreateSession(ctx, key, session.StateMap{storage.SessionIncarnationStateKey: []byte("00000000-0000-4000-8000-000000000001")}); err != nil {
 		t.Fatal(err)
 	}
 	reader := &overlayCheckpointReader{err: errors.New("checkpoint unavailable")}

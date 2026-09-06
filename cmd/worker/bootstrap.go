@@ -475,32 +475,15 @@ func runWorker() {
 				// pending. Inspect the challenge and grant atomically before opening
 				// a new execution attempt; otherwise every poll would create a
 				// retry-safe execution record and amplify control-plane noise.
-				var approvalChallenge governance.ApprovalChallenge
-				var approvalWaiting bool
-				executionHandle, approvalChallenge, approvalWaiting, err = admitExecutionWithApprovalGate(
-					executionCtx, &req, approvalStore, func() (controlplane.ExecutionHandle, error) {
+				var admitted bool
+				executionHandle, admitted = admitHTTPExecutionWithApprovalGate(
+					w, executionCtx, &req, approvalStore, func() (controlplane.ExecutionHandle, error) {
 						return executionRecorder.StartWithRequest(
 							executionCtx, req.TenantID, req.SessionID, req.IdempotencyKey, req.PayloadHash, resolved,
 						)
 					},
 				)
-				approvalCheckErr := err
-				if approvalCheckErr != nil {
-					if errors.Is(approvalCheckErr, governance.ErrApprovalAmbiguous) {
-						log.Printf("approval resume state is ambiguous for tenant %s: error=%s", req.TenantID, telemetry.StableErrorCode(approvalCheckErr))
-						http.Error(w, "Session requires operator reconciliation", http.StatusLocked)
-					} else {
-						log.Printf("approval resume inspection failed for tenant %s: error=%s", req.TenantID, telemetry.StableErrorCode(approvalCheckErr))
-						http.Error(w, "Approval state unavailable", http.StatusServiceUnavailable)
-					}
-					return
-				}
-				if approvalWaiting {
-					writeApprovalRequiredResponse(w, approvalChallenge)
-					return
-				}
-				if err != nil {
-					writeExecutionStartError(w, err)
+				if !admitted {
 					return
 				}
 			case errors.Is(resolveErr, controlplane.ErrNoActiveDeployment):

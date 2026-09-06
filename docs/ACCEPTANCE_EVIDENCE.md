@@ -34,7 +34,7 @@ go run -buildvcs=false ./cmd/demo
 | SecretRef 授权 | `pkg/tenant`、`pkg/worker`、`cmd/admin` | 引用绑定 tenant、purpose、provider 和 model；发布与执行均检查作用域 |
 | 租户后端生命周期 | `pkg/storage` | 后端借用和释放受控；节点 readiness 检查公共依赖，租户后端按使用范围检查 |
 | 租户级交叉后端组合 | `test/integration/cross_backend_storage_test.go` | 两个生产存储适配器分别访问两租户的相反 Session/Memory 组合；验证双向可见性、作用域隔离、物理后端选择和租约释放 |
-| Summary | `pkg/summary`、`pkg/summaryruntime` | 固定事件边界、租约、fenced CAS、取消排空和预算结算；无法证明绝对序号时返回 `ErrTranscriptIncomplete` |
+| Summary | `pkg/summary`、`pkg/summaryruntime`、`pkg/storage` | 固定事件边界、后续目标解析、Session 代次隔离、fenced CAS、取消排空和预算结算；无法证明绝对序号时返回 `ErrTranscriptIncomplete`，代次不匹配时拒绝使用摘要 |
 | Knowledge | `pkg/knowledgeplane`、`pkg/platformtool` | 查询和记录绑定 tenant/app；框架 Knowledge 通过运行时装配进入 Runner |
 | Artifact | `pkg/artifactplane` | 元数据与正文分离；提交响应丢失不误删正文；删除失败后重试继续清理；不可变版本、SHA-256 与精确版本投影 |
 | 迁移库与投影器 | `pkg/datamigration`、`pkg/dataprojection` | snapshot/catch-up 状态和 hook 调用受 lease/fence 约束；缺失 hook 时拒绝推进；projection marker 绑定 migration identity，目标应用后再次检查 fence |

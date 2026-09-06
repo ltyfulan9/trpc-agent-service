@@ -8,13 +8,13 @@
 | R-02 | IM 重复投递或同 ID 对应不同 payload | 4/4 | duplicate/conflict 计数 | tenant+channel+account+message 唯一键；payload hash 冲突拒绝 | Gateway |
 | R-03 | 同 Session 多 Worker 并发导致事件与工具调用乱序 | 5/3 | fence rejection、sequence lag | 持久化 FIFO、覆盖完整 Runner 生命周期的 Redis lease、SQL generation fence | Consumer / Worker |
 | R-04 | Worker 崩溃后失效实例延迟提交覆盖新 owner | 5/2 | stale-owner rejection | 单调 lease_version，事务内取得行锁后检查 owner/fence/expiry | Reliable Store |
-| R-05 | 模型/Tool 已产生副作用但网络响应丢失，被自动重放 | 5/3 | WAITING_RECONCILIATION 增长 | httptrace 写入边界；未知结果暂停重试；Tool 业务幂等键与结果核对 | Worker；业务工具幂等验收 |
+| R-05 | 模型/Tool 已产生副作用但网络响应丢失，被自动重放 | 5/3 | WAITING_RECONCILIATION 增长 | GotConn 后传输失败按可能已发送处理，不依赖 WroteRequest 是否及时回调；未知结果暂停重试；Tool 业务幂等键与结果核对 | Worker；业务工具幂等验收 |
 | R-06 | IM 发送成功但 cursor 提交失败，产生重复消息 | 4/3 | DISPATCH_STARTED 过期 | 调用 Provider 前持久化 fence；未知结果进入 reconciliation；带审计的 replay | Delivery |
 | R-07 | 租户配置或 SQL 查询缺失 tenant scope | 5/2 | scope violation、跨租户测试 | scoped reader、复合唯一键、Qdrant 物理 ID、Artifact key 绑定 tenant | Platform |
 | R-08 | 明文凭据进入公开配置、日志、trace 或 ConfigMap | 5/2 | secret scanner、异常字段 | profile 引用环境变量名；按进程职责分配凭据；拒绝未知字段和原始秘密；输出脱敏 | Security；KMS 身份与轮换验收 |
 | R-09 | Redis 不可用时使用本地锁造成多副本状态分歧 | 5/2 | Redis error、lease acquire failure | 生产路径 fail-closed；使用共享 Session/Memory 后端 | Worker |
 | R-10 | PostgreSQL 连接池模式破坏 advisory lock | 5/2 | lock owner 异常、session overlap | 直连或 PgBouncer session pooling；部署前检查并排除 transaction/statement pooling | DBA；连接池模式验收 |
-| R-11 | 过期 Summary 延迟提交覆盖新上下文 | 4/2 | checkpoint CAS conflict | target sequence、cutoff_at、last_event_id、hash、job lease 的 fenced CAS | Summary |
+| R-11 | 过期 Summary 延迟提交覆盖新上下文，或会话重建读取旧摘要 | 4/2 | checkpoint CAS conflict、incarnation mismatch | Session 代次 UUID、target sequence、cutoff_at、last_event_id、hash、job lease 的 fenced CAS；新回执登记后续目标解析 | Summary |
 | R-12 | Summary 请求取消后 job 停留在 PROCESSING 或 goroutine 泄漏 | 4/2 | lease expiry、goroutine/latency | 停止领取并排空活跃任务；独立且有界的失败持久化；任务超时 | Summary Worker |
 | R-13 | Summary 已生成但下一轮 Runner 未消费 | 4/2 | prompt 中缺失 summary、上下文持续增长 | checkpoint 精确边界；Session clone overlay；`WithAddSessionSummary(true)` + `BranchFilterModeAll`；捕获 Runner 请求验证 | Worker |
 | R-14 | 向量库跨租户访问或保留 metadata 被覆盖 | 5/2 | scope violation、异常 hit | tenant+agent app+logical ID 的 SHA-256 物理 ID；保留字段受平台管理 | Knowledge |
@@ -27,7 +27,7 @@
 | R-21 | 指标 tenant/model/agent 标签基数失控 | 3/3 | series count、Prometheus 内存 | 默认 `__other__`；有界 allowlist；详细维度进入受控日志与分析系统 | Telemetry |
 | R-22 | Trace/日志泄露用户身份或密钥 | 5/2 | DLP/secret scan | 租户 HMAC 假名、稳定错误类、限制 payload/secret attribute、OTLP TLS | Telemetry；传输身份与 TLS 验收 |
 | R-23 | 可变镜像或供应链被替换 | 5/2 | digest mismatch、SBOM 缺失 | releaseverify 强制 digest；non-root/read-only/seccomp；生产签名/SBOM admission | Release；签名与供应链准入验收 |
-| R-24 | 不兼容 schema 迁移期间并存不同 Worker 协议 | 5/2 | schema/protocol mismatch | 停止接入并排空→停止原 Worker→迁移→启动兼容 Worker；校验 migration checksum | Release；协议兼容性准入 |
+| R-24 | 不兼容 schema 迁移期间并存不同运行协议 | 5/2 | schema/protocol mismatch | 停止接入并排空→停止 Gateway/Consumer/Worker/Summary Worker/Delivery/Admin 全部写入副本→迁移→按依赖顺序恢复；校验 migration checksum | Release；协议兼容性准入 |
 | R-25 | 企业微信/Telegram 配额、回调格式或网络规则与测试环境不同 | 4/4 | Provider 4xx/429/timeout | 接入预检后执行文本、重复投递、限流与回复检查；保留 request_id，排除 secret | Channel；目标账号协议验收 |
 | R-26 | HA 切换、PITR 或备份无法恢复 | 5/2 | RPO/RTO 超标 | 定期恢复演练、WAL/Redis 持久化策略、对象版本、恢复手册与责任人 | SRE；恢复演练 |
 | R-27 | 成本与吞吐估算低于实际长上下文峰值 | 4/3 | queue age、token/min、P95/P99 | 业务 payload 阶梯压测；按限流、连接池与 HPA 指标扩容；租户配额 | SRE；目标负载容量验收 |
@@ -40,4 +40,4 @@
 
 在线迁移入口为 `cmd/data-migrate`，Worker/Summary Worker 装饰器负责捕获和动态路由。迁移前统一写入副本版本与不可变 profile，所有写入经过平台入口；持久化存储身份与兼容性用于检测跨节点 profile 漂移。`cmd/migrate` 负责 schema 迁移。
 
-活跃迁移串行化该租户数据域的操作，全量 inventory/规范记录比对和切换扫描可能暂时阻塞请求；同步镜像将目标延迟与故障带入调用路径，错误返回时源端可能已提交。记录完整性和检索质量分别验收。回滚窗口保留源写、目标读，完成后停止镜像并保留源数据；准入条件、支持的数据域、恢复命令与保留策略见 [ONLINE_MIGRATION.md](ONLINE_MIGRATION.md)，执行记录见 [ACCEPTANCE_EVIDENCE.md](ACCEPTANCE_EVIDENCE.md)。
+活跃迁移串行化该租户数据域的操作，全量 inventory/规范记录比对和切换扫描可能暂时阻塞请求；同步镜像将目标延迟与故障带入调用路径，错误返回时源端可能已提交。READ_SHADOW 校验规范记录，不覆盖真实查询流量和检索排名抽样，检索质量需单独验收。Session shared state/native summary/TTL 及达到安全上限的数据不满足迁移准入，Memory 在线迁移尚未实现。回滚窗口保留源写、目标读，完成后停止镜像并保留源数据；准入条件、支持的数据域、恢复命令与保留策略见 [ONLINE_MIGRATION.md](ONLINE_MIGRATION.md)，执行记录见 [ACCEPTANCE_EVIDENCE.md](ACCEPTANCE_EVIDENCE.md)。

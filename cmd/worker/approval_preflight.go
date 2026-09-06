@@ -12,11 +12,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"reflect"
 
 	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/controlplane"
 	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/governance"
+	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/telemetry"
 	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/worker"
 )
 
@@ -106,6 +108,43 @@ func admitExecutionWithApprovalGate(
 	}
 	handle, err := start()
 	return handle, challenge, false, err
+}
+
+func admitHTTPExecutionWithApprovalGate(
+	w http.ResponseWriter,
+	ctx context.Context,
+	req *worker.Request,
+	store governance.ApprovalStore,
+	start func() (controlplane.ExecutionHandle, error),
+) (controlplane.ExecutionHandle, bool) {
+	startAttempted := false
+	if start != nil {
+		startExecution := start
+		start = func() (controlplane.ExecutionHandle, error) {
+			startAttempted = true
+			return startExecution()
+		}
+	}
+	handle, challenge, waiting, err := admitExecutionWithApprovalGate(ctx, req, store, start)
+	if err != nil {
+		// Execution conflicts retain their retry policy after the approval
+		// gate. Only failures before start belong to approval inspection.
+		if startAttempted {
+			writeExecutionStartError(w, err)
+		} else if errors.Is(err, governance.ErrApprovalAmbiguous) {
+			log.Printf("approval resume state is ambiguous: error=%s", telemetry.StableErrorCode(err))
+			http.Error(w, "Session requires operator reconciliation", http.StatusLocked)
+		} else {
+			log.Printf("approval resume inspection failed: error=%s", telemetry.StableErrorCode(err))
+			http.Error(w, "Approval state unavailable", http.StatusServiceUnavailable)
+		}
+		return controlplane.ExecutionHandle{}, false
+	}
+	if waiting {
+		writeApprovalRequiredResponse(w, challenge)
+		return controlplane.ExecutionHandle{}, false
+	}
+	return handle, true
 }
 
 func isNilApprovalStore(store governance.ApprovalStore) bool {

@@ -52,10 +52,14 @@ separate contracts rather than interchangeable tokens.
 
 ### Unknown Outcomes
 
-The Consumer tracks the HTTP request write boundary. Failure before dispatch
-can retry; failure after dispatch, malformed execution proof, a post-Runner
-timeout or an execution heartbeat loss moves work to reconciliation. Delivery
-uses the same principle around its pre-dispatch marker and cursor commit.
+The Consumer conservatively marks a request as possibly dispatched when
+`httptrace.GotConn` acquires a connection. DNS or connection-setup failures can
+retry; a transport failure after connection acquisition moves work to
+reconciliation. `WroteRequest` can arrive after `Do` returns, so the absence of
+that callback does not prove that the Worker did not execute. Malformed
+execution proof, a post-Runner timeout or an execution heartbeat loss also
+requires reconciliation. Delivery uses the same connection evidence together
+with its durable pre-dispatch marker and cursor commit.
 
 Result caching avoids a repeated model call after a committed response.
 Business tools still require target-system idempotency keys, because a local

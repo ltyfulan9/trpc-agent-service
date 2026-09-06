@@ -980,6 +980,11 @@ func (r *ExecutionRecorder) RunHeartbeat(
 			return nil
 		case <-ticker.C:
 			if err := r.RenewLease(ctx, handle); err != nil {
+				// Stopping a completed invocation can cancel an in-flight SQL
+				// renewal. CommitSuccess still validates the database lease.
+				if ctx.Err() != nil {
+					return nil
+				}
 				return err
 			}
 		}

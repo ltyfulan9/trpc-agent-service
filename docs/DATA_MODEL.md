@@ -9,7 +9,7 @@ Tenant 1 ── N ChannelBinding
 Tenant 1 ── N AgentApp 1 ── N AgentVersion
 AgentApp 1 ── N Deployment ── 1 AgentVersion
 Tenant 1 ── N Session 1 ── N Event
-Session 1 ── N Summary(max_event_sequence)
+Session 1 ── N SessionIncarnation 1 ── N Summary(max_event_sequence)
 Tenant/User 1 ── N Memory
 Tenant/AgentApp 1 ── N KnowledgeDocument
 Tenant/Session 1 ── N Artifact
@@ -37,10 +37,13 @@ erDiagram
     EXECUTION_RECORD |o--o| INVOCATION_RESULT : result_source
     TENANT ||..o{ SESSION_LOGICAL : logical_tenant_scope
     SESSION_LOGICAL ||..o{ EVENT_LOGICAL : logical_event_stream
-    SESSION_LOGICAL ||..o{ SUMMARY_CHECKPOINT : logical_summary_scope
+    SESSION_LOGICAL ||..o{ SUMMARY_JOB : logical_incarnation_scope
+    SESSION_LOGICAL ||..o{ SUMMARY_CHECKPOINT : logical_incarnation_scope
     TENANT ||..o{ MEMORY_LOGICAL : logical_tenant_scope
     AGENT_APP ||..o{ KNOWLEDGE_DOCUMENT_LOGICAL : logical_app_scope
     AGENT_APP ||--o{ SUMMARY_CHECKPOINT : summary_owner
+    AGENT_APP ||--o{ SUMMARY_JOB : summary_owner
+    AGENT_VERSION ||--o{ SUMMARY_JOB : pins
     TENANT ||--o{ ARTIFACT_VERSION : stores
     TENANT ||..o{ AUDIT_LOG : logical_audit_scope
     TENANT ||--o{ CONTROL_PLANE_AUDIT : changes
@@ -118,6 +121,7 @@ erDiagram
         string app_name
         string user_id
         string session_id
+        string session_incarnation_id
     }
     EVENT_LOGICAL {
         string event_id
@@ -125,12 +129,27 @@ erDiagram
         bigint sequence
         string invocation_id
     }
+    SUMMARY_JOB {
+        bigint id PK
+        string tenant_id FK
+        string agent_app_id FK
+        string agent_version_id FK
+        string session_owner_id
+        string session_id
+        string filter_key
+        string session_incarnation_id
+        bigint target_event_sequence
+        bigint target_resolution_lease_version
+        bigint lease_version
+        string status
+    }
     SUMMARY_CHECKPOINT {
         string tenant_id PK, FK
         string agent_app_id PK, FK
         string session_owner_id PK
         string session_id PK
         string filter_key PK
+        string session_incarnation_id PK
         bigint max_event_sequence
         string content_sha256
         timestamptz cutoff_at
@@ -182,7 +201,7 @@ erDiagram
 
 `execution_records` 以 `(tenant_id, idempotency_key, attempt_number)` 区分追加的执行尝试，通过 `execution_token` 和 `lease_until` 验证提交身份；Inbox 的记录身份与 `lease_version` 由可靠队列独立管理。Worker 先锁定并核对 `invocation_bindings` 的请求、会话和版本身份，再创建执行记录，通过应用校验建立请求关联。`invocation_results` 以 `(tenant_id, idempotency_key)` 为主键，通过 `(execution_id, tenant_id)` 外键关联具体执行；`execution_id` 允许为空且非空时唯一，对应图中的可选关系。schema 定义见 [执行尝试与结果来源](../migrations/018_execution_attempts.up.sql)，身份校验见 [Worker 执行记录器](../pkg/controlplane/resolver.go)。
 
-`audit_logs.tenant_id` 由应用填写并约束审计作用域；`control_plane_audit.tenant_id` 通过 SQL 外键关联 `tenants`。平台 `SUMMARY_CHECKPOINT` 与 `ARTIFACT_VERSION` 通过包含 app/user 的完整作用域关联 Session，跨 SDK 后端的 Session 关联由应用层维护。逻辑 Event 的 `sequence` 表示稳定转录中的绝对顺序，其可验证性由所选后端的数据读取契约决定。
+`audit_logs.tenant_id` 由应用填写并约束审计作用域；`control_plane_audit.tenant_id` 通过 SQL 外键关联 `tenants`。平台 Summary 与 Artifact 通过包含 app/user 的完整作用域关联 Session，跨 SDK 后端的 Session 关联由应用层维护。Summary 另按 `session_incarnation_id` 区分同一会话身份的生命周期；图中 Session 逻辑字段从 State 保留键读取，SDK 无需新增平台关系表。逻辑 Event 的 `sequence` 表示当前代次稳定转录中的绝对顺序，其可验证性由所选后端的数据读取契约决定。
 
 ## 平台协调表
 
@@ -204,8 +223,8 @@ erDiagram
 | `message_replay_audit` | `id` | tenant, actor, reason, `replay_mode` | Replay command |
 | `audit_logs` | `id` | tenant/channel/session/tool/trace/cost，共享 HMAC 用户伪名 | Gateway / Worker telemetry |
 | `control_plane_audit` | `id` | tenant/actor/action/resource | Admin transactions |
-| `summary_jobs` | `id`, unique `(tenant_id,agent_app_id,session_owner_id,session_id,filter_key)` | pinned `agent_version_id`, target sequence（0=lease 下延迟冻结）, status, owner lease/fence, bounded attempts | Summary Processor |
-| `summary_checkpoints` | `(tenant_id,agent_app_id,session_owner_id,session_id,filter_key)` | monotonic `max_event_sequence`, `cutoff_at`, `last_event_id`, content SHA-256 | Summary Sink / Runner overlay |
+| `summary_jobs` | `id`, unique `(tenant_id,agent_app_id,session_owner_id,session_id,filter_key,session_incarnation_id)` | pinned `agent_version_id`, target sequence（0=lease 下延迟冻结）, `target_resolution_lease_version`, status, owner lease/fence, bounded attempts | Summary Processor |
+| `summary_checkpoints` | `(tenant_id,agent_app_id,session_owner_id,session_id,filter_key,session_incarnation_id)` | 同代次单调 `max_event_sequence`, `cutoff_at`, `last_event_id`, content SHA-256 | Summary Sink / Runner overlay |
 | `data_migrations` | `id`；活跃阶段 unique `(tenant_id,domain)` | source/target profile、phase、owner lease/fence、cursor/watermark | Migration coordinator |
 | `data_migration_records` | `(tenant_id,domain,record_key,migration_id)` | 最新 version、payload/hash、tombstone、`projected_at` | 通用投影 ledger |
 | `data_migration_live_routes` | `(tenant_id,domain)`；unique `migration_id` | 实际存储 identity/compatibility、read/write profile、mirroring、config_version、scan cursor | 生产迁移协调器及运行时装饰器 |
@@ -297,18 +316,34 @@ erDiagram
 ```sql
 -- Session/Event 逻辑示意，不由平台 migration 重复创建
 Session(tenant_id, app_name, user_id, session_id, state_version, updated_at)
+-- Session State 保留 platform:session_incarnation_id，值为当前代次 UUID
 Event(tenant_id, app_name, user_id, session_id, sequence,
       invocation_id, role, payload, created_at)
 -- 平台 summary_checkpoints 实际字段
 SummaryCheckpoint(tenant_id, agent_app_id, session_owner_id, session_id,
-                  filter_key, max_event_sequence, cutoff_at, last_event_id,
+                  filter_key, session_incarnation_id, max_event_sequence, cutoff_at, last_event_id,
                   content, content_sha256, updated_at)
 ```
 
 - `(tenant_id, app_name, user_id, session_id)` 必须唯一；`app_name` 本身也带 tenant namespace。
 - 平台副本以覆盖完整 Runner 生命周期的 session lease 串行化；Event `sequence` 与 State 原子性遵循 backend 契约。所有权 UUID 标识持有者，数据库单调 fence 约束持久化提交；外部副作用采用 at-least-once 和目标系统幂等契约。
 - Summary 只能基于已提交 Event 生成，并以 `max_event_sequence` CAS；`cutoff_at + last_event_id` 精确描述最后覆盖事件，晚完成的旧任务不能覆盖新摘要或错误裁剪同时间戳事件。
-- `summary_jobs` 是协调元数据而不是 Event 的副本；重复入队只提升目标序号（或由显式 operator force 重置），不会创建并发的同 scope 队列。`summary_checkpoints` 拒绝旧序号和同序号不同哈希，防止旧 Worker 或非确定性生成器覆盖可见摘要。
+- `summary_jobs` 保存协调元数据；相同代次的重复入队合并目标或登记重新解析请求，保持同 scope 唯一任务。生成期间到达的零序号回执通过 `target_resolution_lease_version` 留给后续租约，当前生成继续使用已冻结边界；存在待解析请求时完成操作将任务置回 PENDING。同代次的 `summary_checkpoints` 拒绝旧序号和同序号不同哈希，防止延迟写入覆盖可见摘要。
+
+### Summary 代次与调度字段
+
+| 位置 | 类型与约束 | 运行契约 |
+|---|---|---|
+| `summary_jobs.target_resolution_lease_version` | [046](../migrations/046_summary_target_resolution.up.sql)；BIGINT NOT NULL DEFAULT 0，CHECK >= 0 | 0 表示无需重新解析；零 target 回执登记当前 lease_version + 1，合并为下一次领取时的完整转录解析请求 |
+| `summary_jobs.session_incarnation_id` | [047](../migrations/047_summary_session_incarnation.up.sql)；VARCHAR(36) NOT NULL DEFAULT ''，参与 scope 唯一约束 | 新生产任务绑定 Session State 中的 UUID；存储及运行时按完整代次键查找、生成和完成 |
+| `summary_checkpoints.session_incarnation_id` | 同上，参与复合主键 | 同一会话身份下的多个代次拥有独立覆盖序号和摘要；旧代次不能成为新 Session 的 overlay |
+| Session State `platform:session_incarnation_id` | 平台保留键，规范非零 UUID；应用写入拒绝覆盖 | Worker 在完整 Session lease 与 execution fence 内初始化并捕获；删除或 TTL 到期后重建生成新 UUID，规范 Session State 迁移保留 UUID |
+
+首次零序号任务登记解析版本 1。领取和解析持有 job lease；`ResolveTarget` 仅清除当前租约已经覆盖的解析标记，生成期间新到的请求保留到后续领取。完成条件同时要求 checkpoint 覆盖目标、没有待解析标记且 lease/fence 有效，确保长会话的新消息持续触发摘要更新。
+
+空 `session_incarnation_id` 用于保留未绑定的派生记录，不映射到当前活跃 Session。047 保留已有 checkpoint，将未完成的未绑定 job 置为 FAILED、耗尽 attempts 并释放 lease。旧 Inbox 回执可继续入队空代次以完成消息事务，生产 Summary runtime 拒绝生成该任务；新 Worker 回执携带实际 UUID，overlay 和 Generator 均校验代次一致。持有旧代次的 Worker 晚到结果即使满足其任务约束，也只能写入旧代次键。
+
+047 改变 SQL `ON CONFLICT` 对应的唯一键，是需要排空并停止写入后升级的协议边界。按 breaking migration 流程停止相关工作负载，执行完整 schema 后部署新 Worker、Summary Worker 与 Consumer。存在非空代次记录时，047 down 明确拒绝自动降级，避免不同生命周期的摘要被合并；派生数据处理和回退需独立审批。
 
 ## Memory/Knowledge/Artifact 逻辑契约
 
@@ -328,5 +363,5 @@ ArtifactVersion: tenant_id + app_name + user_id + session_id + filename + versio
 - Inbox/Outbox/result/binding 的保留期必须按租户合规策略配置；删除顺序为 result/binding → Outbox → Inbox，并保留聚合审计。
 - AgentVersion、Deployment、ExecutionRecord 和控制面审计默认不可物理覆盖；法规要求删除时走审批任务并保留 tombstone。
 - Artifact 删除先提交 tombstone，再清理正文；重试包含已标记删除的对象，继续完成未成功的清理。Knowledge 删除与 migration projector 的目标副作用成功、最终 fence 校验共同决定是否写入 `projected_at`。
-- Session 迁移记录使用规范化 `session/v1` envelope，包含 session-owned State、按序 Event 和 Track；迁移准入拒绝 App/User shared state、SDK native summary、TTL，以及达到配置安全上限的 inventory/history。平台 `summary_checkpoints` 保持 PostgreSQL 权威，不随 Session store 迁移。目标只接受源历史的严格前缀追加，缺失记录形成 tombstone。
+- Session 迁移记录使用规范化 `session/v1` envelope，包含 session-owned State（含代次 UUID）、按序 Event 和 Track；迁移准入拒绝 App/User shared state、SDK native summary、TTL，以及达到配置安全上限的 inventory/history。平台 `summary_checkpoints` 保持 PostgreSQL 权威，通过保留的代次身份关联迁移后的 Session。目标只接受源历史的严格前缀追加，缺失记录形成 tombstone。
 - 在线迁移 complete、abort、rollback 均不删除源数据；终态路由持续服务已有缓存客户端。旧数据和 intent/journal 的保留、备份及清理由操作者单独安排，不能在仍需恢复或回滚时清除协议记录。

@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"strings"
+	"sync/atomic"
 	"unicode/utf8"
 )
 
@@ -24,32 +25,35 @@ const DeliveryIdempotencyKeyHeader = "Idempotency-Key"
 
 const maxDeliveryIDBytes = 128
 
-// doProviderRequest records whether net/http reached the request-write
-// boundary. A RoundTripper error before WroteRequest (for example DNS
-// resolution or connection setup failure) is safe to retry because no
-// provider-side message operation was issued. Once WroteRequest fires, the
-// provider may have accepted the request even when Do returns an error.
-func doProviderRequest(client *http.Client, req *http.Request) (resp *http.Response, requestWritten bool, err error) {
+// doProviderRequest records whether the transport may have dispatched the
+// request. GotConn runs before dispatch; WroteRequest can arrive after Do
+// returns and is only a fallback. A failure after acquiring a connection has
+// an unknown outcome, while DNS and connection-setup failures remain retryable.
+func doProviderRequest(client *http.Client, req *http.Request) (resp *http.Response, mayHaveDispatched bool, err error) {
 	if client == nil || req == nil {
 		return nil, false, fmt.Errorf("provider HTTP request is missing client or request")
 	}
+	var dispatched atomic.Bool
 	trace := &httptrace.ClientTrace{
+		GotConn: func(httptrace.GotConnInfo) {
+			dispatched.Store(true)
+		},
 		WroteRequest: func(httptrace.WroteRequestInfo) {
-			requestWritten = true
+			dispatched.Store(true)
 		},
 	}
 	request := req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
 	resp, err = client.Do(request)
-	return resp, requestWritten, err
+	return resp, dispatched.Load(), err
 }
 
 // providerTransportFailure converts a transport failure into the narrowest
 // durable classification supported by the evidence available from net/http.
 // The returned errors intentionally omit the underlying network text because
 // it can contain credential-bearing provider URLs or proxy details.
-func providerTransportFailure(provider string, requestWritten bool) error {
+func providerTransportFailure(provider string, mayHaveDispatched bool) error {
 	transportErr := retryableTransportError(provider)
-	if requestWritten {
+	if mayHaveDispatched {
 		return UnknownDeliveryError(transportErr)
 	}
 	return transportErr

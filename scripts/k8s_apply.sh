@@ -180,6 +180,11 @@ if kubectl -n "$platform_namespace" get job agent-migrate >/dev/null 2>&1; then
     echo "agent-migrate failed; inspect and resolve it before another rollout" >&2
     exit 1
   fi
+  complete="$(kubectl -n "$platform_namespace" get job agent-migrate -o jsonpath='{.status.conditions[?(@.type=="Complete")].status}')"
+  if [[ "$complete" != "True" ]]; then
+    echo "agent-migrate is not complete; wait for completion before another rollout" >&2
+    exit 1
+  fi
   kubectl -n "$platform_namespace" delete job agent-migrate --wait=true
 fi
 kubectl -n "$platform_namespace" apply -f "$release_manifest_dir/migration.yaml"

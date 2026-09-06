@@ -15,13 +15,13 @@ var summaryRowColumns = []string{
 	"id", "tenant_id", "agent_app_id", "agent_version_id", "session_owner_id", "session_id", "filter_key",
 	"target_event_sequence", "status", "lease_owner", "lease_version",
 	"lease_until", "attempts", "max_attempts", "next_attempt_at", "last_error",
-	"completed_event_sequence", "created_at", "updated_at",
+	"completed_event_sequence", "created_at", "updated_at", "target_resolution_lease_version", "session_incarnation_id",
 }
 
 func postgresSummaryRows(now time.Time, status string, owner any, leaseUntil any, attempts int, completed int64) *sqlmock.Rows {
 	return sqlmock.NewRows(summaryRowColumns).AddRow(
 		int64(7), "tenant-a", "support", "version-1", "owner-1", "session-1", "", int64(4), status,
-		owner, int64(3), leaseUntil, attempts, 8, nil, "", completed, now, now,
+		owner, int64(3), leaseUntil, attempts, 8, nil, "", completed, now, now, int64(0), "",
 	)
 }
 
@@ -77,7 +77,7 @@ func TestPostgresStoreEnqueueNewJob(t *testing.T) {
 	defer db.Close()
 	now := time.Now().UTC()
 	mock.ExpectBegin()
-	mock.ExpectQuery(regexp.QuoteMeta("INSERT INTO summary_jobs")).WithArgs("tenant-a", "support", "version-1", "owner-1", "session-1", "", int64(9), 8).WillReturnRows(postgresSummaryRows(now, string(StatusPending), "", nil, 0, 0))
+	mock.ExpectQuery(regexp.QuoteMeta("INSERT INTO summary_jobs")).WithArgs("tenant-a", "support", "version-1", "owner-1", "session-1", "", int64(9), 8, "").WillReturnRows(postgresSummaryRows(now, string(StatusPending), "", nil, 0, 0))
 	mock.ExpectCommit()
 	store := NewPostgresStore(db)
 	result, err := store.Enqueue(context.Background(), summaryRequest(summaryKey(), 9))
@@ -103,10 +103,10 @@ func TestPostgresSinkRejectsStaleAndAcceptsInsert(t *testing.T) {
 	candidate := candidateFor(key, 3, "three")
 	mock.ExpectBegin()
 	mock.ExpectQuery(regexp.QuoteMeta("INSERT INTO summary_checkpoints")).WithArgs(
-		"tenant-a", "support", "owner-1", "session-1", "", int64(3), "three", HashContent("three"), candidate.CutoffAt, candidate.LastEventID,
+		"tenant-a", "support", "owner-1", "session-1", "", int64(3), "three", HashContent("three"), candidate.CutoffAt, candidate.LastEventID, "",
 	).WillReturnRows(sqlmock.NewRows([]string{
-		"tenant_id", "agent_app_id", "session_owner_id", "session_id", "filter_key", "max_event_sequence", "content", "content_sha256", "cutoff_at", "last_event_id", "updated_at",
-	}).AddRow("tenant-a", "support", "owner-1", "session-1", "", int64(3), "three", HashContent("three"), candidate.CutoffAt, candidate.LastEventID, now))
+		"tenant_id", "agent_app_id", "session_owner_id", "session_id", "filter_key", "max_event_sequence", "content", "content_sha256", "cutoff_at", "last_event_id", "updated_at", "session_incarnation_id",
+	}).AddRow("tenant-a", "support", "owner-1", "session-1", "", int64(3), "three", HashContent("three"), candidate.CutoffAt, candidate.LastEventID, now, ""))
 	mock.ExpectCommit()
 	sink := NewPostgresSink(db)
 	result, err := sink.Publish(context.Background(), candidate)
@@ -130,12 +130,12 @@ func TestPostgresSinkFencedPublicationChecksJobScope(t *testing.T) {
 	claimed := Job{ID: 7, Key: key, AgentVersionID: "version-1", TargetEventSequence: 3, Status: StatusProcessing,
 		LeaseOwner: "worker-a", LeaseVersion: 3, LeaseUntil: now.Add(time.Minute), Attempts: 1, MaxAttempts: 8}
 	mock.ExpectBegin()
-	mock.ExpectQuery("SELECT tenant_id, agent_app_id, session_owner_id, session_id, filter_key").WithArgs(int64(7), "worker-a", int64(3)).WillReturnRows(sqlmock.NewRows([]string{"tenant_id", "agent_app_id", "session_owner_id", "session_id", "filter_key"}).AddRow("tenant-a", "support", "owner-1", "session-1", ""))
+	mock.ExpectQuery("SELECT tenant_id, agent_app_id, session_owner_id, session_id, filter_key").WithArgs(int64(7), "worker-a", int64(3)).WillReturnRows(sqlmock.NewRows([]string{"tenant_id", "agent_app_id", "session_owner_id", "session_id", "filter_key", "session_incarnation_id"}).AddRow("tenant-a", "support", "owner-1", "session-1", "", ""))
 	mock.ExpectQuery(regexp.QuoteMeta("INSERT INTO summary_checkpoints")).WithArgs(
-		"tenant-a", "support", "owner-1", "session-1", "", int64(3), "three", HashContent("three"), candidate.CutoffAt, candidate.LastEventID,
+		"tenant-a", "support", "owner-1", "session-1", "", int64(3), "three", HashContent("three"), candidate.CutoffAt, candidate.LastEventID, "",
 	).WillReturnRows(sqlmock.NewRows([]string{
-		"tenant_id", "agent_app_id", "session_owner_id", "session_id", "filter_key", "max_event_sequence", "content", "content_sha256", "cutoff_at", "last_event_id", "updated_at",
-	}).AddRow("tenant-a", "support", "owner-1", "session-1", "", int64(3), "three", HashContent("three"), candidate.CutoffAt, candidate.LastEventID, now))
+		"tenant_id", "agent_app_id", "session_owner_id", "session_id", "filter_key", "max_event_sequence", "content", "content_sha256", "cutoff_at", "last_event_id", "updated_at", "session_incarnation_id",
+	}).AddRow("tenant-a", "support", "owner-1", "session-1", "", int64(3), "three", HashContent("three"), candidate.CutoffAt, candidate.LastEventID, now, ""))
 	mock.ExpectCommit()
 	sink := NewPostgresSink(db)
 	result, err := sink.PublishFenced(context.Background(), candidate, claimed)

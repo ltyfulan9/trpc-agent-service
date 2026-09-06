@@ -9,8 +9,6 @@ package worker
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -1155,6 +1153,7 @@ func (w *Worker) Process(ctx context.Context, req *Request) (response *Response,
 	}
 	leaseReleased := false
 	runCtx, cancelRun := context.WithCancel(ctx)
+	runCtx = storage.ContextWithSessionLease(runCtx, session.Key{AppName: w.appName, UserID: req.SessionOwnerID, SessionID: req.SessionID}, lease)
 	runCtx, fenceState := fence.WithState(runCtx)
 	approvalState := governance.NewApprovalState()
 	runCtx = governance.ContextWithApprovalState(runCtx, approvalState)
@@ -1397,7 +1396,7 @@ func (w *Worker) Process(ctx context.Context, req *Request) (response *Response,
 	// the distributed Session lease. Capture the exact committed prefix. A
 	// bounded read failure degrades only to deferred target resolution; it must
 	// never turn an already side-effecting model run into an automatic replay.
-	summarySchedule := w.buildSummarySchedule(ctx, req)
+	summarySchedule := w.buildSummarySchedule(runCtx, req)
 	releaseCtx, cancelRelease := detachedPersistenceContext(ctx)
 	releaseErr := lease.Release(releaseCtx)
 	cancelRelease()
@@ -1468,6 +1467,7 @@ func (w *Worker) buildSummarySchedule(ctx context.Context, req *Request) *summar
 		},
 		AgentVersionID: w.versionID,
 	}
+	request.SessionIncarnationID = storage.SessionIncarnationFromContext(ctx)
 	if w.sessionService == nil {
 		return request
 	}
@@ -1480,7 +1480,18 @@ func (w *Worker) buildSummarySchedule(ctx context.Context, req *Request) *summar
 		AppName: w.appName, UserID: req.SessionOwnerID, SessionID: req.SessionID,
 	})
 	if err != nil || value == nil || value.AppName != w.appName || value.UserID != req.SessionOwnerID || value.ID != req.SessionID {
+		if w.strictScope && request.SessionIncarnationID == "" {
+			return nil
+		}
 		return request
+	}
+	incarnation, incarnationErr := storage.SessionIncarnationID(value)
+	if incarnationErr != nil || (request.SessionIncarnationID != "" && request.SessionIncarnationID != incarnation) {
+		return nil
+	}
+	request.SessionIncarnationID = incarnation
+	if w.strictScope && incarnation == "" {
+		return nil
 	}
 	if count := value.GetEventCount(); count > 0 && count != 1000 {
 		request.TargetEventSequence = int64(count)
@@ -1580,8 +1591,7 @@ func permanentExecutionPreflightError(err error) error {
 }
 
 func sessionLeaseKey(tenantID, appName, userID, sessionID string) string {
-	digest := sha256.Sum256([]byte(tenantID + "\x00" + appName + "\x00" + userID + "\x00" + sessionID))
-	return "session-invocation:" + hex.EncodeToString(digest[:])
+	return storage.SessionInvocationLeaseKey(tenantID, session.Key{AppName: appName, UserID: userID, SessionID: sessionID})
 }
 
 // SessionLeaseKey returns the opaque distributed-lock identity shared by Agent

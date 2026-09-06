@@ -136,6 +136,9 @@ func (r *Runtime) load(ctx context.Context, job summarycoord.Job) (*loadedSessio
 	if err := job.Validate(); err != nil {
 		return nil, err
 	}
+	if job.SessionIncarnationID == "" {
+		return nil, summarycoord.ErrTranscriptIncomplete
+	}
 	tenantValue, err := r.tenants.GetTenant(ctx, job.TenantID)
 	if err != nil {
 		return nil, fmt.Errorf("load summary tenant: %w", err)
@@ -234,7 +237,7 @@ func (r *Runtime) Generate(ctx context.Context, job summarycoord.Job) (summaryco
 }
 
 func (r *Runtime) ResolveTarget(ctx context.Context, job summarycoord.Job) (sequence int64, err error) {
-	if job.TargetEventSequence != 0 {
+	if job.TargetEventSequence != 0 && job.TargetResolutionLeaseVersion == 0 {
 		return 0, summarycoord.ErrTranscriptIncomplete
 	}
 	loaded, err := r.load(ctx, job)

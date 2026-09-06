@@ -1,8 +1,9 @@
 # Kubernetes rollout contract
 
 Online tenant data migration uses the separate `cmd/data-migrate` operations
-entrypoint. Apply schema `045` and upgrade all domain writers before starting
-it; see [Online Data Migration](../../docs/ONLINE_MIGRATION.md) for profiles,
+entrypoint. Schema `045` introduces its tables; apply the complete schema
+through `047` and upgrade all domain writers before starting it. See
+[Online Data Migration](../../docs/ONLINE_MIGRATION.md) for profiles,
 the operational Job contract, cutover and recovery commands.
 
 These manifests define the application workloads, service boundaries and
@@ -202,6 +203,14 @@ identity/external-secret projections and review each provider egress route.
 
 ## Schema execution
 
+Schema `047` adds the Session incarnation to Summary job uniqueness and
+checkpoint primary keys. Existing deployments must use the breaking-migration
+drain and write-silence procedure below before applying it; old and new Summary
+SQL writers cannot run together across that key change. Unbound legacy
+checkpoints remain available for diagnosis but are not overlaid into current
+Sessions. Downgrade is rejected while bound incarnation records exist; the
+derived-data rollback procedure requires a reviewed operator decision.
+
 Fresh installations run the complete schema before starting application
 workloads. For breaking schema changes, first close public intake at the
 managed edge, drain queues and active leases, and stop all Gateway, Consumer,
@@ -220,7 +229,7 @@ rejects orphan Pods whose Deployment is already absent. Bootstrap migrations
 likewise require that none of these Deployments or Pods exists.
 Retain the queue and active-lease checks in the approved change record.
 
-Rollout order is migration Job, profiles, PDBs, Worker/Summary Worker/Admin,
+Rollout order is NetworkPolicy, profiles, migration Job, PDBs, Worker/Summary Worker/Admin,
 Consumer/Delivery, then Gateway. `k8s_apply.sh` waits for Worker/Summary Worker/Admin availability before submitting
 Consumer/Delivery, then waits for the pipeline before applying Gateway; a
 successful `kubectl apply` alone is not rollout evidence. Confirm default-deny

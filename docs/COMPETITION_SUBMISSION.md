@@ -149,7 +149,7 @@ sequenceDiagram
 
 ## 6. 数据模型、一致性与多后端
 
-Agent 的稳定身份、不可变配置和发布路由分别由 App、Version 和 Deployment 表达。下图概括业务关系；Session/Event/Memory 由 SDK 后端管理，Summary 按会话与事件覆盖边界关联。实际平台表、复合键、外键和迁移日志见 [DATA_MODEL.md](DATA_MODEL.md) 的物理 ER 与 migrations 001–045。
+Agent 的稳定身份、不可变配置和发布路由分别由 App、Version 和 Deployment 表达。下图概括业务关系；Session/Event/Memory 由 SDK 后端管理，Summary 按会话代次与事件覆盖边界关联。实际平台表、复合键、外键和迁移日志见 [DATA_MODEL.md](DATA_MODEL.md) 的物理 ER 与 migrations 001–047。
 
 ```mermaid
 erDiagram
@@ -159,8 +159,9 @@ erDiagram
   AGENT_APP ||--o{ DEPLOYMENT : releases
   AGENT_VERSION ||--o{ DEPLOYMENT : selected_by
   TENANT ||..o{ SESSION : tenant_scope
-  SESSION ||..o{ EVENT : event_stream
-  SESSION ||..o{ SUMMARY : checkpoints
+  SESSION ||..o{ SESSION_INCARNATION : lifetimes
+  SESSION_INCARNATION ||..o{ EVENT : event_stream
+  SESSION_INCARNATION ||..o{ SUMMARY : checkpoints
   TENANT ||..o{ MEMORY : actor_scope
   TENANT ||..o{ AUDIT : records
   AGENT_APP ||..o{ KNOWLEDGE_DOCUMENT : app_scope
@@ -177,6 +178,8 @@ erDiagram
 | Artifact | PostgreSQL metadata + S3/MinIO | 元数据强一致、对象补偿 | 不可变版本、SHA-256、tombstone |
 
 Summary 由独立 Worker 执行：`Event/State commit → Inbox 完成事务 upsert job → lease 下冻结 target → 重读事件前缀 → 生成与预算结算 → fenced checkpoint CAS → job complete → 下一轮 Session overlay`。`cutoff_at + last_event_id` 精确标识覆盖边界；`WithAddSessionSummary(true)` 与 `BranchFilterModeAll` 将全会话摘要注入 Runner。集成测试捕获模型请求，检查摘要、新消息和历史裁剪；旧任务受到单调序号保护，退出时停止领取并有界排空。
+
+Session State 保留代次 UUID，摘要回执、job 与 checkpoint 使用同一 `session_incarnation_id`；TTL/删除后重建形成新代次，旧摘要不进入新会话。生成期间的新回执登记后续租约解析标记，保持当前冻结边界并在下一轮刷新目标。代次键与调度字段见 [数据模型](DATA_MODEL.md#summary-代次与调度字段)，部署按 schema 协议边界执行排空升级。
 
 迁移按 `(tenant, domain)` 持有 owner lease、fence 和持久化 route/intent/journal，以 cursor/watermark 恢复复制进度。生产 Worker 与 Summary Worker 的装饰器在创建迁移时即捕获增量：源端写入前提交 intent，之后读取规范记录、同步投影目标并读回验证；恢复未完成记录后才接受下一次写入，删除与重建保留独立版本。路由同时保存实际存储身份和兼容性，已有缓存每次操作均重读路由。
 

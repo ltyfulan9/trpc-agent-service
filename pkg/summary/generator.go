@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 
+	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/storage"
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 )
@@ -72,7 +73,7 @@ func (r *TRPCSessionTargetResolver) ResolveTarget(ctx context.Context, job Job) 
 	if r == nil || nilInterface(r.sessions) || r.resolve == nil {
 		return 0, ErrTargetResolverUnavailable
 	}
-	if err := job.Validate(); err != nil || job.TargetEventSequence != 0 {
+	if err := job.Validate(); err != nil || (job.TargetEventSequence != 0 && job.TargetResolutionLeaseVersion == 0) {
 		return 0, ErrTranscriptIncomplete
 	}
 	ctx = nonNilContext(ctx)
@@ -87,6 +88,9 @@ func (r *TRPCSessionTargetResolver) ResolveTarget(ctx context.Context, job Job) 
 		return 0, err
 	}
 	if value == nil || value.AppName != appName || value.UserID != job.SessionOwnerID || value.ID != job.SessionID {
+		return 0, ErrTranscriptIncomplete
+	}
+	if id, err := storage.SessionIncarnationID(value); err != nil || id != job.SessionIncarnationID {
 		return 0, ErrTranscriptIncomplete
 	}
 	count := value.GetEventCount()
@@ -125,6 +129,9 @@ func (r *TRPCSessionTranscriptReader) ReadTranscript(ctx context.Context, key Ke
 		return Transcript{}, err
 	}
 	if value == nil || value.AppName != appName || value.UserID != key.SessionOwnerID || value.ID != key.SessionID {
+		return Transcript{}, ErrTranscriptIncomplete
+	}
+	if id, err := storage.SessionIncarnationID(value); err != nil || id != key.SessionIncarnationID {
 		return Transcript{}, ErrTranscriptIncomplete
 	}
 	events := value.GetEvents()

@@ -607,9 +607,11 @@ func TestBudgetClientClassifiesTransportErrorAfterWriteAsUnknown(t *testing.T) {
 	tests := []struct {
 		name            string
 		invokeWriteHook bool
+		invokeConnHook  bool
 		wantUnknown     bool
 	}{
 		{name: "before write", wantUnknown: false},
+		{name: "connected before write callback", invokeConnHook: true, wantUnknown: true},
 		{name: "after write", invokeWriteHook: true, wantUnknown: true},
 	}
 	for _, test := range tests {
@@ -624,6 +626,11 @@ func TestBudgetClientClassifiesTransportErrorAfterWriteAsUnknown(t *testing.T) {
 				t.Fatal(err)
 			}
 			client.client.Transport = roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+				if test.invokeConnHook {
+					if trace := httptrace.ContextClientTrace(request.Context()); trace != nil && trace.GotConn != nil {
+						trace.GotConn(httptrace.GotConnInfo{})
+					}
+				}
 				if test.invokeWriteHook {
 					if trace := httptrace.ContextClientTrace(request.Context()); trace != nil && trace.WroteRequest != nil {
 						trace.WroteRequest(httptrace.WroteRequestInfo{Err: errors.New("partial write")})

@@ -66,7 +66,7 @@ func (p *Processor) RunOnce(ctx context.Context) (Job, error) {
 	heartbeatDone := make(chan struct{})
 	go p.heartbeat(runCtx, &leaseMu, &claimed, cancel, heartbeatErr, heartbeatDone)
 
-	if job.TargetEventSequence == 0 {
+	if job.TargetEventSequence == 0 || job.TargetResolutionLeaseVersion > 0 {
 		if nilInterface(p.TargetResolver) {
 			cancel()
 			<-heartbeatDone

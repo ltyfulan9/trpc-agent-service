@@ -129,6 +129,9 @@ func (s *FencedSessionService) CreateSession(ctx context.Context, key session.Ke
 	return s.valueChecked(ctx, telemetry.OperationSessionWrite, func(token fence.Token) error {
 		return s.scope.validateSessionKey(token, key)
 	}, func(ctx context.Context) (*session.Session, error) {
+		if s.scope.strict && protectedSessionState(state) != nil {
+			return nil, ErrSessionIncarnation
+		}
 		value, err := s.inner.CreateSession(ctx, key, state, opts...)
 		if err != nil {
 			return nil, err
@@ -136,7 +139,7 @@ func (s *FencedSessionService) CreateSession(ctx context.Context, key session.Ke
 		if err := s.validateReturnedSession(ctx, value); err != nil {
 			return nil, err
 		}
-		return value, nil
+		return s.bindSessionIncarnation(ctx, key, value)
 	})
 }
 
@@ -148,10 +151,13 @@ func (s *FencedSessionService) GetSession(ctx context.Context, key session.Key, 
 		if err != nil {
 			return nil, err
 		}
+		if value == nil {
+			return nil, nil
+		}
 		if err := s.validateReturnedSession(ctx, value); err != nil {
 			return nil, err
 		}
-		return value, nil
+		return s.bindSessionIncarnation(ctx, key, value)
 	})
 }
 
@@ -259,13 +265,23 @@ func (s *FencedSessionService) DeleteUserState(ctx context.Context, key session.
 func (s *FencedSessionService) UpdateSessionState(ctx context.Context, key session.Key, state session.StateMap) error {
 	return s.runChecked(ctx, telemetry.OperationSessionWrite, func(token fence.Token) error {
 		return s.scope.validateSessionKey(token, key)
-	}, func(ctx context.Context) error { return s.inner.UpdateSessionState(ctx, key, state) })
+	}, func(ctx context.Context) error {
+		if s.scope.strict && protectedSessionState(state) != nil {
+			return ErrSessionIncarnation
+		}
+		return s.inner.UpdateSessionState(ctx, key, state)
+	})
 }
 
 func (s *FencedSessionService) AppendEvent(ctx context.Context, sess *session.Session, evt *event.Event, opts ...session.Option) error {
 	return s.runChecked(ctx, telemetry.OperationSessionWrite, func(token fence.Token) error {
 		return s.scope.validateSession(token, sess)
-	}, func(ctx context.Context) error { return s.inner.AppendEvent(ctx, sess, evt, opts...) })
+	}, func(ctx context.Context) error {
+		if s.scope.strict && evt != nil && protectedSessionState(evt.StateDelta) != nil {
+			return ErrSessionIncarnation
+		}
+		return s.inner.AppendEvent(ctx, sess, evt, opts...)
+	})
 }
 
 func (s *FencedSessionService) CreateSessionSummary(ctx context.Context, sess *session.Session, filterKey string, force bool) error {

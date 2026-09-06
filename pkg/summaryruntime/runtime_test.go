@@ -73,6 +73,7 @@ func TestRuntimeGeneratesFromPinnedVersionAndExactSessionPrefix(t *testing.T) {
 		t.Fatal(err)
 	}
 	stored := session.NewSession(physicalApp, "owner-1", "session-1")
+	stored.SetState(storage.SessionIncarnationStateKey, []byte("00000000-0000-4000-8000-000000000001"))
 	baseTime := time.Date(2026, time.August, 30, 4, 0, 0, 0, time.UTC)
 	stored.Events = []event.Event{
 		{ID: "event-1", Timestamp: baseTime, Response: &model.Response{Choices: []model.Choice{{Message: model.Message{Content: "hello"}}}}},
@@ -101,7 +102,7 @@ func TestRuntimeGeneratesFromPinnedVersionAndExactSessionPrefix(t *testing.T) {
 		t.Fatal(err)
 	}
 	job := summarycoord.Job{
-		ID: 1, Key: summarycoord.Key{TenantID: "tenant-a", AgentAppID: "app-1", SessionOwnerID: "owner-1", SessionID: "session-1"},
+		ID: 1, Key: summarycoord.Key{TenantID: "tenant-a", AgentAppID: "app-1", SessionOwnerID: "owner-1", SessionID: "session-1", SessionIncarnationID: "00000000-0000-4000-8000-000000000001"},
 		AgentVersionID: "version-1", TargetEventSequence: 2, Status: summarycoord.StatusProcessing,
 		LeaseOwner: "worker-1", LeaseVersion: 1, LeaseUntil: time.Now().Add(time.Minute), Attempts: 1, MaxAttempts: 8,
 	}
@@ -130,6 +131,7 @@ func TestRuntimeResolvesDeferredTargetUnderSharedSessionLease(t *testing.T) {
 		Storage: tenant.StorageConfig{SessionBackend: "redis", MemoryBackend: "postgres"}}
 	physicalApp, _ := storage.TenantScopedAppName(tenantValue, "support")
 	stored := session.NewSession(physicalApp, "owner-1", "session-1")
+	stored.SetState(storage.SessionIncarnationStateKey, []byte("00000000-0000-4000-8000-000000000001"))
 	stored.Events = []event.Event{{ID: "one"}, {ID: "two"}, {ID: "three"}}
 	runtime, err := New(RuntimeOptions{
 		Tenants: runtimeTenantReader{value: tenantValue},
@@ -145,7 +147,7 @@ func TestRuntimeResolvesDeferredTargetUnderSharedSessionLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	sequence, err := runtime.ResolveTarget(context.Background(), summarycoord.Job{
-		ID: 1, Key: summarycoord.Key{TenantID: "tenant-a", AgentAppID: "app-1", SessionOwnerID: "owner-1", SessionID: "session-1"},
+		ID: 1, Key: summarycoord.Key{TenantID: "tenant-a", AgentAppID: "app-1", SessionOwnerID: "owner-1", SessionID: "session-1", SessionIncarnationID: "00000000-0000-4000-8000-000000000001"},
 		AgentVersionID: "version-1", Status: summarycoord.StatusProcessing,
 		LeaseOwner: "worker-1", LeaseVersion: 1, LeaseUntil: time.Now().Add(time.Minute), Attempts: 1, MaxAttempts: 8,
 	})
@@ -166,6 +168,7 @@ func TestRuntimeSkipsProviderCallBelowEventThreshold(t *testing.T) {
 		Storage: tenant.StorageConfig{SessionBackend: "redis", MemoryBackend: "postgres"}}
 	physicalApp, _ := storage.TenantScopedAppName(tenantValue, "support")
 	stored := session.NewSession(physicalApp, "owner-1", "session-1")
+	stored.SetState(storage.SessionIncarnationStateKey, []byte("00000000-0000-4000-8000-000000000001"))
 	stored.Events = []event.Event{
 		{ID: "one", Response: &model.Response{Choices: []model.Choice{{Message: model.Message{Content: "one"}}}}},
 		{ID: "two", Response: &model.Response{Choices: []model.Choice{{Message: model.Message{Content: "two"}}}}},
@@ -185,7 +188,7 @@ func TestRuntimeSkipsProviderCallBelowEventThreshold(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = runtime.Generate(context.Background(), summarycoord.Job{
-		ID: 1, Key: summarycoord.Key{TenantID: "tenant-a", AgentAppID: "app-1", SessionOwnerID: "owner-1", SessionID: "session-1"},
+		ID: 1, Key: summarycoord.Key{TenantID: "tenant-a", AgentAppID: "app-1", SessionOwnerID: "owner-1", SessionID: "session-1", SessionIncarnationID: "00000000-0000-4000-8000-000000000001"},
 		AgentVersionID: "version-1", TargetEventSequence: 2, Status: summarycoord.StatusProcessing,
 		LeaseOwner: "worker-1", LeaseVersion: 1, LeaseUntil: time.Now().Add(time.Minute), Attempts: 1, MaxAttempts: 8,
 	})

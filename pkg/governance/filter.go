@@ -8,10 +8,12 @@
 package governance
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 
 	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/tenant"
@@ -100,7 +102,7 @@ func (f *GovernanceFilter) AfterToolInvocation(ctx context.Context, toolName str
 	}
 
 	// Apply data masking to both successful and partial/error results.
-	masked, maskErr := f.maskSensitiveData(output)
+	masked, maskErr := f.maskSensitiveData(ctx, output, maxMaskingBytes)
 	if maskErr != nil {
 		return nil, maskErr
 	}
@@ -109,7 +111,7 @@ func (f *GovernanceFilter) AfterToolInvocation(ctx context.Context, toolName str
 }
 
 // maskSensitiveData applies masking rules to output.
-func (f *GovernanceFilter) maskSensitiveData(data interface{}) (interface{}, error) {
+func (f *GovernanceFilter) maskSensitiveData(ctx context.Context, data interface{}, limit int) (interface{}, error) {
 	if f == nil || f.tenant == nil {
 		return data, nil
 	}
@@ -119,48 +121,98 @@ func (f *GovernanceFilter) maskSensitiveData(data interface{}) (interface{}, err
 	if len(f.maskingRules) == 0 {
 		return data, nil
 	}
-	normalized, err := normalizeJSONValue(data)
+	if err := checkMaskingInput(ctx, data, limit); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrUnsafeToolOutput, err)
+	}
+	normalized, size, err := normalizeJSONValue(data, limit)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrUnsafeToolOutput, err)
 	}
-	return f.maskValue(normalized), nil
+	budget := maskingBudget{limit: limit, used: size}
+	masked, err := f.maskValue(ctx, normalized, &budget, 0)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrUnsafeToolOutput, err)
+	}
+	return masked, nil
 }
 
-func normalizeJSONValue(value interface{}) (interface{}, error) {
+func normalizeJSONValue(value interface{}, limit int) (interface{}, int, error) {
 	// Always round-trip through encoding/json. Besides normalizing structs and
 	// typed collections, this creates a detached value and lets the standard
 	// encoder reject cycles and unsupported values before recursive masking.
 	encoded, err := json.Marshal(value)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
+	}
+	if len(encoded) > limit {
+		return nil, 0, fmt.Errorf("masking input exceeds %d bytes", limit)
 	}
 	var normalized interface{}
-	if err := json.Unmarshal(encoded, &normalized); err != nil {
-		return nil, err
+	decoder := json.NewDecoder(bytes.NewReader(encoded))
+	decoder.UseNumber()
+	if err := decoder.Decode(&normalized); err != nil {
+		return nil, 0, err
 	}
-	return normalized, nil
+	size, err := maskingJSONSize(normalized, limit, 0)
+	return normalized, size, err
 }
 
-func (f *GovernanceFilter) maskValue(value interface{}) interface{} {
+func (f *GovernanceFilter) maskValue(ctx context.Context, value interface{}, budget *maskingBudget, depth int) (interface{}, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if depth > maxMaskingDepth {
+		return nil, fmt.Errorf("masking nesting exceeds %d levels", maxMaskingDepth)
+	}
 	switch typed := value.(type) {
 	case string:
 		masked := typed
+		size, err := maskingJSONStringSize(masked, budget.limit)
+		if err != nil {
+			return nil, err
+		}
 		for _, rule := range f.maskingRules {
-			masked = rule.re.ReplaceAllString(masked, maskingReplacement(rule.rule))
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			available := budget.limit - budget.used + size
+			masked, err = replaceMaskingString(ctx, rule.re, masked, maskingReplacement(rule.rule), available-2, maxMaskingMatchBytes)
+			if err != nil {
+				return nil, err
+			}
+			nextSize, err := maskingJSONStringSize(masked, available)
+			if err != nil {
+				return nil, err
+			}
+			budget.used += nextSize - size
+			size = nextSize
 		}
-		return masked
+		return masked, nil
 	case map[string]interface{}:
-		for key, child := range typed {
-			typed[key] = f.maskValue(child)
+		keys := make([]string, 0, len(typed))
+		for key := range typed {
+			keys = append(keys, key)
 		}
-		return typed
+		sort.Strings(keys)
+		for _, key := range keys {
+			masked, err := f.maskValue(ctx, typed[key], budget, depth+1)
+			if err != nil {
+				return nil, err
+			}
+			typed[key] = masked
+		}
+		return typed, nil
 	case []interface{}:
 		for index := range typed {
-			typed[index] = f.maskValue(typed[index])
+			masked, err := f.maskValue(ctx, typed[index], budget, depth+1)
+			if err != nil {
+				return nil, err
+			}
+			typed[index] = masked
 		}
-		return typed
+		return typed, nil
 	default:
-		return value
+		return value, nil
 	}
 }
 
@@ -170,7 +222,11 @@ func applyMaskingRule(text string, rule tenant.MaskingRule) string {
 	if err != nil {
 		return text
 	}
-	return compiled.re.ReplaceAllString(text, maskingReplacement(rule))
+	masked, err := replaceMaskingString(context.Background(), compiled.re, text, maskingReplacement(rule), maxMaskingBytes, maxMaskingMatchBytes)
+	if err != nil {
+		return ""
+	}
+	return masked
 }
 
 func compileMaskingRule(rule tenant.MaskingRule) (compiledMaskingRule, error) {

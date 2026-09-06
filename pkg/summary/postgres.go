@@ -9,8 +9,8 @@ import (
 	"time"
 )
 
-// PostgresStore is the durable summary coordination store. It assumes
-// migrations/023_summary_jobs.up.sql has been applied.
+// PostgresStore is the durable summary coordination store. The complete
+// embedded migration set must be applied before constructing the store.
 type PostgresStore struct {
 	db *sql.DB
 }
@@ -63,17 +63,17 @@ func EnqueueTx(ctx context.Context, tx *sql.Tx, request EnqueueRequest) (Enqueue
 			INSERT INTO summary_jobs (
 				tenant_id, agent_app_id, agent_version_id, session_owner_id, session_id, filter_key,
 				target_event_sequence, status, max_attempts,
-				attempts, completed_event_sequence, last_error
-			) VALUES ($1,$2,$3,$4,$5,$6,$7,'PENDING',$8,0,0,'')
-			ON CONFLICT (tenant_id, agent_app_id, session_owner_id, session_id, filter_key) DO NOTHING
+				attempts, completed_event_sequence, last_error, target_resolution_lease_version, session_incarnation_id
+			) VALUES ($1,$2,$3,$4,$5,$6,$7,'PENDING',$8,0,0,'',CASE WHEN $7=0 THEN 1 ELSE 0 END,$9)
+			ON CONFLICT (tenant_id, agent_app_id, session_owner_id, session_id, filter_key, session_incarnation_id) DO NOTHING
 			RETURNING `+summaryColumns,
 		request.TenantID, request.AgentAppID, request.AgentVersionID, request.SessionOwnerID, request.SessionID, request.FilterKey,
-		request.TargetEventSequence, maxAttempts)
+		request.TargetEventSequence, maxAttempts, request.SessionIncarnationID)
 	job, err := scanJob(row)
 	created := true
 	if errors.Is(err, sql.ErrNoRows) {
-		row = tx.QueryRowContext(ctx, summarySelect+` WHERE tenant_id=$1 AND agent_app_id=$2 AND session_owner_id=$3 AND session_id=$4 AND filter_key=$5 FOR UPDATE`,
-			request.TenantID, request.AgentAppID, request.SessionOwnerID, request.SessionID, request.FilterKey)
+		row = tx.QueryRowContext(ctx, summarySelect+` WHERE tenant_id=$1 AND agent_app_id=$2 AND session_owner_id=$3 AND session_id=$4 AND filter_key=$5 AND session_incarnation_id=$6 FOR UPDATE`,
+			request.TenantID, request.AgentAppID, request.SessionOwnerID, request.SessionID, request.FilterKey, request.SessionIncarnationID)
 		job, err = scanJob(row)
 		created = false
 	}
@@ -84,7 +84,7 @@ func EnqueueTx(ctx context.Context, tx *sql.Tx, request EnqueueRequest) (Enqueue
 		return EnqueueResult{}, fmt.Errorf("enqueue summary job load: %w", err)
 	}
 	if !created {
-		updated, err := mergeEnqueue(job, request, time.Now().UTC())
+		updated, err := mergeEnqueue(&job, request, time.Now().UTC())
 		if err != nil {
 			return EnqueueResult{}, err
 		}
@@ -92,11 +92,12 @@ func EnqueueTx(ctx context.Context, tx *sql.Tx, request EnqueueRequest) (Enqueue
 			row = tx.QueryRowContext(ctx, `
 				UPDATE summary_jobs
 				SET agent_version_id=$2, target_event_sequence=$3, status=$4, attempts=$5,
-				    max_attempts=$6, next_attempt_at=$7, last_error=$8, updated_at=now()
+				    max_attempts=$6, next_attempt_at=$7, last_error=$8,
+				    target_resolution_lease_version=$9, updated_at=now()
 				WHERE id=$1
 				RETURNING `+summaryColumns,
 				job.ID, job.AgentVersionID, job.TargetEventSequence, job.Status, job.Attempts,
-				job.MaxAttempts, nullableTime(job.NextAttemptAt), job.LastError)
+				job.MaxAttempts, nullableTime(job.NextAttemptAt), job.LastError, job.TargetResolutionLeaseVersion)
 			job, err = scanJob(row)
 			if err != nil {
 				return EnqueueResult{}, fmt.Errorf("enqueue summary job update: %w", err)
@@ -200,11 +201,14 @@ func (s *PostgresStore) ResolveTarget(ctx context.Context, claimed Job, sequence
 	}
 	row := s.db.QueryRowContext(nonNilContext(ctx), `
 		UPDATE summary_jobs
-		SET target_event_sequence=CASE WHEN target_event_sequence=0 THEN $1 ELSE target_event_sequence END,
-		    updated_at=CASE WHEN target_event_sequence=0 THEN now() ELSE updated_at END
+		SET target_event_sequence=CASE WHEN target_event_sequence=0 OR ($5>0 AND target_resolution_lease_version>0)
+		                              THEN GREATEST(target_event_sequence,$1) ELSE target_event_sequence END,
+		    target_resolution_lease_version=CASE WHEN target_resolution_lease_version <= $4
+		                                         THEN 0 ELSE target_resolution_lease_version END,
+		    updated_at=now()
 		WHERE id=$2 AND status='PROCESSING' AND lease_owner=$3
 		  AND lease_version=$4 AND lease_until > clock_timestamp()
-		RETURNING `+summaryColumns, sequence, claimed.ID, claimed.LeaseOwner, claimed.LeaseVersion)
+		RETURNING `+summaryColumns, sequence, claimed.ID, claimed.LeaseOwner, claimed.LeaseVersion, claimed.TargetResolutionLeaseVersion)
 	job, err := scanJob(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Job{}, ErrStaleLease
@@ -248,7 +252,8 @@ func (s *PostgresStore) Complete(ctx context.Context, claimed Job, observedSeque
 	}
 	row := s.db.QueryRowContext(nonNilContext(ctx), `
 		UPDATE summary_jobs
-		SET status=CASE WHEN $1 >= target_event_sequence THEN 'COMPLETED' ELSE 'PENDING' END,
+		SET status=CASE WHEN $1 >= target_event_sequence AND target_resolution_lease_version=0 THEN 'COMPLETED' ELSE 'PENDING' END,
+		    attempts=CASE WHEN $1 < target_event_sequence OR target_resolution_lease_version>0 THEN 0 ELSE attempts END,
 		    completed_event_sequence=GREATEST(completed_event_sequence,$1),
 		    last_error='', lease_owner=NULL, lease_until=NULL,
 		    next_attempt_at=NULL, updated_at=now()
@@ -271,7 +276,7 @@ const summaryColumns = `
 	id, tenant_id, agent_app_id, agent_version_id, session_owner_id, session_id, filter_key,
 	target_event_sequence, status, COALESCE(lease_owner,''), lease_version,
 	lease_until, attempts, max_attempts, next_attempt_at, COALESCE(last_error,''),
-	completed_event_sequence, created_at, updated_at`
+	completed_event_sequence, created_at, updated_at, target_resolution_lease_version, session_incarnation_id`
 
 const summarySelect = `SELECT ` + summaryColumns + ` FROM summary_jobs`
 
@@ -287,7 +292,7 @@ func scanJob(row rowScanner) (Job, error) {
 		&job.ID, &job.TenantID, &job.AgentAppID, &job.AgentVersionID, &job.SessionOwnerID, &job.SessionID, &job.FilterKey,
 		&job.TargetEventSequence, &status, &job.LeaseOwner, &job.LeaseVersion,
 		&leaseUntil, &job.Attempts, &job.MaxAttempts, &nextAttemptAt, &job.LastError,
-		&job.CompletedEventSequence, &job.CreatedAt, &job.UpdatedAt,
+		&job.CompletedEventSequence, &job.CreatedAt, &job.UpdatedAt, &job.TargetResolutionLeaseVersion, &job.SessionIncarnationID,
 	)
 	if err != nil {
 		return Job{}, err
@@ -305,18 +310,28 @@ func scanJob(row rowScanner) (Job, error) {
 	return job, nil
 }
 
-func mergeEnqueue(job Job, request EnqueueRequest, now time.Time) (bool, error) {
+func mergeEnqueue(job *Job, request EnqueueRequest, now time.Time) (bool, error) {
 	oldTarget := job.TargetEventSequence
 	oldMaxAttempts := job.MaxAttempts
 	oldVersionID := job.AgentVersionID
-	if request.TargetEventSequence == job.TargetEventSequence && request.AgentVersionID != job.AgentVersionID {
+	oldResolutionLease := job.TargetResolutionLeaseVersion
+	if request.TargetEventSequence > 0 && request.TargetEventSequence == job.TargetEventSequence && request.AgentVersionID != job.AgentVersionID {
 		return false, ErrSummaryVersionConflict
 	}
 	if request.TargetEventSequence > job.TargetEventSequence {
 		job.TargetEventSequence = request.TargetEventSequence
 		job.AgentVersionID = request.AgentVersionID
 	}
-	reset := request.Force
+	if request.TargetEventSequence == 0 {
+		job.TargetResolutionLeaseVersion = max(job.TargetResolutionLeaseVersion, job.LeaseVersion+1)
+		job.AgentVersionID = request.AgentVersionID
+	}
+	if job.Status == StatusProcessing && (request.TargetEventSequence == 0 || request.TargetEventSequence > oldTarget) {
+		// The current attempt belongs to the earlier target. Fresh work must
+		// retain its own retry budget if that attempt fails or loses its lease.
+		job.Attempts = 0
+	}
+	reset := request.Force || request.TargetEventSequence == 0
 	if job.Status == StatusCompleted && job.TargetEventSequence > job.CompletedEventSequence {
 		reset = true
 	}
@@ -333,6 +348,7 @@ func mergeEnqueue(job Job, request EnqueueRequest, now time.Time) (bool, error) 
 		job.MaxAttempts = request.MaxAttempts
 	}
 	changed := job.TargetEventSequence != oldTarget || job.AgentVersionID != oldVersionID || reset ||
+		job.TargetResolutionLeaseVersion != oldResolutionLease ||
 		(request.MaxAttempts > 0 && request.MaxAttempts > oldMaxAttempts)
 	job.UpdatedAt = now
 	return changed, job.Validate()
@@ -387,14 +403,14 @@ func (s *PostgresSink) publish(ctx context.Context, candidate Candidate, claimed
 	}
 	defer tx.Rollback()
 	if claimed != nil {
-		var tenantID, appID, sessionOwnerID, sessionID, filterKey string
+		var tenantID, appID, sessionOwnerID, sessionID, filterKey, incarnationID string
 		err := tx.QueryRowContext(ctx, `
-			SELECT tenant_id, agent_app_id, session_owner_id, session_id, filter_key
+			SELECT tenant_id, agent_app_id, session_owner_id, session_id, filter_key, session_incarnation_id
 			FROM summary_jobs
 			WHERE id=$1 AND status='PROCESSING' AND lease_owner=$2
 			  AND lease_version=$3 AND lease_until > clock_timestamp()
 			FOR UPDATE`, claimed.ID, claimed.LeaseOwner, claimed.LeaseVersion).
-			Scan(&tenantID, &appID, &sessionOwnerID, &sessionID, &filterKey)
+			Scan(&tenantID, &appID, &sessionOwnerID, &sessionID, &filterKey, &incarnationID)
 		if errors.Is(err, sql.ErrNoRows) {
 			return PublishResult{}, ErrStaleLease
 		}
@@ -402,7 +418,7 @@ func (s *PostgresSink) publish(ctx context.Context, candidate Candidate, claimed
 			return PublishResult{}, fmt.Errorf("fence summary publication: %w", err)
 		}
 		if tenantID != candidate.Key.TenantID || appID != candidate.Key.AgentAppID || sessionOwnerID != candidate.Key.SessionOwnerID ||
-			sessionID != candidate.Key.SessionID || filterKey != candidate.Key.FilterKey {
+			sessionID != candidate.Key.SessionID || filterKey != candidate.Key.FilterKey || incarnationID != candidate.Key.SessionIncarnationID {
 			return PublishResult{}, ErrSummaryScope
 		}
 	}
@@ -411,23 +427,23 @@ func (s *PostgresSink) publish(ctx context.Context, candidate Candidate, claimed
 	row := tx.QueryRowContext(ctx, `
 		INSERT INTO summary_checkpoints (
 			tenant_id, agent_app_id, session_owner_id, session_id, filter_key,
-			max_event_sequence, content, content_sha256, cutoff_at, last_event_id
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-		ON CONFLICT (tenant_id, agent_app_id, session_owner_id, session_id, filter_key) DO NOTHING
+			max_event_sequence, content, content_sha256, cutoff_at, last_event_id, session_incarnation_id
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+		ON CONFLICT (tenant_id, agent_app_id, session_owner_id, session_id, filter_key, session_incarnation_id) DO NOTHING
 		RETURNING tenant_id, agent_app_id, session_owner_id, session_id, filter_key,
-		          max_event_sequence, content, content_sha256, cutoff_at, last_event_id, updated_at`,
+		          max_event_sequence, content, content_sha256, cutoff_at, last_event_id, updated_at, session_incarnation_id`,
 		candidate.Key.TenantID, candidate.Key.AgentAppID, candidate.Key.SessionOwnerID, candidate.Key.SessionID, candidate.Key.FilterKey,
-		candidate.EventSequence, candidate.Content, candidate.ContentSHA256, candidate.CutoffAt.UTC(), candidate.LastEventID)
+		candidate.EventSequence, candidate.Content, candidate.ContentSHA256, candidate.CutoffAt.UTC(), candidate.LastEventID, candidate.Key.SessionIncarnationID)
 	current, err := scanCheckpoint(row)
 	inserted := true
 	if errors.Is(err, sql.ErrNoRows) {
 		inserted = false
 		row = tx.QueryRowContext(ctx, `
 			SELECT tenant_id, agent_app_id, session_owner_id, session_id, filter_key,
-			       max_event_sequence, content, content_sha256, cutoff_at, last_event_id, updated_at
+			       max_event_sequence, content, content_sha256, cutoff_at, last_event_id, updated_at, session_incarnation_id
 			FROM summary_checkpoints
-			WHERE tenant_id=$1 AND agent_app_id=$2 AND session_owner_id=$3 AND session_id=$4 AND filter_key=$5
-			FOR UPDATE`, candidate.Key.TenantID, candidate.Key.AgentAppID, candidate.Key.SessionOwnerID, candidate.Key.SessionID, candidate.Key.FilterKey)
+			WHERE tenant_id=$1 AND agent_app_id=$2 AND session_owner_id=$3 AND session_id=$4 AND filter_key=$5 AND session_incarnation_id=$6
+			FOR UPDATE`, candidate.Key.TenantID, candidate.Key.AgentAppID, candidate.Key.SessionOwnerID, candidate.Key.SessionID, candidate.Key.FilterKey, candidate.Key.SessionIncarnationID)
 		current, err = scanCheckpoint(row)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
@@ -461,11 +477,11 @@ func (s *PostgresSink) publish(ctx context.Context, candidate Candidate, claimed
 		UPDATE summary_checkpoints
 		SET max_event_sequence=$1, content=$2, content_sha256=$3,
 		    cutoff_at=$4, last_event_id=$5, updated_at=now()
-		WHERE tenant_id=$6 AND agent_app_id=$7 AND session_owner_id=$8 AND session_id=$9 AND filter_key=$10
+		WHERE tenant_id=$6 AND agent_app_id=$7 AND session_owner_id=$8 AND session_id=$9 AND filter_key=$10 AND session_incarnation_id=$11
 		RETURNING tenant_id, agent_app_id, session_owner_id, session_id, filter_key,
-		          max_event_sequence, content, content_sha256, cutoff_at, last_event_id, updated_at`,
+		          max_event_sequence, content, content_sha256, cutoff_at, last_event_id, updated_at, session_incarnation_id`,
 		candidate.EventSequence, candidate.Content, candidate.ContentSHA256, candidate.CutoffAt.UTC(), candidate.LastEventID,
-		candidate.Key.TenantID, candidate.Key.AgentAppID, candidate.Key.SessionOwnerID, candidate.Key.SessionID, candidate.Key.FilterKey)
+		candidate.Key.TenantID, candidate.Key.AgentAppID, candidate.Key.SessionOwnerID, candidate.Key.SessionID, candidate.Key.FilterKey, candidate.Key.SessionIncarnationID)
 	current, err = scanCheckpoint(row)
 	if err != nil {
 		return PublishResult{}, fmt.Errorf("publish summary update: %w", err)
@@ -485,10 +501,10 @@ func (s *PostgresSink) Get(ctx context.Context, key Key) (Checkpoint, bool, erro
 	}
 	row := s.db.QueryRowContext(nonNilContext(ctx), `
 		SELECT tenant_id, agent_app_id, session_owner_id, session_id, filter_key,
-		       max_event_sequence, content, content_sha256, cutoff_at, last_event_id, updated_at
+		       max_event_sequence, content, content_sha256, cutoff_at, last_event_id, updated_at, session_incarnation_id
 		FROM summary_checkpoints
-		WHERE tenant_id=$1 AND agent_app_id=$2 AND session_owner_id=$3 AND session_id=$4 AND filter_key=$5`,
-		key.TenantID, key.AgentAppID, key.SessionOwnerID, key.SessionID, key.FilterKey)
+		WHERE tenant_id=$1 AND agent_app_id=$2 AND session_owner_id=$3 AND session_id=$4 AND filter_key=$5 AND session_incarnation_id=$6`,
+		key.TenantID, key.AgentAppID, key.SessionOwnerID, key.SessionID, key.FilterKey, key.SessionIncarnationID)
 	checkpoint, err := scanCheckpoint(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Checkpoint{}, false, nil
@@ -504,7 +520,7 @@ func scanCheckpoint(row rowScanner) (Checkpoint, error) {
 	err := row.Scan(
 		&checkpoint.Key.TenantID, &checkpoint.Key.AgentAppID, &checkpoint.Key.SessionOwnerID, &checkpoint.Key.SessionID,
 		&checkpoint.Key.FilterKey, &checkpoint.EventSequence, &checkpoint.Content,
-		&checkpoint.ContentSHA256, &checkpoint.CutoffAt, &checkpoint.LastEventID, &checkpoint.UpdatedAt)
+		&checkpoint.ContentSHA256, &checkpoint.CutoffAt, &checkpoint.LastEventID, &checkpoint.UpdatedAt, &checkpoint.Key.SessionIncarnationID)
 	if err != nil {
 		return Checkpoint{}, err
 	}

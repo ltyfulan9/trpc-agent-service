@@ -262,8 +262,17 @@ func (a *WeWorkAdapter) ParseInbound(req *http.Request, binding *tenant.ChannelB
 		if err != nil {
 			return nil, fmt.Errorf("decrypt callback: %w", err)
 		}
+		// Only authenticated plaintext fields may establish callback identity.
+		payload = weWorkMessageXML{}
 		if err := decodeWeWorkXML(plaintext, &payload); err != nil {
 			return nil, fmt.Errorf("decode decrypted callback XML: %w", err)
+		}
+	}
+	if binding != nil && binding.AppID != "" {
+		configuredID, configuredErr := strconv.ParseUint(binding.AppID, 10, 32)
+		callbackID, callbackErr := strconv.ParseUint(payload.AgentID, 10, 32)
+		if configuredErr != nil || callbackErr != nil || configuredID == 0 || callbackID != configuredID {
+			return nil, fmt.Errorf("callback application does not match configured agent ID")
 		}
 	}
 	// The platform also posts image, voice, location, menu and lifecycle
