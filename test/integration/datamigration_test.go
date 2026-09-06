@@ -312,8 +312,9 @@ func TestTRPCSessionRedisToPostgresMigrationVerticalSlice(t *testing.T) {
 				// changes use LiveCoordinator; ordinary tenant updates reject
 				// storage relocation even after a caller has copied data.
 				result, err := db.ExecContext(hookCtx, `UPDATE tenants SET
-					config=jsonb_set(jsonb_set(config,'{storage,sessionBackend}','"postgres"'),
-					'{storage,sessionProfile}','"session-postgres"'),config_version=config_version+1
+					config=jsonb_set(config,'{storage}',COALESCE(config->'storage','{}'::jsonb) ||
+					jsonb_build_object('sessionBackend','postgres','sessionProfile','session-postgres')),
+					config_version=config_version+1
 					WHERE id=$1 AND config_version=$2`, tenantID, value.ConfigVersion)
 				if err != nil {
 					return err

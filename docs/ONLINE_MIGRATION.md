@@ -21,6 +21,13 @@ histories reaching the configured safety limit. It fails instead of dropping
 those fields. The target tenant namespace must be empty at creation. Changing
 only a profile alias is rejected when both profiles identify the same store.
 
+Knowledge mutations retain the installed SDK's capabilities: Qdrant supports
+document upserts and filtered deletion, while `UpdateByFilter` returns an
+unsupported-operation error. Migration capture does not add a batch field
+update implementation. A document update can use `Get` followed by `Add` or
+`Update` with the complete document and vector; those separate calls are not
+an atomic read-modify-write operation.
+
 ## Deployment Contract
 
 1. Apply schema migrations through `045`, then deploy this revision of every

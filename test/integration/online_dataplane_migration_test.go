@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -242,8 +243,29 @@ func TestOnlineKnowledgeMigrationUsesProductionCaptureAndProfileRouting(t *testi
 			}
 			f.advance(t, id, datamigration.PhaseValidate)
 			addOnlineDocument(t, f.ctx, f.knowledge, "during-validation", "retain")
-			if _, err := f.knowledge.UpdateByFilter(f.ctx, vectorstore.WithUpdateByFilterDocumentIDs([]string{"keep"}), vectorstore.WithUpdateByFilterUpdates(map[string]any{"content": "updated"})); err != nil {
+			original, embedding, err := f.knowledge.Get(f.ctx, "keep")
+			if err != nil || original == nil {
+				t.Fatalf("load document before unsupported update: %v", err)
+			}
+			if updated, err := f.knowledge.UpdateByFilter(f.ctx, vectorstore.WithUpdateByFilterDocumentIDs([]string{"keep"}), vectorstore.WithUpdateByFilterUpdates(map[string]any{"content": "updated"})); err == nil || !strings.Contains(err.Error(), "UpdateByFilter is not implemented for Qdrant") || updated != 0 {
+				t.Fatalf("unsupported Qdrant batch update count=%d error=%v", updated, err)
+			}
+			for _, store := range []vectorstore.VectorStore{f.sourceKnowledge, f.targetKnowledge} {
+				actual, actualEmbedding, err := store.Get(f.ctx, "keep")
+				if err != nil || !reflect.DeepEqual(actual, original) || !reflect.DeepEqual(actualEmbedding, embedding) {
+					t.Fatalf("unsupported update changed source or target: doc=%+v embedding=%v err=%v", actual, actualEmbedding, err)
+				}
+			}
+			updatedDoc := original.Clone()
+			updatedDoc.Content = "updated"
+			if err := f.knowledge.Add(f.ctx, updatedDoc, embedding); err != nil {
 				t.Fatal(err)
+			}
+			for _, store := range []vectorstore.VectorStore{f.sourceKnowledge, f.targetKnowledge} {
+				actual, actualEmbedding, err := store.Get(f.ctx, "keep")
+				if err != nil || actual == nil || actual.Content != "updated" || !reflect.DeepEqual(actualEmbedding, embedding) {
+					t.Fatalf("late upsert was not mirrored: doc=%+v embedding=%v err=%v", actual, actualEmbedding, err)
+				}
 			}
 			if err := f.knowledge.DeleteByFilter(f.ctx, vectorstore.WithDeleteFilter(map[string]any{"kind": "remove"})); err != nil {
 				t.Fatal(err)

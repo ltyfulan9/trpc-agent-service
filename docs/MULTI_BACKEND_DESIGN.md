@@ -17,6 +17,8 @@ This document describes the installed platform composition. Source and tests est
 
 The installed storage factory accepts only `inmemory`, `redis` and `postgres`. It does not expose MySQL, arbitrary SQL drivers, an external Memory SaaS, a local vector engine, or every adapter offered by the wider SDK. The control-plane repository is PostgreSQL-only. See [backend_factory.go](../pkg/storage/backend_factory.go), [validation.go](../pkg/tenant/validation.go), [profiles.go](../pkg/runtimeplane/profiles.go) and [repository.go](../pkg/tenant/repository.go).
 
+The installed Qdrant vector-store adapter supports single-document `Add`/`Update` as upserts, reads/search and filtered deletion. Its `UpdateByFilter` method returns an unsupported-operation error. The platform preserves that error and does not claim native batch field updates. Online migration tests verify that this failed operation leaves both stores unchanged, then verify a supported document upsert after the initial copy reaches the target.
+
 ## Two Tenant Configurations
 
 These are complete **storage sections**, shown with their owning tenant IDs. They are not standalone Admin create requests; application, model, channel, policy and other required fields remain part of the full Tenant configuration. The examples use the actual `StorageConfig` JSON field names.
