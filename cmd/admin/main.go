@@ -349,7 +349,7 @@ func getTenant(w http.ResponseWriter, r *http.Request, service tenant.Service, t
 	}
 	t, err := service.GetTenant(r.Context(), tenantID)
 	if err != nil {
-		if err == tenant.ErrTenantNotFound {
+		if errors.Is(err, tenant.ErrTenantNotFound) {
 			http.Error(w, "Tenant not found", http.StatusNotFound)
 		} else {
 			log.Printf("failed to get tenant: error=%s", telemetry.StableErrorCode(err))
@@ -383,7 +383,7 @@ func updateTenant(w http.ResponseWriter, r *http.Request, service tenant.Service
 	// value still rotates the credential.
 	current, err := service.GetTenant(r.Context(), tenantID)
 	if err != nil {
-		if err == tenant.ErrTenantNotFound {
+		if errors.Is(err, tenant.ErrTenantNotFound) {
 			http.Error(w, "Tenant not found", http.StatusNotFound)
 		} else {
 			log.Printf("failed to load tenant before update: error=%s", telemetry.StableErrorCode(err))
@@ -604,7 +604,7 @@ func deleteTenant(w http.ResponseWriter, r *http.Request, service tenant.Service
 	}
 	ctx := tenant.ContextWithAuditActor(r.Context(), actor)
 	if err := service.DeleteTenant(ctx, tenantID); err != nil {
-		if err == tenant.ErrTenantNotFound {
+		if errors.Is(err, tenant.ErrTenantNotFound) {
 			http.Error(w, "Tenant not found", http.StatusNotFound)
 		} else {
 			log.Printf("failed to delete tenant: error=%s", telemetry.StableErrorCode(err))

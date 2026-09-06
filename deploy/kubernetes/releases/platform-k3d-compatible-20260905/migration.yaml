@@ -19,7 +19,7 @@ spec:
       securityContext: {runAsNonRoot: true, runAsUser: 65532, runAsGroup: 65532, seccompProfile: {type: RuntimeDefault}}
       containers:
       - name: migrate
-        image: trpc-v13-registry:5000/v14/migrate@sha256:8a3822391bec617daed6b93f91ed02e579c35b591a471673456afe635e818b3b
+        image: trpc-v13-registry:5000/platform/migrate@sha256:8a3822391bec617daed6b93f91ed02e579c35b591a471673456afe635e818b3b
         imagePullPolicy: IfNotPresent
         securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: ["ALL"]}}
         args: ["up"]

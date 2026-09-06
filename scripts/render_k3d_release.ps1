@@ -44,23 +44,23 @@ $releaseFiles = [ordered]@{
 
 $imagesByOutput = @{
     'migration.yaml' = @{
-        'trpc-agent-migrate:0.1.0' = 'trpc-v13-registry:5000/v14/migrate@sha256:8a3822391bec617daed6b93f91ed02e579c35b591a471673456afe635e818b3b'
+        'trpc-agent-migrate:0.1.0' = 'trpc-v13-registry:5000/platform/migrate@sha256:8a3822391bec617daed6b93f91ed02e579c35b591a471673456afe635e818b3b'
     }
     'worker.yaml' = @{
-        'trpc-agent-worker:0.1.0' = 'trpc-v13-registry:5000/v14/worker@sha256:858c68472ebdb57f00ac0d89f6ce74b083aee328b7489234879e807c1b2b49ea'
+        'trpc-agent-worker:0.1.0' = 'trpc-v13-registry:5000/platform/worker@sha256:858c68472ebdb57f00ac0d89f6ce74b083aee328b7489234879e807c1b2b49ea'
     }
     'summary.yaml' = @{
-        'trpc-agent-summary-worker:0.1.0' = 'trpc-v13-registry:5000/v14/summary-worker@sha256:e0a9cf4c7a15423264c06fe46afa7df1bbea080e5832a8cd45ce4787cab82d5b'
+        'trpc-agent-summary-worker:0.1.0' = 'trpc-v13-registry:5000/platform/summary-worker@sha256:e0a9cf4c7a15423264c06fe46afa7df1bbea080e5832a8cd45ce4787cab82d5b'
     }
     'pipeline.yaml' = @{
-        'trpc-agent-consumer:0.1.0' = 'trpc-v13-registry:5000/v14/consumer@sha256:9b4eadd4f2c6e61f170c4caa71c9485a5026fa3cc373bd2751dad627a657f201'
-        'trpc-agent-delivery:0.1.0' = 'trpc-v13-registry:5000/v14/delivery@sha256:b40e67600fb1410ea6ac121458ff48c563e467ee45d10ff404a6c4f2ba04a307'
+        'trpc-agent-consumer:0.1.0' = 'trpc-v13-registry:5000/platform/consumer@sha256:9b4eadd4f2c6e61f170c4caa71c9485a5026fa3cc373bd2751dad627a657f201'
+        'trpc-agent-delivery:0.1.0' = 'trpc-v13-registry:5000/platform/delivery@sha256:b40e67600fb1410ea6ac121458ff48c563e467ee45d10ff404a6c4f2ba04a307'
     }
     'admin.yaml' = @{
-        'trpc-agent-admin:0.1.0' = 'trpc-v13-registry:5000/v14/admin@sha256:3703fc2379a4daba90650d59c23d889ee436fd5860562b5b8f648b759840d3e6'
+        'trpc-agent-admin:0.1.0' = 'trpc-v13-registry:5000/platform/admin@sha256:3703fc2379a4daba90650d59c23d889ee436fd5860562b5b8f648b759840d3e6'
     }
     'gateway.yaml' = @{
-        'trpc-agent-gateway:0.1.0' = "trpc-v13-registry:5000/v14/gateway@$GatewayDigest"
+        'trpc-agent-gateway:0.1.0' = "trpc-v13-registry:5000/platform/gateway@$GatewayDigest"
     }
 }
 

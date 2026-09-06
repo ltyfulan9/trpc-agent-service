@@ -31,13 +31,13 @@ PostgreSQL 是可靠队列、控制面、执行 guard/fence、迁移协调和审
 - MCP：operator-owned Streamable HTTP/SSE profile、Admin 无秘密准入、Worker 延迟连接官方 tRPC-Agent-Go MCP ToolSet、精确工具 allowlist、Header SecretRef 与进程关闭；本地真实 MCP server 纵切覆盖 Worker→Runner→治理→MCP→最终回复。
 - 部署：Summary 进程、data-plane profiles、最小 Secret 暴露、NetworkPolicy、Prometheus Summary 规则和 releaseverify 契约。
 
-## 3. 已取得的本机证据
+## 3. 本机证据（按日期和环境解释）
 
-当前生产工具链固定 `GOTOOLCHAIN=go1.26.7+auto`，框架固定 tRPC-Agent-Go v1.11.2。2026-09-05 已在 C 盘权威树重跑模块校验、gofmt、全部命令构建、vet、全量 unit/race（`GOMAXPROCS=1`、`-p 1`），以及真实 PostgreSQL/Redis/Qdrant/MinIO integration（9.775 秒）。Compose 配置和 7 个应用镜像构建、隔离栈启动、公开 `/health` 探针、restart count、Prometheus 6/6 targets 和 15 条规则解析均通过；Admin 纵切和零 Provider-call 外部 preflight 也通过。精确状态与不得扩大解释的边界见 `docs/ACCEPTANCE_EVIDENCE.md`。
+当前生产工具链固定 `GOTOOLCHAIN=go1.26.7+auto`，框架固定 tRPC-Agent-Go v1.11.2。源码门禁（module verify、gofmt、build、vet、unit/race）必须在每次最终提交后重新执行并记录。此前 2026-09-05 的 C-local/真实后端/Compose 日志仅适用于日志中记录的确切源码和环境；本轮文档或代码变更不会自动继承 Docker、集群或 Provider 结果。精确状态与不得扩大解释的边界见 `docs/ACCEPTANCE_EVIDENCE.md` 和 `docs/VERIFICATION.md`。
 
 Docker Desktop 的损坏 AF_UNIX runtime 目录已通过可恢复移动修复，没有 factory reset，也没有删除既有 image、volume 或业务数据。历史备份目录仍保留，未经用户授权不要清理。E 盘的 `trpc-agent-legacy-lab` 仅是历史实验室（含缓存、数据库 dump、证书/私钥和工具），不是当前运行依赖；本次复核从 C 盘完成，没有硬编码 `E:\` 路径。
 
-直接从新归档目录运行 Compose 时没有 `.env` 会按设计拒绝启动；使用 `scripts/run_c_local_stack.ps1 -Build` 可从任意目录定位源码、注入进程内一次性验证值并使用隔离端口。该脚本不会读取或写入 E 盘，也不会覆盖已有项目。交付总包、清单、SHA-256 和解包复核结果位于本线程 `outputs` 目录，最终文件名以包内 `PACKAGE_INVENTORY_20260905.md` 为准。
+直接从新归档目录运行 Compose 时没有 `.env` 会按设计拒绝启动；使用 `scripts/run_c_local_stack.ps1 -Build` 可从任意目录定位源码、注入进程内一次性验证值并使用隔离端口。该脚本不会读取或写入 E 盘，也不会覆盖已有项目。交付总包、清单、SHA-256 和解包复核结果以包内 `PACKAGE_INVENTORY_20260905.md`、`SHA256SUMS_20260905.txt` 和 `PACKAGE_BUILD_RESULT_20260905.txt` 为准。
 
 ## 4. 当前外部验收边界
 

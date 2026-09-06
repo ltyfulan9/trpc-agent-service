@@ -11,6 +11,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -36,6 +37,7 @@ type conflictTenantService struct{}
 type countingTenantService struct {
 	getCalls atomic.Int32
 	tenant   *tenant.Tenant
+	getErr   error
 }
 
 func (s *countingTenantService) CreateTenant(context.Context, string, tenant.TenantConfig) (*tenant.Tenant, error) {
@@ -43,6 +45,9 @@ func (s *countingTenantService) CreateTenant(context.Context, string, tenant.Ten
 }
 func (s *countingTenantService) GetTenant(context.Context, string) (*tenant.Tenant, error) {
 	s.getCalls.Add(1)
+	if s.getErr != nil {
+		return nil, s.getErr
+	}
 	if s.tenant != nil {
 		return s.tenant, nil
 	}
@@ -118,6 +123,21 @@ func TestValidateVersionSnapshotPinsOperatorModelLimits(t *testing.T) {
 	}
 	if want := worker.NewRuntimeAgentRegistry().Fingerprint(); snapshot.RuntimeCapabilityFingerprint != want {
 		t.Fatalf("snapshot runtime fingerprint=%q, want %q", snapshot.RuntimeCapabilityFingerprint, want)
+	}
+}
+
+func TestGetTenantTreatsWrappedNotFoundAs404(t *testing.T) {
+	service := &countingTenantService{getErr: fmt.Errorf("repository lookup: %w", tenant.ErrTenantNotFound)}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/tenants/missing", nil)
+	req = req.WithContext(adminauth.ContextWithPrincipal(req.Context(), adminauth.Principal{
+		ID: "operator", Role: adminauth.RolePlatformAdmin,
+	}))
+	response := httptest.NewRecorder()
+
+	getTenant(response, req, service, "missing")
+
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("status=%d, want %d; body=%s", response.Code, http.StatusNotFound, response.Body.String())
 	}
 }
 

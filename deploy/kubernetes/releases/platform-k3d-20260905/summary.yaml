@@ -29,7 +29,7 @@ spec:
         labelSelector: {matchLabels: {app: agent-summary-worker}}
       containers:
       - name: summary-worker
-        image: trpc-v13-registry:5000/v14/summary-worker@sha256:e0a9cf4c7a15423264c06fe46afa7df1bbea080e5832a8cd45ce4787cab82d5b
+        image: trpc-v13-registry:5000/platform/summary-worker@sha256:e0a9cf4c7a15423264c06fe46afa7df1bbea080e5832a8cd45ce4787cab82d5b
         imagePullPolicy: IfNotPresent
         securityContext:
           allowPrivilegeEscalation: false

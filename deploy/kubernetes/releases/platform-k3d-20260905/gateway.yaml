@@ -28,7 +28,7 @@ spec:
         labelSelector: {matchLabels: {app: agent-gateway}}
       containers:
       - name: gateway
-        image: trpc-v13-registry:5000/v14/gateway@sha256:72e209b7d2ba5b56baaa773ccc86b42b83a1ad79fb75ce7c2c457f0e68c11dff
+        image: trpc-v13-registry:5000/platform/gateway@sha256:72e209b7d2ba5b56baaa773ccc86b42b83a1ad79fb75ce7c2c457f0e68c11dff
         imagePullPolicy: IfNotPresent
         securityContext:
           allowPrivilegeEscalation: false

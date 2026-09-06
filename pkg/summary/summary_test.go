@@ -242,6 +242,55 @@ type scriptedGenerator struct {
 	err       error
 }
 
+func TestProcessorRejectsTypedNilDependencies(t *testing.T) {
+	var store *MemoryStore
+	var sink *MemorySink
+	var generator *typedNilGenerator
+	for _, test := range []struct {
+		name   string
+		mutate func(*Processor)
+	}{
+		{name: "store", mutate: func(p *Processor) { p.Store = store }},
+		{name: "sink", mutate: func(p *Processor) { p.Sink = sink }},
+		{name: "generator", mutate: func(p *Processor) { p.Generator = generator }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			processor := NewProcessor(NewMemoryStore(nil), NewMemorySink(nil), scriptedGenerator{}, "worker-a", time.Second)
+			test.mutate(processor)
+			if _, err := processor.RunOnce(context.Background()); !errors.Is(err, ErrStoreUnavailable) {
+				t.Fatalf("typed nil dependency error=%v, want ErrStoreUnavailable", err)
+			}
+		})
+	}
+}
+
+type typedNilGenerator struct{}
+
+func (*typedNilGenerator) Generate(context.Context, Job) (Candidate, error) {
+	return Candidate{}, nil
+}
+
+func TestProcessorRejectsTypedNilTargetResolver(t *testing.T) {
+	store := NewMemoryStore(nil)
+	sink := NewMemorySink(nil)
+	key := summaryKey()
+	if _, err := store.Enqueue(context.Background(), summaryRequest(key, 0)); err != nil {
+		t.Fatalf("enqueue unresolved summary: %v", err)
+	}
+	var resolver *typedNilTargetResolver
+	processor := NewProcessor(store, sink, scriptedGenerator{}, "worker-a", time.Second)
+	processor.TargetResolver = resolver
+	if _, err := processor.RunOnce(context.Background()); !errors.Is(err, ErrTargetResolverUnavailable) {
+		t.Fatalf("typed nil target resolver error=%v, want ErrTargetResolverUnavailable", err)
+	}
+}
+
+type typedNilTargetResolver struct{}
+
+func (*typedNilTargetResolver) ResolveTarget(context.Context, Job) (int64, error) {
+	return 0, nil
+}
+
 func (g scriptedGenerator) Generate(context.Context, Job) (Candidate, error) {
 	return g.candidate, g.err
 }

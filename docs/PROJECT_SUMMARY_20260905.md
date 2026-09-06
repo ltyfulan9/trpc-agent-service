@@ -1,6 +1,6 @@
 # Enterprise Multi-Tenant Agent Platform 项目总结
 
-更新日期：2026-09-05（Asia/Shanghai）  
+更新日期：2026-09-06（Asia/Shanghai）
 项目：基于 tRPC-Agent-Go 的多租户节点化 Agent 平台  
 实现框架：tRPC-Agent-Go v1.11.2  
 模块最低版本：Go 1.25.14  
@@ -18,9 +18,9 @@ Enterprise Multi-Tenant Agent Platform 是一套以 PostgreSQL 可靠队列和�
 
 当前权威目录是本目录。源码快照（不含被忽略的真实环境文件）目前包含：
 
-- 交付清单会在打包时重新计算文件数和字节数；当前脱敏快照为 432 个可交付文件、3,128,319 字节，其中 Go 278、SQL 84、Markdown 28、YAML/YML 17、Shell 5、PowerShell 6，另含安全模板 `.env.example`。权威目录另有一个被忽略的真实 `deploy/.env.wecom.local`，只记录存在性，不计入交付；最终以包内清单为准。
+- 交付清单会在打包时动态重新计算文件数、字节数和 SHA-256；不要在文档中固定快照数量。权威目录中的真实环境文件（如 `deploy/.env.wecom.local`）只记录存在性，不计入交付；最终以包内 `PACKAGE_INVENTORY_20260905.md` 和 `SHA256SUMS_20260905.txt` 为准。
 - 9 个服务/作业入口：`gateway`、`consumer`、`worker`、`summary-worker`、`delivery`、`admin`、`migrate`、`replay`、`releaseverify`。
-- 42 个版本化数据库迁移；每个 `.up.sql` 都有对应 `.down.sql`。
+- 43 个版本化数据库迁移；每个 `.up.sql` 都有对应 `.down.sql`。
 - `cmd/` 入口与测试、`pkg/` 平台实现与回归、`migrations/` schema、`deploy/` Compose/Kubernetes/监控、`scripts/` 验证和外部验收向导、`test/integration/` 真实后端纵切、`.github/workflows/` CI 门禁。
 - 顶层入口文档：`README.md`、`PACKAGE_MANIFEST.md`、`CODE_PACKAGE_CONTENTS.txt`、`HANDOFF.md`、`ENTERPRISE_PLATFORM_HANDOFF.md`。
 
@@ -68,26 +68,30 @@ Enterprise Multi-Tenant Agent Platform 是一套以 PostgreSQL 可靠队列和�
 - 日志、trace 和审计不保存 token、API key、DSN、Authorization、完整用户正文或原始用户标识；用户标识使用租户 HMAC 假名。
 - Docker/Kubernetes 运行时采用 non-root、只读根文件系统、`cap_drop: ALL`、`no-new-privileges`、seccomp、默认拒绝 NetworkPolicy 和不可变镜像 digest 门禁。
 
-## 6. 现有验证记录
+## 6. 现有验证记录与证据层级
 
-`docs/ACCEPTANCE_EVIDENCE.md` 和 `docs/VERIFICATION.md` 记录了此前及本次复核的验证结果，包括：
+`docs/ACCEPTANCE_EVIDENCE.md` 是逐项状态的权威矩阵，`docs/VERIFICATION.md` 只保留当前基线命令、证据来源和外部验收边界。证据按三层理解：
+
+1. `LOCAL_VERIFIED`：当前源码在本机执行过命令，或在可复现的本地隔离后端完成并保存退出码/后状态。
+2. `IMPLEMENTED`：生产路径和自动化回归已具备，但仍需要目标账号、供应商或基础设施完成验收。
+3. `EXTERNAL_REQUIRED`：当前没有足够的目标环境证据，必须按 `docs/EXTERNAL_ACCEPTANCE_RUNBOOK.md` 执行，不能由单测或模拟器替代。
+
+当前基线保留的证据类型包括：
 
 - `go mod verify`、gofmt、build、vet、全量 unit test、全量 race test 和 integration-tag 编译门。
 - 真实 PostgreSQL、Redis、Qdrant、MinIO 纵切；Summary→Runner 请求捕获；Session migration；Knowledge/Artifact projection；MCP 本地 Streamable HTTP 纵切。
-- Compose 隔离栈、12 容器健康、公开 Gateway 探针、Prometheus 目标、Grafana health、零重启/无 panic-fatal 的记录。
-- 三节点 K3d/Linkerd、镜像 digest rollout/rollback、HPA、OTLP TLS、Vault dev workload identity 和 2,200 条公平队列容量基线的记录。
+- Compose 隔离栈、健康探针、Prometheus 目标和 Grafana health 的历史记录；仅适用于记录中的确切源码与环境。
+- 早期三节点 K3d/Linkerd、镜像 digest rollout/rollback、HPA、OTLP TLS、Vault dev workload identity 和 2,200 条公平队列容量记录仅作为带日期、带适用范围的历史实验室证据；本轮代码/文档改动未重新声明这些目标环境链路通过。
 
 这些记录都保留了环境和边界说明。它们证明源码和指定本地实验场景，不等于目标生产集群、真实 IM、正式密钥系统或 HA/灾备认证。
 
-## 7. 本次接续复核状态（2026-09-05）
+## 7. 本次接续复核状态（2026-09-06）
 
-- 已确认权威源码目录、最终交接文档、验收/安全/风险/竞赛材料和归档记录均在工作区；源码树无 Git 元数据，构建使用 `-buildvcs=false`。
+- 已确认权威源码目录、最终交接文档、验收/安全/风险/竞赛材料和归档记录均在工作区；交付包不包含 Git 元数据，归档构建使用 `-buildvcs=false`。
 - C 盘权威树与本线程 C 盘副本除真实 `deploy/.env.wecom.local` 外一致；没有任何硬编码 `E:\` 路径。该环境文件含本地企微/运行时秘密，永不进入交付包。
-- 直接在新归档目录执行 Compose 时若没有 `.env` 会按设计返回必需变量错误；这不是 E 盘依赖。新增 `scripts/run_c_local_stack.ps1` 从 `$PSScriptRoot` 定位源码，用进程内一次性验证值和隔离端口启动，已用 C 盘副本验证配置与 7 个应用镜像构建。
-- 本次 C-local 运行项目为 `trpc-platform-c-local-20260905`：12 个容器（11 个服务加 one-shot migration），migration 退出码 0，Gateway/Admin `/health` 返回 200，所有应用健康，Prometheus 6/6 targets `up`、15 条规则健康，全部 restart count 为 0，日志未发现 panic/fatal。
-- C-local 真实后端集成 `go test -tags=integration -count=1 -p 1 ./test/integration` 通过（9.775 秒）；Admin 纵切 401 → tenant → 脱敏读取 → Agent App → Version → Publish → stable Deployment → list → delete 通过；外部验收 preflight 使用假值时 `provider_calls=0`。
-- 本次源码门禁在 Go 1.26.7 自动工具链、`GOMAXPROCS=1`、`-p 1` 下通过：module verify、gofmt、build、vet、全量 unit、全量 race（约 199.82 秒）。
-- 接续复核补充：`scripts/validate.sh` 10/10 通过（串行七镜像构建、15 条 Prometheus 规则、真实 PG/Redis/Qdrant/MinIO integration 10.862 秒）；K3d bootstrap/compatible migration、Linkerd 401/403 identity probe、Gateway digest rollback、Vault dev workload identity、2200 条公平队列容量基线均有独立脱敏日志。
+- 直接在新归档目录执行 Compose 时若没有 `.env` 会按设计返回必需变量错误；这不是 E 盘依赖。`scripts/run_c_local_stack.ps1` 从 `$PSScriptRoot` 定位源码，用进程内一次性验证值和隔离端口启动；Docker/镜像结果必须按执行日期单独记录。
+- 先前 C-local、Compose 和真实后端纵切日志属于已保存的本地证据；本轮文档/代码变更后的 Go 单测、vet、race 结果以 `docs/VERIFICATION.md` 和 CI 为准。Docker Compose、K3d、Linkerd、Vault 和容量实验不会因本轮源码门禁自动继承为“最新通过”。
+- 当前源码门禁使用 Go 1.26.7 自动工具链、`GOMAXPROCS=1`、`-p 1`；每次提交后应重新记录 module verify、gofmt、build、vet、unit、race 的退出码。集成/Compose/集群证据必须分别标注执行日期和环境。
 - 当前企微/Telegram 所需 route key、provider secret、CorpID/AgentID 均未配置；公网 tunnel `/health` 为 200、无 route key 的 `/webhook` 为 400，但真实 IM 回路仍为 `EXTERNAL_REQUIRED`，不能把企微登录过期页当作已登录证据。
 - 打包后还会执行：精确文件清单、秘密模式扫描、归档成员复核、SHA-256、临时解包比对，以及只清理本轮两个临时 Compose 项目。
 

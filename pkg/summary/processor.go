@@ -31,7 +31,10 @@ func NewProcessor(store Store, sink Sink, generator Generator, workerID string, 
 }
 
 func (p *Processor) validate() error {
-	if p == nil || p.Store == nil || p.Sink == nil || p.Generator == nil {
+	// Interfaces can hold typed nil pointers. Treat those as unavailable at
+	// the composition boundary instead of allowing RunOnce to panic when it
+	// invokes a method through the nil interface value.
+	if p == nil || nilInterface(p.Store) || nilInterface(p.Sink) || nilInterface(p.Generator) {
 		return fmt.Errorf("%w: store, sink and generator are required", ErrStoreUnavailable)
 	}
 	if err := validateLeaseRequest(p.WorkerID, p.LeaseTTL); err != nil {
@@ -64,7 +67,7 @@ func (p *Processor) RunOnce(ctx context.Context) (Job, error) {
 	go p.heartbeat(runCtx, &leaseMu, &claimed, cancel, heartbeatErr, heartbeatDone)
 
 	if job.TargetEventSequence == 0 {
-		if p.TargetResolver == nil {
+		if nilInterface(p.TargetResolver) {
 			cancel()
 			<-heartbeatDone
 			if heartbeatFailure := readHeartbeatError(heartbeatErr); heartbeatFailure != nil {
