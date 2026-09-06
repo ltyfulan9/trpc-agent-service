@@ -64,7 +64,7 @@ func newSummaryCompletionFixture(t *testing.T) summaryCompletionFixture {
 	message := &reliable.InboxMessage{
 		TenantID: tenantID, AgentApp: "support", ChannelType: "telegram", ChannelAccountID: "bot-1",
 		ExternalMessageID: "update-1", ConversationID: "chat-1", ReplyToID: "reply-1",
-		UserID: "owner-1", SessionID: "session-1", PayloadHash: strings.Repeat("a", 64), Payload: []byte(`{"content":"hello"}`),
+		UserID: "owner-1", SessionOwnerID: "owner-1", SessionID: "session-1", PayloadHash: strings.Repeat("a", 64), Payload: []byte(`{"content":"hello"}`),
 	}
 	if inserted, err := store.EnqueueInbox(ctx, message); err != nil || !inserted {
 		t.Fatalf("enqueue atomic completion fixture: inserted=%v err=%v", inserted, err)
@@ -73,10 +73,14 @@ func newSummaryCompletionFixture(t *testing.T) summaryCompletionFixture {
 	if err != nil || claim == nil || claim.ID != message.ID {
 		t.Fatalf("claim atomic completion fixture: claim=%+v err=%v", claim, err)
 	}
-	return summaryCompletionFixture{db: db, ctx: ctx, store: store, claim: claim, receipt: summarycoord.EnqueueRequest{
+	receipt := summarycoord.EnqueueRequest{
 		Key:            summarycoord.Key{TenantID: tenantID, AgentAppID: appID, SessionOwnerID: claim.SessionOwnerID, SessionID: claim.SessionID, SessionIncarnationID: uuid.NewString()},
 		AgentVersionID: versionID, TargetEventSequence: 4,
-	}}
+	}
+	if err := receipt.Validate(); err != nil {
+		t.Fatalf("invalid atomic completion fixture receipt: %v", err)
+	}
+	return summaryCompletionFixture{db: db, ctx: ctx, store: store, claim: claim, receipt: receipt}
 }
 
 func assertSummaryCompletionRows(t *testing.T, fixture summaryCompletionFixture, wantStatus string, wantOutbox, wantJobs int) {
