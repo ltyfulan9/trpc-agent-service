@@ -1,6 +1,6 @@
 # Enterprise Multi-Tenant Agent Platform
 
-[![verify](https://github.com/ltyfulan9/trpc-agent-service/actions/workflows/verify.yml/badge.svg?branch=main)](https://github.com/ltyfulan9/trpc-agent-service/actions/workflows/verify.yml)
+[![verify](https://github.com/ltyfulan9/trpc-agent-service/actions/workflows/verify.yml/badge.svg)](https://github.com/ltyfulan9/trpc-agent-service/actions/workflows/verify.yml)
 
 本目录以较小、边界清楚的实现为基线，吸收另一版本中有效的治理 Plugin、控制面和运维设计，并重建了可靠消息主链路。它是一个可继续工程化的候选实现，不以文件数量或文档长度声称“生产就绪”。
 
@@ -9,6 +9,11 @@
 评委建议阅读顺序：先看 [评委快速摘要](docs/JUDGE_QUICKSTART.md)，再看 [决赛架构设计](docs/COMPETITION_SUBMISSION.md)、[验收证据矩阵](docs/ACCEPTANCE_EVIDENCE.md)、[核心数据模型](docs/DATA_MODEL.md)、[风险登记册](docs/RISK_REGISTER.md)、[安全审计](docs/SECURITY_REVIEW.md) 和 [最终交接](ENTERPRISE_PLATFORM_HANDOFF.md)。每项能力明确区分本机实测、源码已闭环但待目标环境验收和外部依赖未验收，避免用单测或模拟器冒充生产证据。
 
 ## 1. 运行架构
+
+`cmd/*/main.go` 是进程级组合根：每个目录编译为独立镜像和部署单元，负责配置、
+依赖装配、HTTP/后台循环和生命周期；共享领域规则全部位于 `pkg/*`。因此多个
+`main` 表示独立故障域与扩缩容边界，不是重复实现。`cmd` 包禁止互相导入，跨进程
+协作只能通过 PostgreSQL、Redis、内部认证 HTTP 或受控 Provider 接口完成。
 
 ```mermaid
 flowchart LR
@@ -43,6 +48,8 @@ IM webhook
 ```
 
 Gateway 生产入口不再直接调用 Worker，也不在返回 200 后启动不可追踪 goroutine。Worker 无需 sticky session；租户选择的共享 SessionService 与 MemoryService 均注入 tRPC Runner，`appName`、session ID、消息幂等键均包含租户/通道账户作用域。同一 tenant/app/user/session 的完整 Runner 调用持有可续约 Redis lease，避免只锁 AppendEvent 却让模型/工具并发交错。
+
+`cmd/*/main.go` 的多个入口是有意的服务组合根：Gateway、Consumer、Worker、Summary Worker、Delivery、Admin、Migrate、Replay 和 Release Verify 分别拥有独立的生命周期、权限、健康检查、扩缩容和镜像边界。它们不复制领域逻辑，也不互相导入 `cmd` 包；共享协议、状态机和基础设施适配器只放在 `pkg/*`，由各入口显式装配。这样既保持进程级故障隔离，也允许在同一套契约测试下独立发布。完整入口职责见 [PACKAGE_MANIFEST.md](PACKAGE_MANIFEST.md)。
 
 长期记忆使用框架原生有界 preload；`memory_add`、`memory_update`、`memory_search`、`memory_load`、`memory_delete`、`memory_clear` 仅在 Agent 版本和租户 whitelist 都显式允许时，从该租户的真实 MemoryService 动态接入，调用仍受治理插件与审计约束。
 

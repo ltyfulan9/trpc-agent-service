@@ -144,7 +144,7 @@ sequenceDiagram
 
 ## 6. 数据模型、一致性与多后端
 
-核心关系是 `Tenant 1-N ChannelBinding`、`Tenant 1-N AgentApp 1-N AgentVersion`、`AgentApp 1-N Deployment`、`Session 1-N Event 1-N Summary`、`Tenant/User 1-N Memory`、`Inbox 1-0..1 Outbox`、`Tenant/App 1-N KnowledgeDocument`、`Tenant/Session 1-N ArtifactVersion`。实际字段见 [DATA_MODEL.md](DATA_MODEL.md) 与 migrations 001–042。
+核心关系是 `Tenant 1-N ChannelBinding`、`Tenant 1-N AgentApp 1-N AgentVersion`、`AgentApp 1-N Deployment`、`Session 1-N Event 1-N Summary`、`Tenant/User 1-N Memory`、`Inbox 1-0..1 Outbox`、`Tenant/App 1-N KnowledgeDocument`、`Tenant/Session 1-N ArtifactVersion`。实际字段见 [DATA_MODEL.md](DATA_MODEL.md) 与 migrations 001–043。
 
 | 数据 | 推荐后端 | 一致性 | 关键策略 |
 |---|---|---|---|

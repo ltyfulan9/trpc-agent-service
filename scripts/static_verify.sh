@@ -12,6 +12,10 @@ fi
 for command in gateway worker summary-worker consumer delivery admin migrate replay; do
   test -f "cmd/$command/main.go"
 done
+if grep -RIEq 'trpc\.group/trpc-go/trpc-agent-go/enterprise/cmd/' cmd pkg --include='*.go'; then
+  echo "cmd packages must not import another command package" >&2
+  exit 1
+fi
 for migration in migrations/*.up.sql; do
   test -f "${migration%.up.sql}.down.sql"
 done

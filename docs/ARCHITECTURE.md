@@ -8,6 +8,21 @@
 
 模型治理分为两层：本地零预算 fixture 可使用占位模型名以便测试工厂与治理流程；不可变 AgentVersion 的 publish admission 必须命中本构建绑定的 operator-approved model catalog，并记录 revision/context window。这样未知模型会在发布前失败，而不是进入队列后才在 Worker 中失败。
 
+### 1.1 多个 `main` 是独立组合根，不是重复业务实现
+
+仓库中的 `cmd/admin`、`cmd/gateway`、`cmd/consumer`、`cmd/worker`、
+`cmd/summary-worker`、`cmd/delivery`、`cmd/migrate`、`cmd/replay` 和
+`cmd/releaseverify` 分别编译为独立二进制和部署单元。每个入口只负责读取
+配置、构造依赖、注册 HTTP/后台循环、处理信号和关闭资源；租户隔离、状态机、
+fence、治理和适配器契约全部位于 `pkg/` 深模块中。入口之间不通过进程内全局
+变量共享状态，也不直接调用另一个入口的实现；跨进程协作只能经过 PostgreSQL、
+Redis、HTTP/HMAC 或受控 Provider 接口。这样既保持 Gateway/Consumer/Worker/
+Delivery 的故障域和扩缩容边界，又让单元测试可以直接穿过 `pkg/` 接口验证不变量。
+
+入口文件可以较长，但业务规则不得只存在于 `main`。新增规则必须下沉到已有
+领域模块或形成有真实适配器的深模块，并由对应的 `pkg/*_test.go` 回归；`cmd`
+层只保留组合根级别的启动失败、健康状态和生命周期编排。
+
 ## 2. 组件职责
 
 - Gateway：使用非密钥 `webhookKey` 查租户，恢复并解析所选 channel 的加密凭据/SecretRef，验签/解密，限制 body/JSON 深度/内容长度，生成租户作用域 session，提交 Inbox 后才回复 200。缺少 scoped tenant reader 时直接拒绝，不加载完整租户配置。

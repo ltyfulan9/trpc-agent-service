@@ -1,6 +1,6 @@
-# Production Architecture Review
+# Enterprise Multi-Tenant Agent Platform Architecture Review
 
-> Status: historical review record. The current implementation and acceptance
+> Status: current architecture review and decision record. The current implementation and acceptance
 > state are authoritative in `docs/ACCEPTANCE_EVIDENCE.md`,
 > `docs/PROJECT_SUMMARY_20260905.md` and `docs/ARCHITECTURE.md`. Statements
 > below describing missing adapters or unexecuted scenarios refer to the

@@ -40,7 +40,7 @@ Enterprise Multi-Tenant Agent Platform 是一套以 PostgreSQL 可靠队列和�
 
 | 能力 | 当前状态 | 主要入口 |
 |---|---|---|
-| Tenant/App/Model/Tool/Channel/Storage/Audit 模型 | LOCAL_VERIFIED | `pkg/tenant`、`pkg/controlplane`、migrations 001–042 |
+| Tenant/App/Model/Tool/Channel/Storage/Audit 模型 | LOCAL_VERIFIED | `pkg/tenant`、`pkg/controlplane`、migrations 001–043 |
 | Inbox/Outbox 幂等、顺序、租约、fence、重放 | LOCAL_VERIFIED | `pkg/reliable`、`pkg/pipeline` |
 | 无 sticky session 的多节点 Worker | LOCAL_VERIFIED | `pkg/storage`、`pkg/worker`、Session FIFO/Redis lease |
 | 企业微信加密文本 1:1 回调和主动回复 | IMPLEMENTED | `pkg/channel/wework_adapter.go` |

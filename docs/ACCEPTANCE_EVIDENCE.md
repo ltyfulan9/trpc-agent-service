@@ -28,7 +28,7 @@ Summary 的跨窗口“继续生成”仍需要上游提供绝对事件序号或
 
 | 验收项 | 实现/证据入口 | 当前证据 | 状态 |
 |---|---|---|---|
-| tenant/app/model/tool/channel/storage/audit 模型 | `pkg/tenant`, `pkg/controlplane`, migrations 001–042 | validation、RBAC、optimistic-lock、immutable version tests | LOCAL_VERIFIED |
+| tenant/app/model/tool/channel/storage/audit 模型 | `pkg/tenant`, `pkg/controlplane`, migrations 001–043 | validation、RBAC、optimistic-lock、immutable version tests | LOCAL_VERIFIED |
 | 无状态多节点与 Session 路由 | `pkg/pipeline`, `pkg/worker`, `pkg/storage` | session FIFO、Redis lease、PostgreSQL takeover/fence 集成 | LOCAL_VERIFIED |
 | Inbox/Outbox 幂等与乱序 | `pkg/reliable`, migrations 002/013–016/033–036 | 重复、payload conflict、分段 cursor、过期接管、fair queue 测试 | LOCAL_VERIFIED |
 | 企业微信 | `pkg/channel/wework_adapter.go`、Gateway/Delivery composition | URL verify、签名、AES、CorpID、分段契约自动化 | IMPLEMENTED |
