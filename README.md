@@ -51,6 +51,8 @@ Gateway 生产入口不再直接调用 Worker，也不在返回 200 后启动不
 
 `cmd/*/main.go` 的多个入口是有意的服务组合根：Gateway、Consumer、Worker、Summary Worker、Delivery、Admin、Migrate、Replay 和 Release Verify 分别拥有独立的生命周期、权限、健康检查、扩缩容和镜像边界。它们不复制领域逻辑，也不互相导入 `cmd` 包；共享协议、状态机和基础设施适配器只放在 `pkg/*`，由各入口显式装配。这样既保持进程级故障隔离，也允许在同一套契约测试下独立发布。完整入口职责见 [PACKAGE_MANIFEST.md](PACKAGE_MANIFEST.md)。
 
+Admin 与 Worker 的组合根已进一步收敛：入口 `main.go` 只负责调用启动函数，配置、HTTP 适配、进程私有策略和运行时装配分别位于同目录的 `config.go`、`http.go`、`policy.go` 与 `bootstrap.go`（Admin 使用对应的 `admin_*` 文件名）。这降低了启动代码与协议/策略代码的修改耦合，同时不增加进程数量或改变跨进程边界。
+
 长期记忆使用框架原生有界 preload；`memory_add`、`memory_update`、`memory_search`、`memory_load`、`memory_delete`、`memory_clear` 仅在 Agent 版本和租户 whitelist 都显式允许时，从该租户的真实 MemoryService 动态接入，调用仍受治理插件与审计约束。
 
 ## 2. 已落地的关键能力

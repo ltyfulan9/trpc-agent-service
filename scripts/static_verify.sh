@@ -24,12 +24,12 @@ test -f deploy/kubernetes/runtime-data-plane-config.yaml
 for policy in default-deny gateway-boundaries consumer-boundaries worker-boundaries worker-runtime-data-plane-egress summary-worker-boundaries delivery-boundaries admin-boundaries; do
   grep -q "name: $policy" deploy/kubernetes/network-policies.yaml
 done
-grep -q 'ADMIN_PRINCIPALS_JSON' cmd/admin/main.go
-grep -q 'WORKER_CACHE_SIZE' cmd/worker/main.go
-grep -q 'STORAGE_BACKEND_PROFILES' cmd/worker/main.go
-grep -q 'DATA_PLANE_PROFILES' cmd/worker/main.go
-grep -q 'EXECUTION_LEASE_TTL' cmd/worker/main.go
-grep -q 'EXECUTION_HEARTBEAT_INTERVAL' cmd/worker/main.go
+grep -q 'ADMIN_PRINCIPALS_JSON' cmd/admin/admin_bootstrap.go
+grep -q 'WORKER_CACHE_SIZE' cmd/worker/bootstrap.go
+grep -q 'STORAGE_BACKEND_PROFILES' cmd/worker/bootstrap.go
+grep -q 'DATA_PLANE_PROFILES' cmd/worker/bootstrap.go
+grep -q 'EXECUTION_LEASE_TTL' cmd/worker/bootstrap.go
+grep -q 'EXECUTION_HEARTBEAT_INTERVAL' cmd/worker/bootstrap.go
 while IFS= read -r -d '' source_file; do
   set +e
   grep -HnIE 'TODO|FIXME|not implemented' "$source_file"

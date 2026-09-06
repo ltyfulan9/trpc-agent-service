@@ -23,6 +23,12 @@ Delivery 的故障域和扩缩容边界，又让单元测试可以直接穿过 `
 领域模块或形成有真实适配器的深模块，并由对应的 `pkg/*_test.go` 回归；`cmd`
 层只保留组合根级别的启动失败、健康状态和生命周期编排。
 
+当前 Admin/Worker 已按这一原则收敛：`cmd/*/main.go` 仅调用进程组合根；
+`admin_bootstrap.go`/`bootstrap.go` 负责依赖装配与生命周期，`admin_http.go`/`http.go`
+负责协议适配，`admin_policy.go`/`policy.go` 负责进程私有策略，`admin_config.go`/
+`config.go` 负责配置解析。跨进程共享的租户、队列、执行、治理和存储不放回
+`cmd`，仍由 `pkg/*` 深模块提供。
+
 ## 2. 组件职责
 
 - Gateway：使用非密钥 `webhookKey` 查租户，恢复并解析所选 channel 的加密凭据/SecretRef，验签/解密，限制 body/JSON 深度/内容长度，生成租户作用域 session，提交 Inbox 后才回复 200。缺少 scoped tenant reader 时直接拒绝，不加载完整租户配置。
