@@ -731,8 +731,23 @@ func TestSummaryWorkerAlertContracts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(slo), "### Summary generation") {
-		t.Error("SLO runbook is missing the Summary generation section")
+	_, summarySection, found := strings.Cut(strings.ReplaceAll(string(slo), "\r\n", "\n"), "<a id=\"summary-generation\"></a>\n")
+	summarySection = strings.TrimLeft(summarySection, "\n")
+	if !found || !strings.HasPrefix(summarySection, "### ") {
+		t.Fatal("SLO runbook is missing the linked Summary generation section")
+	}
+	summarySection, _, _ = strings.Cut(summarySection, "\n### ")
+	for _, required := range []string{
+		"agent_summary_runs_total",
+		"agent_summary_run_duration_seconds",
+		"summary_jobs",
+		"summary_checkpoints.max_event_sequence",
+		"SUMMARY_CONCURRENCY",
+		"lease/retry",
+	} {
+		if !strings.Contains(summarySection, required) {
+			t.Errorf("Summary recovery guidance is missing %q", required)
+		}
 	}
 }
 
