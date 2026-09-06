@@ -1,120 +1,68 @@
-# Verification Baseline
+# 验证指南
 
-Updated: 2026-09-06 (Asia/Shanghai)
+本指南适用于 Enterprise Multi-Tenant Agent Platform 的源码包和仓库。功能断言见 [验收证据](ACCEPTANCE_EVIDENCE.md)，目标部署见 [验收 Runbook](EXTERNAL_ACCEPTANCE_RUNBOOK.md)。所有命令在源码根目录执行。
 
-This is the current verification baseline for Enterprise Multi-Tenant Agent Platform.
-The item-by-item matrix is authoritative in [ACCEPTANCE_EVIDENCE.md](ACCEPTANCE_EVIDENCE.md);
-architecture contracts are in [ARCHITECTURE.md](ARCHITECTURE.md) and [DATA_MODEL.md](DATA_MODEL.md).
-Historical machine-repair notes and intermediate runs are retained only under archive/.
+## 1. 环境
 
-## Evidence vocabulary
+模块兼容基线为 Go 1.25.14，构建与安全门禁使用 Go 1.26.7。完整验证还需要 Bash、Docker 和 Docker Compose。解压源码不包含 Git 元数据，Go 命令使用 `-buildvcs=false`。
 
-| Status | Meaning |
-|---|---|
-| `LOCAL_VERIFIED` | Current source or a reproducible local fixture passed with exit code and post-state. |
-| `IMPLEMENTED` | Production path and automated regression exist; target account/infrastructure is still needed. |
-| `EXTERNAL_REQUIRED` | Requires target identity, network, provider, or operator action; tests and fakes cannot upgrade it. |
+## 2. 提交包源码验证
 
-Every result must be scoped by date, command, environment, and evidence source. A later
-code change requires rerunning the affected gate.
+```powershell
+go test -buildvcs=false -count=1 -p 1 ./...
+go vet -p 1 ./...
+go test -buildvcs=false -race -count=1 -p 1 ./...
+go run -buildvcs=false ./cmd/demo
+```
 
-## Current source gate
+交付包 `verification-evidence/current-validation.log` 保存上述命令的工具链、时间、输出和退出码。常规测试包含测试内启动的本地 HTTP/MCP 服务；`cmd/demo` 使用 `MemoryStore` 展示租约接管、旧 fence 拒绝、Inbox/Outbox 状态转换与未知发送结果处理。
 
-Run from a fresh checkout or extracted `platform-source` directory. The source archive
-does not include Git metadata, so VCS stamping is disabled.
+## 3. 完整源码门禁
 
 ```bash
-go version                         # production baseline: go1.26.7
+go version
 go mod verify
 test -z "$(gofmt -l cmd pkg migrations test)"
 go build -buildvcs=false -p 1 ./cmd/...
 go vet -p 1 ./...
 go test -buildvcs=false -count=1 -p 1 ./...
 go test -buildvcs=false -race -count=1 -p 1 ./...
-go test -buildvcs=false -tags=integration -count=1 -p 1 ./test/integration
 bash ./scripts/static_verify.sh
-docker compose -f deploy/docker-compose.yml config
 ```
 
-`scripts/validate.sh` is the aggregate gate when Go, Bash, and Docker are available.
-The module compatibility floor is Go 1.25.14; production build/security gates use Go
-1.26.7. Record each stage independently; a shell parse is not a runtime validation.
+race 检查需要当前平台支持的 C 工具链。每个门禁分别记录退出码；CI 配置位于 [verify.yml](../.github/workflows/verify.yml)。
 
-## Windows C-drive path
+## 4. 后端集成与部署检查
+
+使用 Docker 启动测试所需的 PostgreSQL、Redis、Qdrant 和 MinIO，按测试配置提供连接参数，然后执行：
+
+```bash
+go test -buildvcs=false -tags=integration -count=1 -p 1 ./test/integration
+```
+
+集成测试覆盖队列持久化、Session 迁移、Summary→Runner、Knowledge、Artifact 和数据投影，模型及 embedding 使用本地协议服务。具体环境变量与自动启动流程以 [validate.sh](../scripts/validate.sh) 为准；该脚本同时汇总源码检查、后端集成、镜像构建和 Prometheus 规则检查：
+
+```bash
+bash ./scripts/validate.sh
+```
+
+Windows 可使用隔离环境脚本启动应用栈：
 
 ```powershell
-Set-Location <source-root>
-.\scripts\run_c_local_stack.ps1 -ProjectName agent-platform-c-local -Build
-bash ./scripts/validate.sh
-.\scripts\run_c_local_stack.ps1 -ProjectName agent-platform-c-local -Down
+.\scripts\run_c_local_stack.ps1 -ProjectName agent-platform-local -Build
+.\scripts\run_c_local_stack.ps1 -ProjectName agent-platform-local -Down
 ```
 
-The helper resolves the root from `$PSScriptRoot`, injects one-time process values and
-uses isolated ports. The aggregate Bash gate requires a working Bash and Docker
-installation; when Bash is unavailable, run the PowerShell-equivalent static checks
-and the Go gates separately, and record that limitation. The helper does not read or write E:.
-Compose without an operator `.env`
-must fail closed. Real `deploy/.env.wecom.local` and provider credentials are excluded.
+脚本按自身位置定位源码，使用独立端口和一次性测试配置。启动后检查 migration 退出码、服务 health、Prometheus targets/rules 和容器 restart count。正式环境的密码与 Provider 凭据由部署方注入。
 
-## Functional contracts
+## 5. 演示与基准
 
-- Gateway verifies and normalizes WeCom/Telegram callbacks, commits a tenant-scoped
-  Inbox before acknowledgement, and fixes reply routing at ingress.
-- PostgreSQL owns Inbox/Outbox idempotency, payload conflict detection, session FIFO,
-  leases, monotonic fences, retries, DLQ, and audited replay.
-- Worker resolves immutable AgentVersion/deployment, holds a renewable Session lease,
-  and persists results under tenant/owner scope. Unknown side effects enter reconciliation.
-- Admin RBAC, tenant allowlists, SecretRef purpose/provider/model bindings, and
-  Worker-only credential resolution fail closed.
-- Built-in `llm`, `chain`, `graph`, `parallel`, and `cycle` factories validate
-  topology, budgets, allowlists, and bounded iteration. Custom factories bind capability
-  fingerprints to immutable versions.
-- Summary freezes an exact event boundary and publishes a fenced checkpoint. If an upstream
-  sliding window cannot prove absolute sequence, it returns `ErrTranscriptIncomplete`.
-- Qdrant, S3/MinIO, Redis-to-PostgreSQL Session projection, and migration markers are
-  tenant/app scoped; projection markers include migration identity.
-- Governance Plugin is the single Tool admission point for approval, budget, redaction,
-  and audit. HMAC binds method/path/body/trace context and consumes one-time nonces.
-- Compose/Kubernetes use non-root, read-only roots, dropped capabilities, default-deny
-  policy, and digest-pinned rendered releases; `releaseverify` rejects mutable images.
+- [故障恢复演示](DEMO.md)：无需账号，观察内存状态机的接管与结果核对行为。
+- [本地可靠性基准](BENCHMARK.md)：测量 `MemoryStore` 操作耗时与分配，用于同条件下的实现回归比较。
+- [SLI/SLO](SLO.md)：定义目标部署中的队列延迟、处理成功率、错误预算与告警处置。
 
-## Local backend evidence
+## 6. 结果记录与打包
 
-`test/integration` uses disposable PostgreSQL, Redis, Qdrant, and MinIO and a local
-OpenAI-compatible model fixture. It proves queue fencing, Session projection, Knowledge,
-Artifact, Summary-to-Runner, and MCP governance for that fixture. It does not prove a
-cloud provider, real IM account, HA failover, or production capacity.
+结果记录包含源码快照、Go 版本、环境、开始/结束时间、命令、退出码和必要后状态。源码测试、真实后端、部署与外部账号验收分别标注运行范围。
 
-C-local Compose additionally checks migration completion, health probes, Prometheus
-targets/rules, and restart state when Docker is available. Save command output and
-container post-state with a dated evidence log; historical logs apply only to the exact
-source and environment recorded.
-
-## External acceptance gates
-
-1. WeCom/Telegram URL verification, encrypted callback, duplicate delivery, retries, and real reply.
-2. Production OIDC/IAP/mTLS, KMS/Vault identity, least privilege, rotation, and audit sink.
-3. Kubernetes/service-mesh rollout, rollback, strict peer identity, certificates, and private egress.
-4. PostgreSQL/Redis failover, PITR/DR, reconciliation, migration rollback window, and RPO/RTO.
-5. Real payload capacity, provider latency, throughput, queue lag, resources, and cost.
-6. Business MCP authentication, allowlist, quota, idempotency, timeout, and SLA.
-
-Use [EXTERNAL_ACCEPTANCE_RUNBOOK.md](EXTERNAL_ACCEPTANCE_RUNBOOK.md) in its specified
-order. Evidence may contain timestamps, exit codes, digests, trace IDs, and redacted status
-only; never store secrets, cookies, database URLs, JWTs, or message bodies.
-
-## Delivery reproducibility
-
-Run `scripts/package_all_materials.ps1` after the final commit. It recomputes inventory
-and SHA-256, excludes archive/runtime data/credentials/binaries/nested archives, then
-performs fresh extraction and secret-signature checks. Package counts are inventory metadata,
-not acceptance evidence. The package inventory, SHA-256 list, and build result must agree.
-
-The public repository must expose the same final commit as the package. Record
-`git rev-parse HEAD` from a fresh clone; a stale default branch is a reproducibility failure.
-
-## Historical records
-
-Earlier dated logs under archive/ may mention older Go versions, Docker repairs, temporary
-registry names, K3d/Vault experiments, or incomplete source states. They must not override
-the current matrix or be used to claim external or production acceptance.
+[打包脚本](../scripts/package_all_materials.ps1) 生成文件清单和 SHA-256，检查新目录解包结果及秘密签名。归档包含源码、当前文档和验证证据，排除真实环境文件、运行时数据库、凭据、缓存和构建产物。交付清单中的源码身份用于对应仓库和压缩包。

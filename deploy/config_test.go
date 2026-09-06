@@ -1,6 +1,7 @@
 package deploy_test
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -163,6 +164,62 @@ func TestComposeWorkerUsesProfileAndExecutionLeaseContracts(t *testing.T) {
 	}
 	if _, stale := worker.Environment["EXECUTION_STALE_AFTER"]; stale {
 		t.Error("worker still exposes the removed EXECUTION_STALE_AFTER setting")
+	}
+}
+
+func TestShellScriptsUsePortableUnixEncoding(t *testing.T) {
+	files, err := filepath.Glob(filepath.Join("..", "scripts", "*.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) == 0 {
+		t.Fatal("no shell entrypoints found")
+	}
+	for _, filename := range files {
+		t.Run(filepath.Base(filename), func(t *testing.T) {
+			data, err := os.ReadFile(filename)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bytes.ContainsRune(data, '\r') {
+				t.Error("shell entrypoint contains CR bytes; Linux requires LF line endings")
+			}
+			if !bytes.HasPrefix(data, []byte("#!/usr/bin/env bash\n")) {
+				t.Error("shell entrypoint must start with an LF-terminated shebang without a BOM")
+			}
+		})
+	}
+}
+
+func TestComposeSharesAuditIdentityKeyOnlyWithGatewayAndWorker(t *testing.T) {
+	data, err := os.ReadFile("docker-compose.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var compose struct {
+		Services map[string]struct {
+			Environment map[string]string `yaml:"environment"`
+		} `yaml:"services"`
+	}
+	if err := yaml.Unmarshal(data, &compose); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"gateway", "worker"} {
+		service, ok := compose.Services[name]
+		if !ok {
+			t.Fatalf("compose manifest has no %s service", name)
+		}
+		if got := service.Environment["AUDIT_IDENTITY_HMAC_KEY"]; got != "${AUDIT_IDENTITY_HMAC_KEY:-}" {
+			t.Errorf("%s audit identity key binding=%q, want shared operator configuration", name, got)
+		}
+	}
+	for name, service := range compose.Services {
+		if name == "gateway" || name == "worker" {
+			continue
+		}
+		if _, found := service.Environment["AUDIT_IDENTITY_HMAC_KEY"]; found {
+			t.Errorf("non-audit service %s receives the identity HMAC key", name)
+		}
 	}
 }
 

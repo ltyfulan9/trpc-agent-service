@@ -78,6 +78,7 @@ services:
       PORT: "8080"
       FAIR_QUEUE_ENABLED: ${FAIR_QUEUE_ENABLED:-false}
       MASTER_KEY: ${MASTER_KEY:?set MASTER_KEY in .env}
+      AUDIT_IDENTITY_HMAC_KEY: ${AUDIT_IDENTITY_HMAC_KEY:-}
       # Gateway resolves only the selected callback binding. Secret values stay
       # outside tenant JSON and are never mounted into Consumer/Admin.
       TRPC_SECRET_WECOM_TOKEN: ${TRPC_SECRET_WECOM_TOKEN:-}

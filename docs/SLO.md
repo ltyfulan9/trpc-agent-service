@@ -1,6 +1,6 @@
 # SLI、SLO、告警与 Runbook
 
-这些目标是上线门槛，不是本压缩包已经测得的成绩。PromQL 必须在目标环境产生真实流量后验证。
+本页定义目标部署的服务等级、指标计算和故障处置。SLO 在目标环境按连续 30 天流量评估；验收时检查 PromQL、告警路由与通知可达性。
 
 ## 服务目标
 
@@ -14,7 +14,7 @@
 | Inbox queue lag p99 | < 120s | `histogram_quantile(.99,sum by(le)(rate(agent_pipeline_queue_lag_seconds_bucket{stage="consumer"}[10m])))` |
 | Outbox queue lag p99 | < 60s | 同上，`stage="delivery"` |
 | Automatic queue depth / oldest age | 按租户容量基线设阈值 | `agent_pipeline_queue_depth{queue=~"inbox|outbox"}` 与 `agent_pipeline_queue_oldest_age_seconds{queue=~"inbox|outbox"}`；由 Consumer/Delivery 的 QueueInspector 快照更新 |
-| stale-fence commit | = 0 正常态 | `increase(agent_pipeline_fence_rejections_total[10m])` |
+| stale-fence rejection | = 0 正常态；接管演练按预期出现 | `increase(agent_pipeline_fence_rejections_total[10m])`，统计被拒绝的旧写入 |
 | Worker cache saturation | = 0 正常态 | `increase(agent_worker_cache_saturation_total[5m])` |
 | execution reconciler errors | = 0 正常态 | `increase(agent_execution_reconcile_errors_total[10m])` |
 | Summary attempt success rate | > 80%，且连续失败 < 5/10m | `1 - sum(increase(agent_summary_runs_total{result="failed"}[10m])) / clamp_min(sum(increase(agent_summary_runs_total[10m])),1)` |
@@ -29,11 +29,11 @@
 - 1h burn rate > 14.4 且 5m > 14.4：Page，冻结发布。
 - 6h > 6 且 30m > 6：Page，排查供应商/数据库。
 - 3d > 1：Ticket，本周期只能做可靠性工作。
-- 消耗 50%：停止非必要灰度；消耗 75%：自动回滚最新 DeploymentSet；100%：变更冻结并事故复盘。
+- 消耗 50%：停止非必要灰度；消耗 75%：运维核对变更关联性后执行兼容版本回滚；100%：变更冻结并事故复盘。
 
-## 已接入的最小告警规则
+## 告警规则
 
-Inbox/Outbox lag、自动队列 oldest-age、queue inspection failure、租户队列容量拒绝、retry storm、fence rejection、Summary 失败/耗时以及 Gateway 5m/1h fast-burn、30m/6h slow-burn 规则已落在 `deploy/prometheus-rules.yml`，并由 `deploy/prometheus.yml` 的 `rule_files` 加载。pipeline 与 Summary duration bucket 显式覆盖 30/60/120/300 秒，否则 Prometheus 默认最大约 10 秒 bucket 无法量化这里的 Agent SLO。`validate.sh` 用 `promtool` 检查规则语法。压缩包没有内置 PagerDuty/企业微信等 Alertmanager receiver；目标环境必须配置路由后才能声称告警可达。
+Inbox/Outbox lag、自动队列 oldest-age、queue inspection failure、租户队列容量拒绝、retry storm、fence rejection、Summary 失败/耗时以及 Gateway 5m/1h fast-burn、30m/6h slow-burn 规则位于 `deploy/prometheus-rules.yml`，由 `deploy/prometheus.yml` 的 `rule_files` 加载。pipeline 与 Summary duration bucket 覆盖 30/60/120/300 秒。`validate.sh` 使用 `promtool` 检查规则语法；部署时配置 Alertmanager receiver 和通知路由，并触发测试告警验证接收端。
 
 核心片段如下，完整规则以 `deploy/prometheus-rules.yml` 为准：
 
@@ -101,9 +101,9 @@ SELECT 'outbox', count(*) FROM outbox_messages WHERE status IN ('DEAD_LETTERED',
 
 ### Audit/result persistence failure
 
-1. Worker 对 result cache 失败返回 503，检查 PostgreSQL。
-2. 工具可能已产生外部副作用；重试前按 idempotency key 查询目标系统。
-3. 对危险工具没有业务幂等证据时，转人工处置。
+1. 检查 PostgreSQL 和 execution 状态，区分 Runner 启动前的读取失败与执行后的结果提交失败。
+2. 启动前且明确标记 retry-safe 的失败按策略重试；执行后结果未知进入 reconciliation，按 idempotency key 查询目标系统。
+3. 核对工具副作用与持久化结果后执行审计恢复；危险工具缺少业务幂等证据时转人工处置。
 
 ### Worker cache saturation
 

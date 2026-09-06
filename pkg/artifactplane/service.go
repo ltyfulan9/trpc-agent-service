@@ -17,6 +17,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/google/uuid"
 	"trpc.group/trpc-go/trpc-agent-go/artifact"
 	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/tenant"
 )
@@ -48,7 +49,7 @@ func NewService(tenantID string, db *sql.DB, objects ObjectStore, maxBytes int64
 	return &Service{tenantID: tenantID, db: db, objects: objects, maxBytes: maxBytes}, nil
 }
 
-func (s *Service) SaveArtifact(ctx context.Context, info artifact.SessionInfo, filename string, value *artifact.Artifact) (int, error) {
+func (s *Service) SaveArtifact(ctx context.Context, info artifact.SessionInfo, filename string, value *artifact.Artifact) (savedVersion int, err error) {
 	if err := s.validate(info, filename); err != nil {
 		return 0, err
 	}
@@ -74,23 +75,22 @@ func (s *Service) SaveArtifact(ctx context.Context, info artifact.SessionInfo, f
 		s.tenantID, info.AppName, info.UserID, info.SessionID, filename).Scan(&version); err != nil {
 		return 0, fmt.Errorf("allocate artifact version: %w", err)
 	}
-	objectKey := objectKey(s.tenantID, info, filename, version)
+	key := newObjectKey(s.tenantID, info, filename, version)
 	body := append([]byte(nil), value.Data...)
-	if err = s.objects.Put(ctx, objectKey, mediaType, body); err != nil {
-		return 0, fmt.Errorf("store artifact body: %w", err)
-	}
 	committed := false
 	defer func() {
 		if !committed {
-			cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-			defer cancel()
-			_ = s.objects.Delete(cleanup, objectKey)
+			_ = tx.Rollback()
+			err = errors.Join(err, s.cleanupUnreferencedObject(ctx, info, filename, version, key))
 		}
 	}()
+	if err = s.objects.Put(ctx, key, mediaType, body); err != nil {
+		return 0, fmt.Errorf("store artifact body: %w", err)
+	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO artifact_versions
 		(tenant_id,app_name,user_id,session_id,filename,version,object_key,mime_type,size_bytes,content_sha256)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-		s.tenantID, info.AppName, info.UserID, info.SessionID, filename, version, objectKey, mediaType, int64(len(body)), hashBytes(body)); err != nil {
+		s.tenantID, info.AppName, info.UserID, info.SessionID, filename, version, key, mediaType, int64(len(body)), hashBytes(body)); err != nil {
 		return 0, fmt.Errorf("persist artifact metadata: %w", err)
 	}
 	if err = tx.Commit(); err != nil {
@@ -102,9 +102,9 @@ func (s *Service) SaveArtifact(ctx context.Context, info artifact.SessionInfo, f
 
 // ProjectVersion writes an exact immutable artifact version. It is intended
 // for migration replay, where allocating a new version would corrupt source
-// history. Replaying identical bytes repairs the deterministic object body;
+// history. Replaying identical bytes repairs the recorded object body;
 // reusing a version for different content fails closed.
-func (s *Service) ProjectVersion(ctx context.Context, info artifact.SessionInfo, filename string, version int, value *artifact.Artifact) error {
+func (s *Service) ProjectVersion(ctx context.Context, info artifact.SessionInfo, filename string, version int, value *artifact.Artifact) (err error) {
 	if err := s.validate(info, filename); err != nil {
 		return err
 	}
@@ -122,13 +122,13 @@ func (s *Service) ProjectVersion(ctx context.Context, info artifact.SessionInfo,
 		return fmt.Errorf("lock artifact projection: %w", err)
 	}
 
-	var existingMIME, existingHash string
+	var existingMIME, existingHash, key string
 	var existingSize int64
 	var deletedAt sql.NullTime
-	err = tx.QueryRowContext(ctx, `SELECT mime_type,size_bytes,content_sha256,deleted_at FROM artifact_versions
+	err = tx.QueryRowContext(ctx, `SELECT mime_type,size_bytes,content_sha256,deleted_at,object_key FROM artifact_versions
 		WHERE tenant_id=$1 AND app_name=$2 AND user_id=$3 AND session_id=$4 AND filename=$5 AND version=$6
 		FOR UPDATE`, s.tenantID, info.AppName, info.UserID, info.SessionID, filename, version).Scan(
-		&existingMIME, &existingSize, &existingHash, &deletedAt,
+		&existingMIME, &existingSize, &existingHash, &deletedAt, &key,
 	)
 	exists := err == nil
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -139,19 +139,20 @@ func (s *Service) ProjectVersion(ctx context.Context, info artifact.SessionInfo,
 		return ErrArtifactVersionConflict
 	}
 
-	key := objectKey(s.tenantID, info, filename, version)
-	if err = s.objects.Put(ctx, key, mediaType, body); err != nil {
-		return fmt.Errorf("store projected artifact body: %w", err)
+	if !exists {
+		key = newObjectKey(s.tenantID, info, filename, version)
 	}
 	removeOnFailure := !exists
 	committed := false
 	defer func() {
 		if removeOnFailure && !committed {
-			cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-			defer cancel()
-			_ = s.objects.Delete(cleanup, key)
+			_ = tx.Rollback()
+			err = errors.Join(err, s.cleanupUnreferencedObject(ctx, info, filename, version, key))
 		}
 	}()
+	if err = s.objects.Put(ctx, key, mediaType, body); err != nil {
+		return fmt.Errorf("store projected artifact body: %w", err)
+	}
 	if !exists {
 		if _, err = tx.ExecContext(ctx, `INSERT INTO artifact_versions
 			(tenant_id,app_name,user_id,session_id,filename,version,object_key,mime_type,size_bytes,content_sha256)
@@ -272,8 +273,8 @@ func (s *Service) DeleteArtifact(ctx context.Context, info artifact.SessionInfo,
 	if _, err = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, artifactScope(s.tenantID, info, filename)); err != nil {
 		return err
 	}
-	rows, err := tx.QueryContext(ctx, `UPDATE artifact_versions SET deleted_at=clock_timestamp()
-		WHERE tenant_id=$1 AND app_name=$2 AND user_id=$3 AND session_id=$4 AND filename=$5 AND deleted_at IS NULL RETURNING object_key`,
+	rows, err := tx.QueryContext(ctx, `UPDATE artifact_versions SET deleted_at=COALESCE(deleted_at,clock_timestamp())
+		WHERE tenant_id=$1 AND app_name=$2 AND user_id=$3 AND session_id=$4 AND filename=$5 RETURNING object_key`,
 		s.tenantID, info.AppName, info.UserID, info.SessionID, filename)
 	if err != nil {
 		return fmt.Errorf("tombstone artifact: %w", err)
@@ -287,18 +288,23 @@ func (s *Service) DeleteArtifact(ctx context.Context, info artifact.SessionInfo,
 		}
 		keys = append(keys, key)
 	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("read tombstoned artifact keys: %w", err)
+	}
 	if err := rows.Close(); err != nil {
 		return err
 	}
 	if err = tx.Commit(); err != nil {
 		return fmt.Errorf("commit artifact tombstone: %w", err)
 	}
+	var deleteErrors []error
 	for _, key := range keys {
 		if err := s.objects.Delete(ctx, key); err != nil {
-			return fmt.Errorf("delete tombstoned artifact body: %w", err)
+			deleteErrors = append(deleteErrors, fmt.Errorf("delete tombstoned artifact body: %w", err))
 		}
 	}
-	return nil
+	return errors.Join(deleteErrors...)
 }
 
 func (s *Service) ListVersions(ctx context.Context, info artifact.SessionInfo, filename string) ([]int, error) {
@@ -368,6 +374,40 @@ func objectKey(tenantID string, info artifact.SessionInfo, filename string, vers
 	encode := func(v string) string { return base64.RawURLEncoding.EncodeToString([]byte(v)) }
 	return fmt.Sprintf("tsa-artifacts/v1/%s/%s/%s/%s/%s/%020d", encode(tenantID), encode(info.AppName), encode(info.UserID), encode(info.SessionID), encode(filename), version)
 }
+
+func newObjectKey(tenantID string, info artifact.SessionInfo, filename string, version int) string {
+	// A delayed cleanup from an uncertain write must never target a later
+	// writer that allocated the same logical version after a rollback.
+	return objectKey(tenantID, info, filename, version) + "/" + uuid.NewString()
+}
+
+func (s *Service) cleanupUnreferencedObject(ctx context.Context, info artifact.SessionInfo, filename string, version int, key string) error {
+	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	tx, err := s.db.BeginTx(cleanup, nil)
+	if err != nil {
+		return fmt.Errorf("begin artifact cleanup verification: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(cleanup, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, artifactScope(s.tenantID, info, filename)); err != nil {
+		return fmt.Errorf("lock artifact cleanup: %w", err)
+	}
+	var referenced int
+	err = tx.QueryRowContext(cleanup, `SELECT 1 FROM artifact_versions
+		WHERE tenant_id=$1 AND app_name=$2 AND user_id=$3 AND session_id=$4 AND filename=$5 AND version=$6 AND object_key=$7`,
+		s.tenantID, info.AppName, info.UserID, info.SessionID, filename, version, key).Scan(&referenced)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("verify artifact cleanup reference: %w", err)
+	}
+	if err := s.objects.Delete(cleanup, key); err != nil {
+		return fmt.Errorf("delete unreferenced artifact body: %w", err)
+	}
+	return nil
+}
+
 func hashBytes(value []byte) string { sum := sha256.Sum256(value); return hex.EncodeToString(sum[:]) }
 func nonNilContext(ctx context.Context) context.Context {
 	if ctx == nil {

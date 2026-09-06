@@ -1,64 +1,50 @@
-# Enterprise Multi-Tenant Agent Platform 最终交接
+# Enterprise Multi-Tenant Agent Platform 交付指南
 
-更新日期：2026-09-05（Asia/Shanghai）  
 作者：王子龙
 
-## 1. 权威入口
+## 交付物
 
-当前唯一权威源码目录是本目录。评审顺序：
+- 平台源码、测试、数据库迁移、Compose/Kubernetes 模板和 CI 配置。
+- 项目方案、架构与数据模型、安全与风险、运行及验收文档。
+- 本地演示、基准、验证日志、包内文件清单和 SHA-256。
 
-1. `README.md`
-2. `docs/COMPETITION_SUBMISSION.md`
-3. `docs/ACCEPTANCE_EVIDENCE.md`
-4. `docs/DATA_MODEL.md`
-5. `docs/RISK_REGISTER.md`
-6. `docs/SECURITY_REVIEW.md`
+完整目录职责见 [交付内容索引](PACKAGE_MANIFEST.md)，项目方案见 [COMPETITION_SUBMISSION](docs/COMPETITION_SUBMISSION.md)。
 
-`archive/HANDOFF_CHECKPOINT.md` 等归档文件只保存历史检查点，不得用于判断当前实现状态。
+## 启动顺序
 
-## 2. 当前实现结论
+1. 在源码根目录运行 `go run -buildvcs=false ./cmd/demo`，观察 MemoryStore 的 lease 接管、陈旧提交拒绝及未知投递结果核对。
+2. 运行 `go test -buildvcs=false -count=1 -p 1 ./...` 验证源码；完整环境命令见 [验证方法](docs/VERIFICATION.md)。
+3. 启动 Docker Linux engine，执行 `scripts/run_c_local_stack.ps1 -ProjectName agent-platform-review -Build`。
+4. 确认迁移任务完成、应用健康、Prometheus 抓取正常，随后配置租户、Agent 版本和部署。
+5. 使用真实 IM 配置完成接入检查，步骤见 [接入与部署验收](docs/EXTERNAL_ACCEPTANCE_RUNBOOK.md)。
 
-生产主链路已经形成一条可运行闭环：企业微信/Telegram callback 经 Adapter 验签和规范化，Gateway 在 PostgreSQL Inbox durable commit 后应答，Consumer 以租户公平调度、Session FIFO、lease/fence 领取，Worker 按 immutable AgentVersion 构造 tRPC-Agent-Go Runner 并注入共享 Session/Memory、治理 Plugin、Knowledge 与 Artifact，执行结果经同事务 Inbox completion + Outbox 创建，Delivery 在 Provider 调用前写 dispatch fence 并分段投递。
+本地隔离栈默认绑定 `127.0.0.1`：Gateway 18080、Admin 18081、Prometheus 19095、Grafana 13000。结束时使用同一 ProjectName 执行 `-Down`，命名卷保留。
 
-PostgreSQL 是可靠队列、控制面、执行 guard/fence、迁移协调和审计的权威；Redis/PostgreSQL Session/Memory 是租户运行数据后端。后端可选不等于 PostgreSQL 可被移除。Worker 无本地权威 Session，因此无需 sticky session。
+## 配置责任
 
-当前交付相比早期检查点补齐：
+| 配置 | 管理方式 |
+|---|---|
+| 租户、模型、Agent 与通道绑定 | Admin API，受角色与 tenant allowlist 约束 |
+| Version/Deployment | 无密钥不可变快照，stable/canary 和发布审计 |
+| 数据库与 Session/Memory | operator-owned profile、独立账号、SecretRef |
+| 模型/IM/MCP 凭据 | 租户与用途绑定，按进程最小权限注入 |
+| 内部服务身份与观测 | HMAC、nonce、HTTPS/mesh、metrics token、OTLP TLS |
+| 集群镜像与网络 | digest 固定、releaseverify、默认拒绝 NetworkPolicy |
 
-- Summary：独立 summary-worker、固定版本生成、预算结算、精确 cutoff/last_event_id、fenced CAS、取消后失败落盘和 shutdown 排空；Worker 使用全会话 branch mode。真实 Redis/PostgreSQL 集成捕获下一轮 Runner 模型请求，证明摘要进入请求且被覆盖历史被裁剪。
-- Knowledge：operator-owned Qdrant/embedding profile、Worker-only SecretRef、tenant/app 物理隔离、真实 seed/search 与框架 Knowledge 注入。
-- Artifact：PostgreSQL 不可变版本元数据 + MinIO/S3 正文、SHA-256 校验、幂等版本、tombstone 和真实 save/load/list/delete。
-- 迁移 projection：官方 Redis Session 的规范化 State/Event/Track 经版本化 journal、catch-up 与 fence 写入官方 PostgreSQL Session，并完成租户配置 CAS cutover；Qdrant/MinIO projection 同样包含重放、冲突、删除、目标失败与最终 fence 校验。
-- MCP：operator-owned Streamable HTTP/SSE profile、Admin 无秘密准入、Worker 延迟连接官方 tRPC-Agent-Go MCP ToolSet、精确工具 allowlist、Header SecretRef 与进程关闭；本地真实 MCP server 纵切覆盖 Worker→Runner→治理→MCP→最终回复。
-- 部署：Summary 进程、data-plane profiles、最小 Secret 暴露、NetworkPolicy、Prometheus Summary 规则和 releaseverify 契约。
+生产 Session/Memory fencing 需要 PostgreSQL 直连或 PgBouncer session pooling。Admin 通过受控私网入口暴露；日常角色与 bootstrap 凭据分开管理。秘密不得写入源码、日志或交付包。
 
-## 3. 本机证据（按日期和环境解释）
+## 消息恢复
 
-当前生产工具链固定 `GOTOOLCHAIN=go1.26.7+auto`，框架固定 tRPC-Agent-Go v1.11.2。源码门禁（module verify、gofmt、build、vet、unit/race）必须在每次最终提交后重新执行并记录。此前 2026-09-05 的 C-local/真实后端/Compose 日志仅适用于日志中记录的确切源码和环境；本轮文档或代码变更不会自动继承 Docker、集群或 Provider 结果。精确状态与不得扩大解释的边界见 `docs/ACCEPTANCE_EVIDENCE.md` 和 `docs/VERIFICATION.md`。
+消息由 PostgreSQL Inbox 接收，Consumer 领取后调用固定版本 Worker，结果通过事务衔接至 Outbox。Delivery 在 Provider 调用前写入 dispatch fence。
 
-Docker Desktop 的损坏 AF_UNIX runtime 目录已通过可恢复移动修复，没有 factory reset，也没有删除既有 image、volume 或业务数据。历史备份目录仍保留，未经用户授权不要清理。E 盘的 `trpc-agent-legacy-lab` 仅是历史实验室（含缓存、数据库 dump、证书/私钥和工具），不是当前运行依赖；本次复核从 C 盘完成，没有硬编码 `E:\` 路径。
+- 可重试错误：按照 retry policy 和 Provider 的 Retry-After 延迟重试。
+- lease 丢失：陈旧 owner/fence 提交被拒绝，由有效租约继续处理。
+- 结果未知：进入 `WAITING_RECONCILIATION`，核对外部结果后恢复。
+- 死信：记录原因及关联 trace，由操作者携带 actor/reason 重放。
+- Outbox resume：保留已确认 cursor；restart：从首段重发，操作前确认业务影响。
 
-直接从新归档目录运行 Compose 时没有 `.env` 会按设计拒绝启动；使用 `scripts/run_c_local_stack.ps1 -Build` 可从任意目录定位源码、注入进程内一次性验证值并使用隔离端口。该脚本不会读取或写入 E 盘，也不会覆盖已有项目。交付总包、清单、SHA-256 和解包复核结果以包内 `PACKAGE_INVENTORY_20260905.md`、`SHA256SUMS_20260905.txt` 和 `PACKAGE_BUILD_RESULT_20260905.txt` 为准。
+同 Session 的阻塞前序暂停后续消息，其他 Session 独立推进。详细状态关系见 [架构](docs/ARCHITECTURE.md) 与 [风险登记册](docs/RISK_REGISTER.md)。
 
-## 4. 当前外部验收边界
+## 验证记录
 
-以下项目不能由源码测试或本地模拟替代：
-
-- 真实企业微信/Telegram sandbox；当前企业微信实现范围是“自建应用加密文本 1:1 callback + 主动回复”，不包含群机器人、微信客服、公众号、媒体下载或撤回。
-- 真实业务 MCP server 的身份、出网 allowlist、配额、幂等与 SLA；本地 MCP server 只证明框架协议纵切。
-- 正式 Kubernetes/service-mesh rollout/rollback、严格 mTLS 与证书轮换。
-- KMS/Vault workload identity、云 S3/COS/Qdrant IAM 与私网策略。
-- OTLP TLS、Alertmanager 实际接收端。
-- PostgreSQL/Redis HA 故障注入、PITR/DR 恢复、目标 payload 容量和成本演练。
-
-外部低次数执行顺序见 `docs/EXTERNAL_ACCEPTANCE_RUNBOOK.md`。任何外部凭据只应通过本机 Secret/env 或正式 Secret Manager 注入，不能写入源码、文档、聊天记录或压缩包。
-
-本机已准备 `scripts/wecom_sandbox_tunnel.ps1` → `wecom_sandbox_setup.ps1` → `wecom_sandbox_bootstrap.ps1` 的闭环脚本，并为 Bash 环境提供经语法/ShellCheck 门禁的同类向导。脚本使用独立端口和 Compose project，不覆盖既有本地服务；当前临时 Tunnel 可达只证明公网 TLS/转发服务已建立，在企业管理员登录、SecretRef 注入、控制台 URL verify 和真实成员消息完成前，企微状态仍是 `EXTERNAL_REQUIRED`。
-
-## 5. 接手后的执行顺序
-
-1. 先运行本地门禁，确认当前源码与归档哈希一致；Windows 可执行 `scripts/run_c_local_stack.ps1 -Build` 后再按 `docs/ACCEPTANCE_EVIDENCE.md` 检查 `/health`、迁移和指标。
-2. 由企业微信管理员创建/授权自建应用，提供 CorpID、AgentID、Secret、callback Token 与 EncodingAESKey 的本机注入；配置公网 HTTPS callback 后只做 URL verify、单条文本、重复回调与主动回复四项证据。
-3. 在目标集群按 migration → control plane → workers 的顺序发布，验证 canary/rollback。
-4. 再做 mTLS/KMS/OTLP/HA/容量/DR，逐项保存时间戳、trace_id、退出码和脱敏结果。
-
-未取得上述目标环境证据前，可以声明“源码闭环且本机集成通过”，不能声明“已在正式生产环境上线”。
+源码验证命令、退出码和环境保存在交付包 `verification-evidence/current-validation.log`。能力检查项及目标部署验收状态统一见 [验收矩阵](docs/ACCEPTANCE_EVIDENCE.md)。Kubernetes 发布步骤见 [部署指南](deploy/kubernetes/README.md)。

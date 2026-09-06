@@ -1,137 +1,86 @@
-# Enterprise Multi-Tenant Agent Platform Acceptance Evidence
+# 验收证据
 
-更新日期：2026-09-05（Asia/Shanghai）
+Enterprise Multi-Tenant Agent Platform 的验收分为源码回归、后端集成和目标环境三个层次。本文件将功能要求映射到测试入口与验收断言；执行方法见 [验证指南](VERIFICATION.md)。
 
-## 2026-09-06 纠偏复核
+## 1. 提交包验证记录
 
-本轮独立复核把四个可复现边界问题转为回归并完成修正。以下结论只表示源码和本机回归，不替代目标环境验收：
+验收状态使用统一含义：`LOCAL_VERIFIED` 为记录环境中的实际通过结果，`IMPLEMENTED` 为已实现并提供测试入口的能力，`EXTERNAL_REQUIRED` 为需要目标账号或基础设施执行的验收项。
 
-| 复核项 | 当前结论 | 证据 |
-|---|---|---|
-| SecretRef 租户/用途授权 | IMPLEMENTED | `TenantSecretResolver` 通过带长度前缀的绑定摘要校验 tenant、provider、model、purpose；Admin 发布和 Worker 解析均拒绝未授权引用；`pkg/tenant`、`pkg/worker`、`cmd/admin` 回归通过 |
-| 租户后端探活与全局 readiness | IMPLEMENTED | Worker/Summary Worker readiness 只检查公共依赖；租户后端按租户获取时检查，129 个活跃租户不会因缓存容量摘除整节点；`pkg/storage` 回归通过 |
-| Summary 长会话边界 | IMPLEMENTED（保守拒绝） | 无法由上游 Session API 证明绝对事件序号时，读取达到上游窗口上限即 `ErrTranscriptIncomplete`，Worker 不生成伪造目标序号；不会把滑动窗口误当永久前缀 |
-| Projection ledger 目标复用 | IMPLEMENTED | migration 043 将 `migration_id` 纳入 ledger 主键及所有 marker 查询/更新；旧记录归入 `legacy`，A→B→C 每个目标独立投影；`pkg/dataprojection`、`pkg/datamigration` 回归通过 |
-
-Summary 的跨窗口“继续生成”仍需要上游提供绝对事件序号或严格分页能力；当前实现选择 fail-closed，不能把暂缓摘要描述为跨窗口已验收。
-
-评委快速入口：先看 [评委快速摘要与验收执行清单](JUDGE_QUICKSTART.md)，再按本表核对命令、容器后状态和外部验收边界。
-
-## 状态定义
-
-- `LOCAL_VERIFIED`：本机对当前交付源码执行过对应命令或真实容器链路，退出码/后状态通过。
-- `IMPLEMENTED`：生产路径已有实现与自动化回归，但需要目标账号或目标基础设施才能完成最终验收。
-- `EXTERNAL_REQUIRED`：配置/Runbook 已提供，当前本机没有足够的外部授权或真实环境证据。
-- `DESIGNED`：明确保留的扩展面，不宣称已实现。
-
-## 需求覆盖
-
-| 验收项 | 实现/证据入口 | 当前证据 | 状态 |
-|---|---|---|---|
-| tenant/app/model/tool/channel/storage/audit 模型 | `pkg/tenant`, `pkg/controlplane`, migrations 001–043 | validation、RBAC、optimistic-lock、immutable version tests | LOCAL_VERIFIED |
-| 无状态多节点与 Session 路由 | `pkg/pipeline`, `pkg/worker`, `pkg/storage` | session FIFO、Redis lease、PostgreSQL takeover/fence 集成 | LOCAL_VERIFIED |
-| Inbox/Outbox 幂等与乱序 | `pkg/reliable`, migrations 002/013–016/033–036 | 重复、payload conflict、分段 cursor、过期接管、fair queue 测试 | LOCAL_VERIFIED |
-| 企业微信 | `pkg/channel/wework_adapter.go`、Gateway/Delivery composition | URL verify、签名、AES、CorpID、分段契约自动化 | IMPLEMENTED |
-| Telegram | `pkg/channel/telegram_adapter.go`、Gateway/Delivery composition | secret header、消息规范化、429/retry 契约自动化 | IMPLEMENTED |
-| 真实 IM sandbox | `docs/EXTERNAL_ACCEPTANCE_RUNBOOK.md` | 需讲师/目标账号 webhook、token 与回调网络；Outbox 未知结果可通过受保护的 `/api/v1/outbox-replays` 审计恢复 | EXTERNAL_REQUIRED |
-| PostgreSQL 控制面/队列 | migrations、`pkg/reliable/postgres*` | 本地 PostgreSQL 15.8 全量 integration | LOCAL_VERIFIED |
-| Redis Session/Memory/coordination | `pkg/storage`, budget/nonce/session lease | 本地 Redis 7.4 integration；无 InMemory 生产回退 | LOCAL_VERIFIED |
-| 生产 Summary Generator | `pkg/summary`, `pkg/summaryruntime`, `cmd/summary-worker`, migration 042 | 真实 PG/Redis + 捕获模型：enqueue→freeze→generate→fenced checkpoint→下一次 Runner 请求；断言摘要/新消息存在且旧历史被裁剪 | LOCAL_VERIFIED |
-| Summary 取消与 goroutine 排空 | `pkg/summary/poller.go`, `processor.go` | 父取消停止 claim、活跃 job 排空；timeout 后 FAILED 状态持久化 | LOCAL_VERIFIED |
-| Knowledge 真实数据面 | `pkg/runtimeplane`, `pkg/knowledgeplane`, `pkg/platformtool` | 真实 Qdrant：seed/search、tenant/app scope、framework Knowledge 注入 | LOCAL_VERIFIED |
-| Artifact 真实数据面 | `pkg/runtimeplane`, `pkg/artifactplane`, migration 039 | 真实 PostgreSQL+MinIO：save/load/list/delete、版本/hash/幂等 release | LOCAL_VERIFIED |
-| Redis→SQL Session migration | `pkg/datamigration`、`pkg/dataprojection/session.go`、migration 037 | 官方 Redis Session→规范化 State/Event/Track→官方 PostgreSQL Session；snapshot/catch-up/shadow/CAS cutover 集成 | LOCAL_VERIFIED |
-| Session/vector/object projection | `pkg/dataprojection`, migration 040 | fenced record→PostgreSQL Session/Qdrant/MinIO、tombstone、重放、失败 marker/final fence tests | LOCAL_VERIFIED |
-| 迁移 cutover/rollback | `pkg/datamigration` operator hooks | 状态机与 CAS/lease 回归；正式数据量演练待目标环境 | IMPLEMENTED |
-| Tool/Guardrail/预算/审批 | `pkg/governance`, `pkg/approval`, `pkg/budget` | Runner Plugin、Redis Lua、durable challenge 单元/SQL 集成 | LOCAL_VERIFIED |
-| MCP 运行时 | `pkg/platformtool/mcp.go`, `pkg/worker/mcp_runtime_integration_test.go` | official MCP ToolSet + Streamable HTTP：Worker→Runner→治理→远端 Tool→模型回合；Header SecretRef、超时、精确工具过滤、错误脱敏和进程关闭 | LOCAL_VERIFIED |
-| Trace/metrics/audit | `pkg/telemetry`, `pkg/audit`, Prometheus rules | W3C trace propagation、指标鉴权/基数、15 条规则 promtool 解析 | LOCAL_VERIFIED |
-| Summary 告警 | `cmd/summary-worker`, `deploy/prometheus-rules.yml`, `docs/SLO.md` | 30/60/120/300s buckets，失败突增/失败率/高延迟规则 | LOCAL_VERIFIED |
-| Compose 最小部署 | `deploy/docker-compose.yml`, isolated overlay | 隔离栈应用健康、migrate=0、公开探针 200、restart=0 | LOCAL_VERIFIED |
-| Kubernetes 模板/发布门 | `deploy/kubernetes`, `pkg/releaseverify`, `scripts/k8s_apply.sh` | Secret 最小暴露、profile ConfigMap、egress policy、digest/rollout tests | LOCAL_VERIFIED |
-| 正式 Kubernetes/mesh rollout | 外部验收 Runbook | 需目标集群、正式 CA、供应商支持版本 | EXTERNAL_REQUIRED |
-| KMS/Vault workload identity | `tenant.SecretResolver` seam、K8s Secret 示例 | 本地只验证 resolver/fail-closed，不是正式 KMS/Vault | EXTERNAL_REQUIRED |
-| HA chaos、容量、PITR/DR | SLO/Runbook/容量模型 | 尚需目标规格与测试窗口 | EXTERNAL_REQUIRED |
-| Graph/Chain/Parallel/Cycle runtime | `pkg/worker/runtime_factory.go`、runtime factory/composition tests | 四种内置上游 Agent 构造、实际拓扑执行、Worker composition；节点预算/工具/提示词、DAG/可达性和有限循环校验 | LOCAL_VERIFIED |
-
-## 后端支持范围与证据边界
-
-`pkg/tenant/tenant.go:224-235` 的 `StorageConfig` 当前生产支持范围是：Session/Memory 使用 operator-owned Redis 或 PostgreSQL profile；Knowledge 使用 Qdrant profile；Artifact 使用 S3-compatible（本地验收为 MinIO）profile。`Summary` 的 job/checkpoint 与 `Audit` 的平台审计表固定由平台 PostgreSQL 持有，当前没有租户可选的 Summary/Audit backend/profile，也没有把固定 PostgreSQL 设计包装成“任意后端可切换”。因此本矩阵中的“多后端”是跨数据域的已安装组合，而不是六类数据全部各自拥有可插拔后端。
-
-`inmemory` Session/Memory 仅用于单元测试和显式本地 composition；生产 Worker/Admin 在 `ValidateDistributedStorage` 路径拒绝进程内状态，不能据此宣称多副本生产后端覆盖。当前已实测的迁移闭环是 Redis→PostgreSQL Session，以及带 fence 的 Session/Knowledge/Artifact projection；Summary checkpoint 和 Audit 不在该迁移范围内。
-
-Knowledge 的真实数据面测试使用真实 Qdrant/MinIO，但 embedding 请求由本地 httptest OpenAI-compatible 服务响应，Summary 使用本地捕获模型。它们证明协议、租户隔离和数据流，不证明外部模型/embedding provider 的额度、质量、限流、TLS、SLA 或版本兼容。
-
-## 2026-09-05 接续基础设施证据
-
-| 检查 | 实际证据 | 边界 |
-|---|---|---|
-| C 盘宿主 | Docker 29.7.2 恢复；safe-start 仅移动损坏 runtime 目录到可恢复备份，未删除 image/volume/database；C 盘仍约 35 GB 可用 | 仍需把 safe-start 纳入宿主机开机/重启运维流程 |
-| C-local Compose | `scripts/validate.sh` 10/10 全绿；7 个应用镜像逐个构建；真实 PG/Redis/Qdrant/MinIO integration 10.862s；Gateway/Admin 200、Prometheus 6/6、15 rules | 本地隔离验证，不是生产认证 |
-| K3d 本地 bootstrap/compatible | 独立实验室 namespace 的 migration complete；17 个应用 Pod 及 PostgreSQL/Redis Ready；compatible migration 重放成功；3-node HPA metrics valid | 实验室 namespace/context/registry 是不可变复核标识，不是项目命名或目标集群 |
-| Linkerd identity | 带 identity 的 Consumer-labelled probe 到 Worker protected route 为应用 401；无 identity 的同请求为 Linkerd 403 | 本地 all-authenticated policy；不等于正式 strict mTLS/证书轮换 |
-| Gateway rollback | 当前镜像 digest → 历史镜像 digest → 原当前 digest 真实 rollout/restore 成功，3 replicas Ready | 只覆盖 Gateway image rollback，不覆盖全平台 breaking schema rollback |
-| Vault workload identity | 本地 dev Vault：绑定 `vault-client` 的 projected JWT 可读允许路径并被拒绝 forbidden path；错误 ServiceAccount 返回 403 | 不等于 HA/auto-unseal/cloud KMS |
-| Fair queue capacity | 干净隔离 PostgreSQL：2200 Inbox/Outbox 完成，errors=0，quiet claim first position=2，max consecutive noisy=1 | 单机实验室基线，不是目标容量承诺 |
-| External IM | callback public health 200；无 route key 的 `/webhook` 返回 400；企微/Telegram 凭据均未配置 | 真实控制台登录、URL verify、消息回路仍 EXTERNAL_REQUIRED |
-
-容量基线的入口是 `scripts/test_local_capacity.ps1 -HarnessPath <Go harness>`；脚本负责创建一次性 C 盘/loopback PostgreSQL、迁移 schema、执行外部 harness 并清理容器。历史容量结果不随当前精简交付包提供，不能宣称从全新归档目录直接重放 benchmark。该脚本和结果均不覆盖模型吞吐、端到端 IM、HA 故障、生产 sizing、成本或 DR。
-
-## 当前源码门禁
-
-生产工具链以 `GOTOOLCHAIN=go1.26.7+auto`、`GOMAXPROCS=1` 和 `-p 1` 运行：
+交付包的 `verification-evidence/current-validation.log` 记录源码快照、工具链、执行时间、命令输出及退出码，覆盖以下检查：
 
 ```powershell
-go mod verify
-gofmt -l cmd pkg migrations test
-go build -buildvcs=false -p 1 ./cmd/...
-go vet -p 1 ./...
 go test -buildvcs=false -count=1 -p 1 ./...
+go vet -p 1 ./...
 go test -buildvcs=false -race -count=1 -p 1 ./...
-go test -buildvcs=false -tags=integration -count=1 -p 1 ./test/integration
+go run -buildvcs=false ./cmd/demo
 ```
 
-以上源码门禁在本次 C 盘复核均通过（完整串行轮次约 199.82 秒）。真实 integration 使用隔离端口的 PostgreSQL、Redis、Qdrant 和 MinIO；本次 C-local 轮次用时 9.775 秒。MinIO 凭据从测试容器环境只在进程内读取，未写入报告。`TestExecutionReconcilerOnlyAbandonsStaleRunningRecords` 曾暴露测试 cleanup 的外键删除顺序错误；修复为先删 reconciliation/guard/result/binding 再删 execution/app/tenant，并连续执行两次通过，运行后 `reconcile-%` 租户与执行记录均为 0。该问题属于测试隔离，生产 reconciler 的全局扫描语义没有改成按测试租户过滤。
+全量常规测试覆盖未使用 `integration` 构建标签的测试；其中的本地模型、HTTP/MCP 服务和内存后端由测试创建。故障演示使用 `MemoryStore` 验证状态转换。真实后端集成、镜像构建和目标部署分别执行，结果单独记录。
 
-`TestSummaryRuntimePostgresRedisEndToEnd` 在补充 Runner 请求捕获后先按预期失败：checkpoint 已在 `Session.Summaries[""]`，但上游 LLMAgent 默认 `BranchFilterModePrefix` 按 Agent 分支取摘要，导致全会话 checkpoint 被忽略。生产 Worker 现仅在启用平台 Summary data plane 时同时设置 `WithAddSessionSummary(true)` 与 `BranchFilterModeAll`。修复后该测试使用真实 Redis Session、真实 PostgreSQL checkpoint 和本地捕获模型通过，并同时断言 cutoff 前 Event 不再进入请求；这条测试不调用外部 LLM、不会消耗 Provider 次数。
+公开 CI 对提交分支执行源码、race、四后端集成、镜像及漏洞检查；Windows job 构建 ZIP，Linux job 解压该 ZIP，校验 SHA-256、Shell 执行位和 LF 行尾，再运行包内静态检查与全量常规测试。`verification-evidence/public-ci.json` 保存运行地址、提交 SHA 和各 job 的结论；本地日志中的 `source_revision` 与 CI 的 `headSha` 标识同一提交。
 
-`TestTRPCSessionRedisToPostgresMigrationVerticalSlice` 使用 tRPC-Agent-Go v1.11.x 的真实 Redis/PostgreSQL Session 模块：snapshot 后在 Redis 继续追加 Event 并修改 State，迁移再 catch-up；目标从官方 PostgreSQL Service 读回最终 State、两条 Event 与 Track，之后租户配置以 CAS 从 version 1 切到 version 2。重复/分叉/上限/私有 summary 的单元契约在 `pkg/dataprojection/session_test.go`。第一次真实运行还暴露上游初始化器对 PostgreSQL 63 字节 identifier 截断的 fail-closed 行为；测试和生产 profile 均要求短、固定 schema 名。
+## 2. 功能与回归断言
 
-`TestMCPProfileWorkerRunnerGovernanceVerticalSlice` 启动本地 Streamable HTTP MCP server，使用框架官方 MCP ToolSet 完成 `Worker.Process → Runner/LLMAgent → BeforeTool/AfterTool 治理 → MCP call → 模型最终回复`。测试断言 Header SecretRef 被注入、远端名只能通过 operator 前缀暴露、审计包含 allow/success 且不含凭据或用户正文；这证明本地协议纵切，不代表任一真实业务 MCP server 已验收。
+| 功能 | 实现与测试入口 | 验收断言 |
+|---|---|---|
+| 多租户控制面 | `pkg/tenant`、`pkg/controlplane`、`cmd/admin` | Tenant/App/Version/Deployment 按租户授权；更新使用乐观锁；发布版本不可变 |
+| 企业微信适配 | `pkg/channel/wework_adapter.go` 及适配器测试 | URL challenge、签名、AES 解密、CorpID、文本规范化和回复分段符合协议 |
+| Telegram 适配 | `pkg/channel/telegram_adapter.go` 及适配器测试 | webhook secret 校验、会话标识、分段、429 和 Retry-After 处理正确 |
+| 可靠消息 | `pkg/reliable`、`pkg/pipeline` | 重复入站幂等；不同 payload 冲突；同 Session FIFO；过期租约接管后拒绝旧 fence |
+| 公平调度 | `pkg/reliable`、`test/integration` | 新租户加入、空闲恢复和策略重置保持当前活跃租户公平性；权重与并发配额生效 |
+| 原子完成与投递 | `pkg/reliable`、`pkg/pipeline/delivery.go` | Inbox 完成与 Outbox 创建同事务；分段 cursor 可恢复；发送结果未知进入 reconciliation |
+| Worker 执行 | `pkg/worker`、`cmd/worker` | 请求固定 AgentVersion、租户和会话身份；持有 Session lease；执行结果可重用 |
+| Runtime 组合 | `pkg/worker/runtime_factory.go` 及组合测试 | LLM/Chain/Graph/Parallel/Cycle 拓扑、节点预算、工具范围和有限循环受校验；运行时注册表启动后封存 |
+| SecretRef 授权 | `pkg/tenant`、`pkg/worker`、`cmd/admin` | 引用绑定 tenant、purpose、provider 和 model；发布与执行均检查作用域 |
+| 租户后端生命周期 | `pkg/storage` | 后端借用和释放受控；节点 readiness 检查公共依赖，租户后端按使用范围检查 |
+| Summary | `pkg/summary`、`pkg/summaryruntime` | 固定事件边界、租约、fenced CAS、取消排空和预算结算；无法证明绝对序号时返回 `ErrTranscriptIncomplete` |
+| Knowledge | `pkg/knowledgeplane`、`pkg/platformtool` | 查询和记录绑定 tenant/app；框架 Knowledge 通过运行时装配进入 Runner |
+| Artifact | `pkg/artifactplane` | 元数据与正文分离；提交响应丢失不误删正文；删除失败后重试继续清理；不可变版本、SHA-256 与精确版本投影 |
+| 数据迁移 | `pkg/datamigration`、`pkg/dataprojection` | snapshot/catch-up/shadow/CAS cutover 状态有序；projection marker 绑定 migration identity；最后写入检查 fence |
+| 工具治理 | `pkg/governance/plugin.go`、`pkg/governance/approval_postgres.go`、`pkg/governance/budget.go` | 工具白名单、危险操作审批、预算 reservation/settlement、输出脱敏和审计贯穿执行 |
+| MCP | `pkg/platformtool/mcp.go`、`pkg/worker/mcp_runtime_integration_test.go` | 本地 Streamable HTTP 服务完成 Worker→Runner→治理→Tool→回复；检查 Header SecretRef、工具过滤和资源关闭 |
+| 内部通信 | `pkg/auth`、`pkg/worker` | HMAC 绑定请求内容和 trace context；nonce 单次使用；错误请求被拒绝 |
+| 可观测性 | `pkg/telemetry`、`pkg/telemetry/audit_postgres.go` | trace 跨消息边界传播；指标鉴权和标签基数受控；审计保留决策与错误类 |
+| 发布准入 | `pkg/releaseverify`、`deploy/kubernetes` | 镜像 digest、迁移类别、网络策略和 rollout 断言受校验 |
 
-## Docker Desktop 修复证据
+## 3. 真实后端集成
 
-Docker Desktop 因 `Docker\run\sailor-ingest.sock`、`dockerInference` 等损坏 AF_UNIX reparse point 启动失败。故障期间没有 factory reset，也没有删除 Docker data/volume/image。停掉卡死进程后，把两个运行时目录移动为可恢复备份并重启：
+`test/integration` 提供 PostgreSQL、Redis、Qdrant 和 MinIO 的纵向测试，运行前按 [验证指南](VERIFICATION.md) 准备服务及测试环境变量。
 
-- `C:\Users\admin\AppData\Local\Docker\run.stale-20260903-234447`
-- `C:\Users\admin\AppData\Local\docker-secrets-engine.stale-20260903-234447`
+| 场景 | 后端 | 关键断言 |
+|---|---|---|
+| 队列与执行持久化 | PostgreSQL | 事务原子性、lease/fence、重复投递、执行 reconciliation |
+| Summary→Runner | PostgreSQL + Redis + 本地捕获模型 | checkpoint 的摘要进入下一次请求，已覆盖历史被裁剪，新消息保留 |
+| Session 迁移 | Redis + PostgreSQL | State/Event/Track 从源复制，增量追平后在目标读回，配置通过 CAS 切换 |
+| Knowledge 检索 | Qdrant + 本地 embedding 服务 | 写入、搜索、tenant/app 隔离及框架注入 |
+| Artifact | PostgreSQL + MinIO | save/load/list/delete、版本、内容哈希和删除标记 |
+| 数据投影 | PostgreSQL + Qdrant + MinIO | Session/vector/object 重放、tombstone、失败 marker 与最终 fence |
 
-后状态为 Docker client/server 29.7.2 可响应，既有容器仍健康，PostgreSQL/Redis/Qdrant/MinIO 仍可访问。备份目录尚未删除。
+模型与 embedding 在这些测试中使用本地协议服务，测试对象是平台数据流和后端一致性。线上模型效果与服务额度在目标账号中验证。
 
-## 2026-09-05 C 盘隔离栈复核
+## 4. 存储支持范围
 
-本次从 C 盘源码副本重新执行，确认运行链路不依赖 E 盘：
+| 数据域 | 可用后端 | 配置与所有权 |
+|---|---|---|
+| 控制面、Inbox/Outbox、执行记录、审计 | PostgreSQL | 平台统一管理 |
+| Session/Memory | Redis 或 PostgreSQL | 运维注册 profile，租户选择已授权配置 |
+| Summary job/checkpoint | PostgreSQL | 平台统一管理，Runner 读取 checkpoint overlay |
+| Knowledge | Qdrant | 运维 profile，tenant/app 作用域 |
+| Artifact | PostgreSQL 元数据 + S3-compatible 对象存储 | 运维 profile，本地集成使用 MinIO |
 
-| 检查 | 实际结果 |
-|---|---|
-| Compose 项目 | `trpc-platform-c-local-20260905`；配置来自 C 盘源码和 `docker-compose.isolated.yml` |
-| 容器后状态 | 12 个容器；11 个服务运行且健康，one-shot `migrate` 退出码 `0` |
-| HTTP 探针 | Gateway/Admin `/health` 均 HTTP `200`；Grafana `/api/health` HTTP `200`；Prometheus `/-/healthy` HTTP `200` |
-| Prometheus | 6/6 active targets 为 `up`；规则 API 返回 15 条，全部 `health=ok` |
-| 稳定性 | 本轮所有临时容器 restart count `0`；容器日志未发现 `panic` 或 `fatal` |
-| Admin 纵切 | 未认证 `401`；创建租户、脱敏 GET、Agent App、Version、Publish、stable Deployment、列表和删除全部通过 |
-| Admin 身份与发布门 | `pkg/adminauth` `PrincipalResolver` 与 `cmd/admin` publish admission 已做源代码/单测验证：外部主体经服务端 ID、角色、tenant scope 归一化；发布拒绝不在 operator-approved model catalog 的模型。外部 OIDC/IAP/mTLS 组合仍需目标环境接线。 |
-| 外部 preflight | 合法形状的假值运行，`provider_calls=0`；不发送真实 Provider 请求 |
-| 集成 | `go test -buildvcs=false -tags=integration -count=1 -p 1 ./test/integration` PASS（9.775 秒） |
-| 镜像 | Compose 配置 PASS；7 个应用镜像构建 PASS |
+Session 迁移支持 Redis→PostgreSQL；投影覆盖 Session、Knowledge 和 Artifact。`MemoryStore` 用于测试和本地状态机演示，持久化服务使用 PostgreSQL 实现。
 
-直接在解压目录运行 `docker compose` 若没有 `.env` 会返回 `set POSTGRES_PASSWORD in .env` 等必需变量错误，这是源码不携带秘密的 fail-closed 设计，不是 E 盘故障。`scripts/run_c_local_stack.ps1 -Build` 从脚本位置定位源码，在进程内注入一次性验证值并使用隔离端口；本次已验证该路径。权威树的真实 `deploy/.env.wecom.local` 只做存在性记录，未读取、未输出、未进入归档。
+## 5. 目标环境验收
 
-## 不得扩大解释的边界
+以下项目状态为 `EXTERNAL_REQUIRED`，统一按 [目标环境验收 Runbook](EXTERNAL_ACCEPTANCE_RUNBOOK.md) 执行：
 
-1. 本地假 embedding/summary 模型证明协议与 Runner 数据流，不证明外部 Provider 额度、质量、限流或 SLA。
-2. Compose/Kubernetes YAML 和 releaseverify 不等于目标集群 rollout 已成功。
-3. 本地 MinIO/Qdrant 验证不等于云 S3/COS 或托管向量库的 IAM、网络与灾备验收。
-4. 单机多容器接管测试不等于 PostgreSQL/Redis HA 故障注入。
-5. source/race 测试不能替代真实企业微信和 Telegram sandbox。
-6. 本地 MCP server 不能替代目标 MCP 服务的认证、DNS/egress、配额、幂等和 SLA 验收。
+| 验收项 | 所需条件 | 验收输出 |
+|---|---|---|
+| 企业微信 / Telegram 实际收发 | 测试账号、应用凭据、公网 HTTPS 回调 | 入站、执行、出站和 trace 对应记录 |
+| 目标 Kubernetes / service mesh | 集群、镜像仓库、身份与网络配置 | rollout/rollback、Ready、镜像 digest、身份 allow/deny |
+| 身份与密钥系统 | 目标 OIDC/IAP、KMS/Vault、ServiceAccount | 最小权限、错误身份拒绝、密钥轮换和审计 |
+| HA、灾备与迁移切换 | 数据库/Redis 测试实例、备份与恢复窗口 | failover、PITR、RPO/RTO、backlog 恢复和回滚记录 |
+| 业务容量与模型服务 | 目标规格、业务 payload、模型账号 | 吞吐、p50/p95/p99、queue lag、错误率、资源与成本 |
+| 业务 MCP | 已授权 profile、认证和出网配置 | 工具授权、超时、幂等、配额和实际返回结果 |
+
+记录只收集配置版本、时间、状态、脱敏标识和哈希；凭据、聊天正文、数据库 URL 与证书私钥不进入证据包。

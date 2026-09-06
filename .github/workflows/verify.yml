@@ -106,3 +106,56 @@ jobs:
         cache: true
     - run: bash ./scripts/require_secure_go.sh
     - run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
+
+  windows-package:
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+    - name: Test submission packaging contracts
+      shell: pwsh
+      run: ./scripts/test_package_all_materials.ps1
+    - name: Build the submission archive
+      shell: pwsh
+      run: |
+        ./scripts/package_all_materials.ps1 -RepoRoot $PWD.Path `
+          -WorkspaceRoot (Join-Path $env:RUNNER_TEMP 'submission-workspace') `
+          -OutputRoot (Join-Path $env:RUNNER_TEMP 'submission-output') `
+          -PackageDate 20260906
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      with:
+        name: windows-submission
+        path: ${{ runner.temp }}/submission-output/*.zip
+        if-no-files-found: error
+        retention-days: 14
+
+  linux-package:
+    needs: windows-package
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+      with:
+        go-version: "1.26.7"
+        cache: false
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      with:
+        name: windows-submission
+        path: submission
+    - name: Extract and verify the Windows-built archive
+      shell: bash
+      run: |
+        unzip -q submission/enterprise-multi-tenant-agent-platform-20260906.zip -d unpacked
+        cd unpacked/enterprise-multi-tenant-agent-platform-20260906
+        sha256sum --check SHA256SUMS_20260906.txt
+        cd platform-source
+        for script in scripts/*.sh; do
+          test -x "$script"
+          if LC_ALL=C grep -q $'\r' "$script"; then
+            echo "Shell script contains CR bytes: $script" >&2
+            exit 1
+          fi
+          bash -n "$script"
+        done
+        ./scripts/require_secure_go.sh
+        ./scripts/static_verify.sh
+        go mod verify
+        go test -buildvcs=false -count=1 ./...

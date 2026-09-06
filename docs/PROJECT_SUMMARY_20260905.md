@@ -1,124 +1,62 @@
 # Enterprise Multi-Tenant Agent Platform 项目总结
 
-更新日期：2026-09-06（Asia/Shanghai）
-项目：基于 tRPC-Agent-Go 的多租户节点化 Agent 平台  
-实现框架：tRPC-Agent-Go v1.11.2  
-模块最低版本：Go 1.25.14  
-生产构建工具链：Go 1.26.7
+## 1. 项目定位
 
-## 2026-09-06 纠偏结果
+本项目是基于 tRPC-Agent-Go 的多租户节点化 Agent 部署平台，面向多个业务共用 Agent 基础设施时的接入、隔离、执行恢复、版本治理与运维需求。
 
-针对独立严格审核发现的四个边界问题，本次已完成代码修复与回归：SecretRef 现在按租户、用途和模型绑定授权；租户后端探活不再污染节点级 readiness；Summary 在无法证明绝对事件序号时 fail-closed，避免长会话滑窗错位；projection ledger 按 migration identity 隔离目标，二次迁移不会复用旧 marker。详细证据见 `docs/ACCEPTANCE_EVIDENCE.md`。这些是本机源码门禁结果，不等同于真实 IM、正式 KMS/Vault、目标集群或 HA/DR 验收。
+项目采用“共享持久状态、无状态执行节点”的架构：PostgreSQL 记录消息和控制状态，Worker 按不可变版本执行 Agent，Summary、Knowledge、Artifact 和工具治理接入统一运行链路。遇到重复投递、节点接管或外部调用结果未知，系统通过幂等键、lease/fence 和 reconciliation 恢复处理。
 
-## 1. 一句话结论
+实现框架为 tRPC-Agent-Go v1.11.2，模块兼容基线为 Go 1.25.14，构建与安全门禁使用 Go 1.26.7。
 
-Enterprise Multi-Tenant Agent Platform 是一套以 PostgreSQL 可靠队列和控制面为权威、以 Redis/PostgreSQL Session/Memory 为共享运行态、以无状态 Worker 执行 tRPC Runner，并把 Summary、Knowledge、Artifact、MCP、治理、审计和部署安全边界接入生产组合根的候选生产实现。源码、自动化回归和本地后端纵切已形成闭环；真实企业微信/Telegram 账号、目标集群、正式 KMS/Vault、HA/灾备和业务 MCP 仍必须在目标环境完成外部验收，不能把本包称为生产认证。
+## 2. 功能执行链路
 
-## 2. 当前源码范围
+| 链路 | 执行过程 |
+|---|---|
+| IM 收发 | 企业微信/Telegram→Gateway 验签规范化→Inbox 提交→Consumer→Worker→Outbox→Delivery→渠道回复 |
+| 多租户发布 | Admin 鉴权→Tenant/App 配置→Version 校验与发布→stable/canary Deployment→Worker 固定版本执行 |
+| Agent 运行 | 请求身份验证→共享 Session lease→Runner→LLM/Chain/Graph/Parallel/Cycle→结果持久化 |
+| 工具治理 | 工具白名单→预算预留→危险操作审批→工具执行→脱敏、预算结算与审计 |
+| Summary | 入队→冻结事件边界→独立 Worker 生成→fenced checkpoint→下轮 Session overlay 与历史裁剪 |
+| Knowledge | 运维 profile→tenant/app 作用域→Qdrant 检索→框架 Knowledge→Runner |
+| Artifact | 授权→正文写入 S3-compatible 存储→PostgreSQL 元数据→版本/hash 校验→读取或 tombstone |
+| MCP | 运维注册 profile→发布准入→Worker 解析 Header SecretRef→官方 MCP ToolSet→治理后调用 |
+| 数据迁移 | PREPARE→SNAPSHOT_COPY→DUAL_WRITE→CATCH_UP→VALIDATE→READ_SHADOW→CUTOVER→ROLLBACK_WINDOW→COMPLETE |
+| 运维观测 | trace 传播→有界 metrics→脱敏 audit→SLO 告警→核对、重放或回滚 |
 
-当前权威目录是本目录。源码快照（不含被忽略的真实环境文件）目前包含：
+## 3. 组件职责
 
-- 交付清单会在打包时动态重新计算文件数、字节数和 SHA-256；不要在文档中固定快照数量。权威目录中的真实环境文件（如 `deploy/.env.wecom.local`）只记录存在性，不计入交付；最终以包内 `PACKAGE_INVENTORY_20260905.md` 和 `SHA256SUMS_20260905.txt` 为准。
-- 9 个服务/作业入口：`gateway`、`consumer`、`worker`、`summary-worker`、`delivery`、`admin`、`migrate`、`replay`、`releaseverify`。
-- 43 个版本化数据库迁移；每个 `.up.sql` 都有对应 `.down.sql`。
-- `cmd/` 入口与测试、`pkg/` 平台实现与回归、`migrations/` schema、`deploy/` Compose/Kubernetes/监控、`scripts/` 验证和外部验收向导、`test/integration/` 真实后端纵切、`.github/workflows/` CI 门禁。
-- 顶层入口文档：`README.md`、`PACKAGE_MANIFEST.md`、`CODE_PACKAGE_CONTENTS.txt`、`HANDOFF.md`、`ENTERPRISE_PLATFORM_HANDOFF.md`。
+`cmd/` 中的每个入口代表一个独立部署进程或运维命令：
 
-## 3. 架构和职责
+- `gateway`：接收渠道请求，固定租户身份与回复目标，在 Inbox 持久化后确认回调。
+- `consumer`：领取消息，进行租户公平调度、同 Session FIFO 和 lease/fence 协调。
+- `worker`：装配 tRPC Runner、共享存储和治理插件，执行固定 AgentVersion。
+- `summary-worker`：异步生成摘要，管理任务租约、checkpoint 和取消排空。
+- `delivery`：按 Outbox 发送回复，维护分段 cursor、重试和结果核对状态。
+- `admin`：管理租户、应用、版本、部署、审批与审计接口。
+- `migrate`、`replay`、`releaseverify`：管理 schema、审计重放和发布门禁。
+- `demo`：展示内存状态机的租约接管、旧写拒绝和未知结果处理。
 
-1. **入口层**：企业微信和 Telegram Adapter 负责验签、解密/规范化、身份和回复目标固化；Gateway 只在 Inbox durable commit 后确认回调。
-2. **可靠流水线**：Consumer 进行租户公平调度、同 Session FIFO、lease/fence 和 Consumer→Worker HMAC；Delivery 负责 Outbox 分段、cursor、限流、未知结果 reconciliation 和 DLQ。
-3. **执行层**：Worker 绑定 immutable AgentVersion，持有整次 Session lease，构造 tRPC-Agent-Go Runner，连接共享 Session/Memory、治理 Plugin、Knowledge、Artifact 和 MCP。
-4. **Summary**：独立 `summary-worker` 领取固定 AgentVersion 的任务，冻结事件边界，生成并预算结算，在 PostgreSQL 做 fenced CAS；下一轮 Worker 用 Session overlay 注入摘要并裁剪已覆盖历史。
-5. **控制面**：Admin 管理 Tenant、App、不可变 Version、Deployment、发布/回滚和审计；版本重试不会漂移到另一套配置。
-6. **数据面**：PostgreSQL 是控制面、Inbox/Outbox、执行 guard/fence、迁移协调、审计和 Artifact 元数据的权威；Redis/PostgreSQL 提供 Session/Memory/租约/预算；Qdrant 提供 Knowledge；S3/MinIO 保存 Artifact 正文。
-7. **安全和观测**：租户作用域、RBAC、SecretRef、预算/审批、HMAC、默认拒绝网络策略、镜像 digest、Prometheus、OpenTelemetry 和脱敏审计贯穿各进程。
+入口负责配置与依赖装配；协议适配、进程策略与配置解析分别组织；可复用领域行为位于 `pkg/`。数据库迁移在 `migrations/`，部署和监控在 `deploy/`，集成测试在 `test/integration/`。
 
-## 4. 已实现能力和证据
+## 4. 核心设计约束
 
-以下状态沿用 `docs/ACCEPTANCE_EVIDENCE.md` 的定义：`LOCAL_VERIFIED` 表示有本机命令或真实容器链路证据，`IMPLEMENTED` 表示源码和自动化回归已具备但还需要目标环境，`EXTERNAL_REQUIRED` 表示必须由外部账号/基础设施完成。
+1. **状态所有权清晰**：平台 PostgreSQL 管理控制面、可靠队列、执行、审计和 Summary checkpoint；Redis/PostgreSQL 管理 Session/Memory；Qdrant 管理 Knowledge；对象存储管理 Artifact 正文。
+2. **身份在持久边界固定**：tenant、app、session owner、AgentVersion、channel account 和回复目标随消息绑定，重试使用同一执行配置。
+3. **旧节点不能提交**：对租约敏感的 PostgreSQL 修改在事务内锁行，并重检 owner、fence 与到期时间。
+4. **副作用单独核对**：外部调用开始后结果未知时转入 reconciliation；经业务结果查询或人工确认后再审计处置。
+5. **授权贯穿运行时**：SecretRef 绑定租户与用途；模型与工具受运维 catalog/profile 限定；MCP 凭据在 Worker 侧解析。
+6. **共享后端保持作用域**：Session schema/prefix、Qdrant ID 与 Artifact key 绑定 tenant/app；投影 marker 同时绑定 migration identity。
+7. **摘要边界可证明**：生成前冻结序号，发布采用 fenced CAS；无法证明完整事件窗口时返回 `ErrTranscriptIncomplete`。
+8. **可观测性控制泄露与基数**：日志、trace 和审计保留决策与错误类；用户标识使用租户 HMAC 假名，指标标签由 allowlist 限定。
 
-| 能力 | 当前状态 | 主要入口 |
-|---|---|---|
-| Tenant/App/Model/Tool/Channel/Storage/Audit 模型 | LOCAL_VERIFIED | `pkg/tenant`、`pkg/controlplane`、migrations 001–043 |
-| Inbox/Outbox 幂等、顺序、租约、fence、重放 | LOCAL_VERIFIED | `pkg/reliable`、`pkg/pipeline` |
-| 无 sticky session 的多节点 Worker | LOCAL_VERIFIED | `pkg/storage`、`pkg/worker`、Session FIFO/Redis lease |
-| 企业微信加密文本 1:1 回调和主动回复 | IMPLEMENTED | `pkg/channel/wework_adapter.go` |
-| Telegram webhook、429/retry 和分段回复 | IMPLEMENTED | `pkg/channel/telegram_adapter.go` |
-| Summary 生成、预算、取消排空和 Runner overlay | LOCAL_VERIFIED | `pkg/summary`、`pkg/summaryruntime`、`cmd/summary-worker`、migration 042 |
-| Qdrant Knowledge 租户/App 隔离 | LOCAL_VERIFIED | `pkg/knowledgeplane`、`pkg/platformtool` |
-| S3/MinIO Artifact 不可变版本、hash、tombstone | LOCAL_VERIFIED | `pkg/artifactplane`、migration 039 |
-| Redis→PostgreSQL Session 迁移和 Session/Vector/Object projection | LOCAL_VERIFIED | `pkg/datamigration`、`pkg/dataprojection`、migration 037/040 |
-| 工具白名单、危险操作审批、预算和结果脱敏 | LOCAL_VERIFIED | `pkg/governance`、`pkg/approval`、`pkg/budget` |
-| MCP Streamable HTTP/SSE 运行时纵切 | LOCAL_VERIFIED | `pkg/platformtool/mcp.go`、`pkg/worker/mcp_runtime_integration_test.go` |
-| Trace、Metrics、Audit 和 Summary 告警 | LOCAL_VERIFIED | `pkg/telemetry`、`deploy/prometheus-rules.yml` |
-| Compose/Kubernetes 模板和 releaseverify | LOCAL_VERIFIED | `deploy/`、`pkg/releaseverify`、`scripts/k8s_apply.sh` |
-| 真实 IM sandbox | EXTERNAL_REQUIRED | `docs/EXTERNAL_ACCEPTANCE_RUNBOOK.md` |
-| 正式 Kubernetes/mesh、KMS/Vault、云 IAM、HA/DR、容量 | EXTERNAL_REQUIRED | `docs/EXTERNAL_ACCEPTANCE_RUNBOOK.md`、`docs/RISK_REGISTER.md` |
-| Graph/Chain/Parallel/Cycle concrete runtime | LOCAL_VERIFIED | 内置上游 Agent factory、实际拓扑执行、Worker composition；自定义 runtime 仍要求稳定 capability identity |
+## 5. 验证与交付
 
-## 5. 重要一致性和安全决策
+源码包提供常规测试、race 门禁、PostgreSQL/Redis/Qdrant/MinIO 集成测试、故障演示、内存基准、Compose/Kubernetes 配置和 CI workflow。
 
-- Gateway 先写 Inbox 再 ack；数据库失败不能伪造成功。
-- PostgreSQL lease-sensitive mutation 在同一事务内先锁行，再按 `clock_timestamp()` 重检 owner/fence/expiry，避免等待行锁期间租约过期仍被接受。
-- Provider/Tool/模型响应在副作用边界后丢失时进入 reconciliation，不自动重跑可能已经产生副作用的请求；系统明确是 at-least-once，不宣传 exactly-once。
-- Tenant、App、Session owner、Channel account、AgentVersion 和 reply target 均在持久化边界固化；Worker 不能覆盖 Gateway 选择的投递路由。
-- 租户 JSON 只能保存加密值、profile ID 或 operator-owned `SecretRef`；MCP URL/Header 由运维预注册，Worker 才解析 Header Secret；模型密钥只进入 Worker/Summary Worker，Channel 密钥只进入 Gateway/Delivery。
-- Qdrant 物理 ID、Artifact object key 和 Session schema/prefix 都绑定租户/App 作用域；迁移 projection 只有目标副作用成功且最终 fence 仍有效时才写 marker。
-- 日志、trace 和审计不保存 token、API key、DSN、Authorization、完整用户正文或原始用户标识；用户标识使用租户 HMAC 假名。
-- Docker/Kubernetes 运行时采用 non-root、只读根文件系统、`cap_drop: ALL`、`no-new-privileges`、seccomp、默认拒绝 NetworkPolicy 和不可变镜像 digest 门禁。
+交付包 `verification-evidence/current-validation.log` 保存本提交的常规全量测试、vet、race 与故障演示输出。功能断言和目标环境状态集中在 [验收证据](ACCEPTANCE_EVIDENCE.md)，执行步骤在 [验证指南](VERIFICATION.md)。实际 IM 收发、目标集群、密钥系统、HA/DR 与业务容量按 [目标环境 Runbook](EXTERNAL_ACCEPTANCE_RUNBOOK.md) 验收。
 
-## 6. 现有验证记录与证据层级
+提交材料包括当前源码、架构与数据模型、竞赛方案、安全与风险说明、操作手册、测试证据和校验清单。凭据、运行时数据、缓存和构建产物不进入提交包。
 
-`docs/ACCEPTANCE_EVIDENCE.md` 是逐项状态的权威矩阵，`docs/VERIFICATION.md` 只保留当前基线命令、证据来源和外部验收边界。证据按三层理解：
+## 6. 技术价值
 
-1. `LOCAL_VERIFIED`：当前源码在本机执行过命令，或在可复现的本地隔离后端完成并保存退出码/后状态。
-2. `IMPLEMENTED`：生产路径和自动化回归已具备，但仍需要目标账号、供应商或基础设施完成验收。
-3. `EXTERNAL_REQUIRED`：当前没有足够的目标环境证据，必须按 `docs/EXTERNAL_ACCEPTANCE_RUNBOOK.md` 执行，不能由单测或模拟器替代。
-
-当前基线保留的证据类型包括：
-
-- `go mod verify`、gofmt、build、vet、全量 unit test、全量 race test 和 integration-tag 编译门。
-- 真实 PostgreSQL、Redis、Qdrant、MinIO 纵切；Summary→Runner 请求捕获；Session migration；Knowledge/Artifact projection；MCP 本地 Streamable HTTP 纵切。
-- Compose 隔离栈、健康探针、Prometheus 目标和 Grafana health 的历史记录；仅适用于记录中的确切源码与环境。
-- 早期三节点 K3d/Linkerd、镜像 digest rollout/rollback、HPA、OTLP TLS、Vault dev workload identity 和 2,200 条公平队列容量记录仅作为带日期、带适用范围的历史实验室证据；本轮代码/文档改动未重新声明这些目标环境链路通过。
-
-这些记录都保留了环境和边界说明。它们证明源码和指定本地实验场景，不等于目标生产集群、真实 IM、正式密钥系统或 HA/灾备认证。
-
-## 7. 本次接续复核状态（2026-09-06）
-
-- 已确认权威源码目录、最终交接文档、验收/安全/风险/竞赛材料和归档记录均在工作区；交付包不包含 Git 元数据，归档构建使用 `-buildvcs=false`。
-- C 盘权威树与本线程 C 盘副本除真实 `deploy/.env.wecom.local` 外一致；没有任何硬编码 `E:\` 路径。该环境文件含本地企微/运行时秘密，永不进入交付包。
-- 直接在新归档目录执行 Compose 时若没有 `.env` 会按设计返回必需变量错误；这不是 E 盘依赖。`scripts/run_c_local_stack.ps1` 从 `$PSScriptRoot` 定位源码，用进程内一次性验证值和隔离端口启动；Docker/镜像结果必须按执行日期单独记录。
-- 先前 C-local、Compose 和真实后端纵切日志属于已保存的本地证据；本轮文档/代码变更后的 Go 单测、vet、race 结果以 `docs/VERIFICATION.md` 和 CI 为准。Docker Compose、K3d、Linkerd、Vault 和容量实验不会因本轮源码门禁自动继承为“最新通过”。
-- 当前源码门禁使用 Go 1.26.7 自动工具链、`GOMAXPROCS=1`、`-p 1`；每次提交后应重新记录 module verify、gofmt、build、vet、unit、race 的退出码。集成/Compose/集群证据必须分别标注执行日期和环境。
-- 当前企微/Telegram 所需 route key、provider secret、CorpID/AgentID 均未配置；公网 tunnel `/health` 为 200、无 route key 的 `/webhook` 为 400，但真实 IM 回路仍为 `EXTERNAL_REQUIRED`，不能把企微登录过期页当作已登录证据。
-- 打包后还会执行：精确文件清单、秘密模式扫描、归档成员复核、SHA-256、临时解包比对，以及只清理本轮两个临时 Compose 项目。
-
-## 8. 交付和外部验收边界
-
-可交付表述应为：**“Enterprise Multi-Tenant Agent Platform 候选生产实现，源码与本地实测证据随包提供。”**
-
-在以下证据写入目标环境记录前，不得表述为“已生产上线/生产认证”：
-
-1. 企业微信和 Telegram sandbox 的 URL verify、加密文本、重复回调、限流/失败恢复和真实出站回复。
-2. 目标 Kubernetes/service-mesh 的 rollout、rollback、strict mTLS、证书轮换和节点故障。
-3. KMS/Vault workload identity、最小权限、HA/auto-unseal、审计和无停机双 key 轮换。
-4. PostgreSQL/Redis failover、PITR/异地恢复、RPO/RTO、云 S3/Qdrant IAM 和私网 egress。
-5. 业务 MCP profile 的真实认证、出网 allowlist、幂等、配额、超时和 SLA。
-
-## 9. 归档策略
-
-本次精简包覆盖当前平台源码、当前评审文档和脱敏验证证据。为避免把凭据扩散到压缩包，明确排除：真实 `.env`/`.env.*`（包括 `deploy/.env.wecom.local`）、Docker volume/image、运行时数据库、日志/缓存、二进制、临时工作目录、E 盘实验室缓存/数据库/证书/私钥/工具、历史源码和未审核的嵌套归档。排除项、来源路径、文件计数和 SHA-256 会在包内的 `PACKAGE_INVENTORY_20260905.md` 与 `SHA256SUMS_20260905.txt` 中逐项记录。
-
-推荐阅读顺序：
-
-1. 本文件
-2. `README.md`
-3. `docs/COMPETITION_SUBMISSION.md`
-4. `docs/ACCEPTANCE_EVIDENCE.md`
-5. `docs/DATA_MODEL.md`
-6. `docs/SECURITY_REVIEW.md`
-7. `docs/RISK_REGISTER.md`
-8. `ENTERPRISE_PLATFORM_HANDOFF.md`
-9. `docs/EXTERNAL_ACCEPTANCE_RUNBOOK.md`
+平台把 Agent 从单进程交互提升为可部署、可治理、可恢复的多租户服务。主要价值不在于增加一种模型调用方式，而在于统一消息身份、执行版本、共享状态和外部副作用的处理规则，使业务能够在同一套基础设施中部署不同 Agent，并对失败的原因、影响范围和恢复路径进行追踪。

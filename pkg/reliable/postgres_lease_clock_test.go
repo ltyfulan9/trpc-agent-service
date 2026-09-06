@@ -81,6 +81,14 @@ func TestPostgresLeaseMutationsUseWallClockFence(t *testing.T) {
 			defer db.Close()
 
 			mock.ExpectBegin()
+			if test.name == "renew inbox" {
+				mock.ExpectQuery(`SELECT tenant_id FROM inbox_messages WHERE id=\$1`).
+					WithArgs(int64(7)).WillReturnRows(sqlmock.NewRows([]string{"tenant_id"}).AddRow("tenant-a"))
+				mock.ExpectExec(`INSERT INTO tenant_queue_schedule`).
+					WithArgs("tenant-a").WillReturnResult(sqlmock.NewResult(0, 0))
+				mock.ExpectQuery(`SELECT tenant_id FROM tenant_queue_schedule WHERE tenant_id=\$1 FOR UPDATE`).
+					WithArgs("tenant-a").WillReturnRows(sqlmock.NewRows([]string{"tenant_id"}).AddRow("tenant-a"))
+			}
 			lockID := int64(7)
 			if test.lockTable == "outbox_messages" {
 				lockID = 8

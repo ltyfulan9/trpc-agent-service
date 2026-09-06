@@ -69,7 +69,7 @@ func TestServiceProjectsExactVersionIdempotentlyAndMakesItLoadable(t *testing.T)
 
 	mock.ExpectBegin()
 	mock.ExpectExec(regexp.QuoteMeta("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")).WithArgs(sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectQuery("SELECT mime_type,size_bytes,content_sha256,deleted_at FROM artifact_versions").WithArgs(
+	mock.ExpectQuery("SELECT mime_type,size_bytes,content_sha256,deleted_at,object_key FROM artifact_versions").WithArgs(
 		"tenant-a", "support", "owner-1", "session-1", "report.txt", 7,
 	).WillReturnError(sql.ErrNoRows)
 	mock.ExpectExec("INSERT INTO artifact_versions").WithArgs(

@@ -1,61 +1,28 @@
-Enterprise Multi-Tenant Agent Platform checkpoint source package
+Enterprise Multi-Tenant Agent Platform
 
-Included:
-- cmd/                 Go service and job entrypoints
-- pkg/                 multi-tenant control/data planes, channels, governance,
-                       telemetry, reliable pipeline and migration projections
-- migrations/          versioned PostgreSQL schema migrations
-- deploy/              Compose, Kubernetes and monitoring templates
-- scripts/             validation and external-acceptance helpers
-- test/                unit/integration evidence harnesses
-- docs/                architecture, acceptance, security and risk documents
-- .github/workflows/   reproducible CI gates
-- README.md, HANDOFF.md, PACKAGE_MANIFEST.md, LICENSE, go.mod, go.sum
-- ENTERPRISE_PLATFORM_HANDOFF.md
+Source layout:
+  cmd/                 Services, management commands and local demo
+  pkg/                 Control plane, data plane and runtime contracts
+  migrations/          PostgreSQL schema and embedded migration runner
+  deploy/              Compose, Kubernetes and monitoring source templates
+  scripts/             Build, validation, configuration and release helpers
+  test/                Integration tests
+  docs/                Architecture, operations and acceptance documentation
+  .github/workflows/   Automated verification
+  go.mod, go.sum       Dependency versions and checksums
+  LICENSE              License
+  Makefile             Build and verification entry points
 
-Current platform capabilities included in this checkpoint:
-- Production Summary Generator persistence and real Runner reinjection proof.
-- Qdrant Knowledge and PostgreSQL/MinIO Artifact data planes.
-- Versioned vector/object/session migration projections with durable ledger,
-  fencing, idempotent catch-up, validation and rollback-window semantics.
-- A real tRPC Session Redis-to-PostgreSQL vertical slice covering session state,
-  ordered events and tracks through public framework service contracts.
-- Operator-owned MCP profiles over the official tRPC-Agent-Go ToolSet, with an
-  actual local Streamable HTTP Worker/Runner/governance vertical slice.
-- WeCom/Telegram adapters, encrypted callback verification, Inbox/Outbox,
-  tenant-scoped credentials, audit/telemetry and deployment manifests.
-- Windows/Bash WeCom sandbox helpers for a pinned temporary HTTPS tunnel,
-  hidden credential capture and isolated control-plane/bootstrap execution.
+Reading order:
+  README.md
+  docs/JUDGE_QUICKSTART.md
+  docs/COMPETITION_SUBMISSION.md
+  docs/ARCHITECTURE.md
+  docs/DATA_MODEL.md
+  docs/ACCEPTANCE_EVIDENCE.md
+  ENTERPRISE_PLATFORM_HANDOFF.md
 
-Canonical reading order:
-1. docs/COMPETITION_SUBMISSION.md
-2. docs/ACCEPTANCE_EVIDENCE.md
-3. docs/DATA_MODEL.md
-4. docs/RISK_REGISTER.md
-5. docs/SECURITY_REVIEW.md
-6. ENTERPRISE_PLATFORM_HANDOFF.md
-
-Excluded from the archive:
-- Git metadata and history
-- real .env files, local WeCom credentials and other secrets
-- binaries, coverage output, logs, caches and temporary files
-- Docker volumes/images and all user data outside this source tree
-
-Evidence boundary:
-- Local automated and real-backend evidence is recorded in the acceptance document.
-  A real WeCom tenant callback, target-cluster rollout, target KMS/Vault identity
-  and target-environment load/DR exercises remain external evidence until their
-  dated acceptance records exist.
-
-Reproducibility note:
-- The current sanitized source inventory and byte count are generated at package
-  time; the final delivery inventory is authoritative after all edits.
-- The source tree intentionally has no `.env`. On Windows, run
-  `scripts/run_c_local_stack.ps1 -Build` to resolve the root from
-  `$PSScriptRoot`, use process-only validation values and isolated ports. A
-  direct Compose invocation without an env file must fail with a required
-  variable error; this is expected and keeps credentials out of the archive.
-- Historical source snapshots, reference-service material, originality archives
-  and machine-maintenance notes are intentionally excluded from this focused
-  delivery bundle. It excludes Git metadata, credentials, databases, caches,
-  certificates/private keys, binaries, Docker data and nested archives.
+Package verification:
+  The package inventory lists delivered files.
+  SHA256SUMS covers the packaged source and verification evidence.
+  Runtime credentials are provided separately during deployment.

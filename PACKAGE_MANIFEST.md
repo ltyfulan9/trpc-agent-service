@@ -1,60 +1,59 @@
-# Package manifest
+# 交付内容索引
 
-This tree is the source-only Enterprise Multi-Tenant Agent Platform release candidate. The delivery bundle records the exact sanitized inventory at packaging time. The package inventory and SHA-256 file are authoritative if the tree changes. It deliberately excludes Git history, agent scratch state, historical snapshots, real `.env` files, binaries, coverage output, archive/ and nested archives. Current verification evidence is recorded in `docs/ACCEPTANCE_EVIDENCE.md`, `docs/VERIFICATION.md` and the final handoff.
+项目：Enterprise Multi-Tenant Agent Platform
 
-## Runtime entry points
+交付包的 `platform-source/` 保存本仓库源码，`verification-evidence/` 保存本次验证日志；包根目录包含文件清单和 SHA-256 校验文件。
 
-| Command | Responsibility |
+## 目录职责
+
+| 路径 | 内容 |
 |---|---|
-| `cmd/gateway` | IM verification, tenant/channel routing, fail-closed rate limit, durable Inbox commit |
-| `cmd/consumer` | Fenced Inbox claims and authenticated Worker invocation |
-| `cmd/worker` | Pinned Agent version, shared Session/Memory, governance and result persistence |
-| `cmd/summary-worker` | Durable Summary claim/generate/budget/fenced publish loop with health, metrics and graceful drain |
-| `cmd/delivery` | Fenced Outbox claims, typed provider retry, segmented cursor and DLQ |
-| `cmd/admin` | Tenant and Agent control plane |
-| `cmd/migrate` | Locked/checksummed schema migration |
-| `cmd/replay` | Audited Inbox/Outbox DLQ replay |
-| `cmd/releaseverify` | Verifies rendered Kubernetes release digests, confidential Worker transport and controlled provider egress |
+| `cmd/` | 独立进程、管理命令与本地演示入口 |
+| `pkg/` | 控制面、数据面、协议、治理和可靠状态机 |
+| `migrations/` | PostgreSQL schema、嵌入式迁移器、up/down 和 checksum |
+| `deploy/` | Compose、Kubernetes 源模板、监控和容器构建 |
+| `scripts/` | 构建、验证、接入配置、发布和打包工具 |
+| `test/` | PostgreSQL/Redis/Qdrant/MinIO 集成测试 |
+| `docs/` | 方案、架构、数据模型、安全、运行和验收 |
+| `.github/workflows/` | 自动化验证流程 |
+| `go.mod` / `go.sum` / `LICENSE` | 依赖版本、校验与许可 |
 
-For a fresh Windows checkout or extracted archive, use `scripts/run_c_local_stack.ps1 -Build` for the disposable C-local Compose path. It resolves the repository from `$PSScriptRoot` and uses process-only validation values, so the result is independent of the caller's drive (including E:). A normal deployment must provide a separately protected `.env` and real Secret Manager references.
+数据库初始化包含 `migrations/001..044`，由嵌入式迁移器按顺序执行并校验 checksum。
 
-## Evidence-bearing content
+## 命令入口
 
-- `migrations/001..043`: authoritative platform schema changes; every up file has a down pair. Migrations 013–016 add durable per-session FIFO and trusted reply routing; migration 017 binds execution idempotency; migration 018 adds append-only fenced attempts, leases and producer-bound results; migration 019 adds session execution admission guards; migration 020 adds Inbox reconciliation-wait state; migration 021 makes legacy stale-expiry draining trigger-safe; migration 022 adds the operator-controlled backend migration state; migration 023 adds deduplicated, leased Summary jobs and event-sequence CAS checkpoints; migration 024 adds additive Summary job size and completion-sequence invariants without rewriting 023; migration 025 bounds persisted migration error text without rewriting 022; migration 026 rotates legacy webhook routing capabilities; migration 027 adds Outbox reconciliation-wait state; migrations 028–030 add durable one-time tool approvals and bounded Inbox approval waits; migration 031 adds bounded expiry-reaper indexes; migration 032 persists the authoritative group/session-owner routing decision; migration 033 adds the Outbox pre-dispatch fence so provider-side-effect ambiguity cannot be automatically resent; migration 034 adds partial created-at indexes for bounded automatic queue depth and oldest-message inspection; migration 035 adds operator-owned tenant fair-queue schedule state and a fair Inbox head index; migration 036 adds the tenant/status partial index used by atomic queue admission counts; migration 037 adds the fenced opaque-record target table for concrete Redis-to-PostgreSQL migration; migration 038 rekeys Summary state with the exact Session owner; migration 039 adds immutable Artifact versions; migration 040 distinguishes copied records from applied projections; migration 041 pins Summary jobs to immutable Agent versions and supports deferred target resolution; migration 042 adds exact event cutoff timestamp and event ID metadata required for safe Runner history trimming; migration 043 scopes projection markers to a migration target identity so rerouting to a fresh destination cannot reuse a prior destination marker.
-- `pkg/reliable` and `pkg/pipeline`: the single production Inbox/Outbox state machine.
-  PostgreSQL lease-sensitive mutations first acquire the target row with
-  `SELECT ... FOR UPDATE` and then evaluate the owner/fence/expiry predicate
-  against `clock_timestamp()` in the same transaction; SQL-shape and live
-  PostgreSQL lock-wait tests cover this ordering.
-- `pkg/controlplane`: immutable app/version/deployment resolution, retry pinning and stale execution reconciliation.
-- `pkg/datamigration`: durable migration state machine plus a concrete
-  versioned Redis journal and PostgreSQL ledger. `pkg/dataprojection/session.go`
-  exports canonical Session-owned State/Event/Track from the official Redis
-  service and idempotently materializes it through the official PostgreSQL
-  service, with suffix-only catch-up, divergence/truncation rejection and CAS
-  cutover evidence. Summary state remains in its backend-neutral checkpoint table
-  rather than pretending to translate private provider summary schemas. Redis
-  payload keys are immutable and version-suffixed, with separate deletion
-  markers;
-  PostgreSQL target rollback refuses to drop non-empty migrated data.
-- `pkg/adminauth`: authenticated Principal, route permissions and tenant-scoped RBAC.
-- `pkg/tenant`: tenant configuration validation, scoped credential reads, AES-GCM envelope rotation, and a prefix-limited `SecretResolver` boundary for operator-owned key references. Channel.Config is closed to `account_id`, `corp_id`, and `encoding_aes_key`; the built-in `env://TRPC_SECRET_*` resolver is not an external KMS/Vault implementation.
-- `pkg/storage`, `pkg/worker`, `pkg/governance`: tenant backend wiring, bounded versioned Runner cache, full-invocation lease and Runner policy enforcement. `RuntimeAgentRegistry` is fail-closed by default, and its Admin/Worker capability fingerprint binds immutable versions to an operator-declared runtime implementation set; custom factories should use `RegisterWithCapability` for build identity.
-- `pkg/summary` and `pkg/summaryruntime`: durable Summary job coordination, lease renewal, bounded retries, exact event boundary, scope/hash validation and PostgreSQL fenced CAS; the production runtime reloads the pinned Agent version and authoritative tRPC Session, invokes the framework Summarizer under tenant budget, and Worker overlays the resulting checkpoint into the next Runner Session history.
-- `pkg/runtimeplane`, `pkg/knowledgeplane` and `pkg/artifactplane`: Worker-only resolution of operator profiles and secrets, tenant/app-scoped Qdrant Knowledge, and PostgreSQL immutable Artifact metadata backed by S3/MinIO objects. Non-Worker processes only receive the public profile manifest validator.
-- `pkg/platformtool/mcp.go`: operator-owned MCP admission/runtime catalog over the official tRPC-Agent-Go ToolSet. Admin validates canonical tool declarations without credentials; Worker resolves Header SecretRefs and connects only profiles referenced by an immutable AgentVersion. The real local Streamable HTTP vertical slice runs through Worker, Runner and governance.
-- `pkg/dataprojection`: lease-fenced Session, Knowledge and Artifact projection from migration records into PostgreSQL Session, Qdrant and exact S3/MinIO versions. A projection marker is committed only after the target effect succeeds and the final fence remains valid.
-- `deploy/docker-compose.yml`: development/integration composition. External images are tag-and-digest pinned; the seven Go services/jobs use non-root images, read-only root filesystems, bounded `/tmp`, `cap_drop: ALL`, `no-new-privileges` and non-privileged mode. All eleven long-running services use `restart: unless-stopped`, while the one-shot migration job remains `restart: no`; deployment tests prevent either contract from regressing.
-- `deploy/kubernetes`: hardened source templates and default-deny NetworkPolicy. `scripts/k8s_apply.sh` refuses those mutable templates directly; it requires a verified, digest-pinned rendered release bundle, reviewed controlled-egress policy and explicit breaking-migration drain gate before it mutates workloads. Linkerd port 4143, Worker-before-Consumer rollout order, application-container HPA metrics and explicit fair-queue concurrency are regression-tested.
-- `pkg/releaseverify`: one release-boundary validator shared by the release CLI and unit tests. It verifies exact workload coverage, immutable OCI digests, Consumer-to-Worker confidentiality mode and an egress-gateway-only production policy.
-- `.github/workflows/verify.yml`, `Makefile`, `scripts/require_secure_go.sh`, `scripts/static_verify.sh`, `scripts/validate.sh` and `scripts/run_c_local_stack.ps1`: executable CI and local verification gates. The production path rejects Go below 1.26.7, while Go 1.25.14 remains a separate source-compatibility job. The delivery archive omits Git metadata, so portable builds disable VCS stamping with `-buildvcs=false` when required. `make build` is the portable source/archive build entry; `make verify` runs the full validation gate.
-- `test/integration`: real PostgreSQL, Redis, Qdrant and MinIO coverage for queue fencing, official Redis→PostgreSQL Session migration, Knowledge search, Artifact lifecycle and production Summary→Runner consumption. Tests use per-test scopes and ordered cleanup; external LLM calls are replaced by a local OpenAI-compatible fake.
-- `docs/JUDGE_QUICKSTART.md`, `docs/COMPETITION_SUBMISSION.md`, `docs/ACCEPTANCE_EVIDENCE.md`, `docs/DATA_MODEL.md`, `docs/RISK_REGISTER.md`, `docs/SECURITY_REVIEW.md` and `docs/EXTERNAL_ACCEPTANCE_RUNBOOK.md` are the judge/operator entry points. The quickstart separates local evidence from external acceptance and includes the GitHub/clone/verify submission gate; `scripts/external_acceptance_preflight.ps1` performs a zero-Provider-call credential-shape and public callback preflight without printing secret values.
-- `scripts/wecom_sandbox_tunnel.ps1`, `wecom_sandbox_setup.ps1`, `wecom_sandbox_setup.sh` and `wecom_sandbox_bootstrap.ps1` form the Windows/Bash test-tenant path: pinned temporary HTTPS tunnel, hidden local credential capture, isolated-port Compose startup and idempotency-aware control-plane bootstrap. The ignored `deploy/.env.wecom.local` is explicitly excluded from every source archive.
-- Custom `reliable.Store` implementations remain source-compatible with the base queue interface, but production `cmd/delivery`/`pipeline.NewDelivery` requires the additional `reliable.OutboxDispatchFence` capability. This prevents a legacy adapter from bypassing the durable `DISPATCH_STARTED` safety boundary.
-- `reliable.FairInboxClaimer` is an optional capability enabled by `FAIR_QUEUE_ENABLED`; built-in stores implement weighted virtual-runtime tenant scheduling, atomic `max_inflight` checks, and `QueueAdmissionStore` `max_queued` enforcement. The PostgreSQL final claim mutation rechecks current state and eligibility after candidate selection so a stale concurrent candidate cannot resurrect a completed Inbox. `FairInboxReadiness` lets durable entry points verify migration 035's table/index before startup. Fair deployments must reject legacy stores without these capabilities; custom stores remain compatible only when fair policy is disabled.
-- Production Gateway and Delivery also require the optional scoped tenant reader capabilities. Legacy services without them are rejected rather than falling back to a full credential-bearing tenant read.
-- Built-in `MarkDelivered` and `AdvanceOutbox` implementations additionally require `DISPATCH_STARTED`; callers cannot commit a successful delivery directly from `DELIVERING`. Custom stores should enforce the same predicate for parity.
-- `docs/VERIFICATION.md`: current command results and explicit local-versus-external evidence boundaries.
+| 命令 | 职责 |
+|---|---|
+| `cmd/gateway` | IM 验证、租户/通道路由、限流、Inbox 提交 |
+| `cmd/consumer` | FIFO/fence 领取、Worker 调用、Inbox/Outbox 事务衔接 |
+| `cmd/worker` | 固定版本 Runner、共享数据面、治理和执行结果持久化 |
+| `cmd/summary-worker` | 摘要领取、生成、预算、fenced checkpoint、排空 |
+| `cmd/delivery` | Outbox dispatch fence、分段、重试、核对和 DLQ |
+| `cmd/admin` | 租户与 Agent 生命周期、审批和审计 |
+| `cmd/migrate` | schema 迁移与状态查询 |
+| `cmd/replay` | 带 actor/reason 的 Inbox/Outbox 恢复 |
+| `cmd/releaseverify` | Kubernetes workload、digest、传输和网络策略门禁 |
+| `cmd/demo` | MemoryStore 本地故障状态演示 |
 
-File counts are inventory only, never acceptance evidence. Functional acceptance requires the commands in `scripts/validate.sh` to exit successfully on a machine with Go and Docker. This focused delivery bundle contains only the current source, review materials and redacted verification evidence; historical source snapshots, reference implementations and originality archives are intentionally excluded. It does not copy E-drive caches, databases, certificates, private keys, tools or Docker data.
+Admin/Worker 在进程启动时封存 runtime registry；配置、HTTP、策略和装配保留在各自组合根内，领域规则由 `pkg/` 共享。
+
+## 核心模块
+
+| 模块 | 主要契约 |
+|---|---|
+| `reliable` / `pipeline` | 幂等、同 Session FIFO、lease/fence、原子完成、dispatch fence 和审计重放 |
+| `controlplane` | immutable Version、stable/canary、重试版本绑定、execution guard 与 reconciliation |
+| `tenant` / `adminauth` | 加密配置、SecretRef 作用域、Principal/RBAC |
+| `storage` / `worker` | 共享 Session/Memory、调用租约、Runner 缓存和模型执行 |
+| `governance` / `platformtool` | Plugin、预算、审批、脱敏、MCP 准入与工具白名单 |
+| `summary` / `summaryruntime` | 事件边界、固定版本生成、checkpoint CAS、Runner overlay |
+| `runtimeplane` / `knowledgeplane` / `artifactplane` | operator profile、Qdrant 作用域、S3/MinIO 对象及版本元数据 |
+| `datamigration` / `dataprojection` | 复制、journal、catch-up、投影 ledger、shadow 和 CAS cutover |
+| `telemetry` / `health` | trace、指标、审计、readiness、drain |
+| `releaseverify` | 受控应用发布物及网络、密钥和迁移前置条件 |
+
+## 验证与配置
+
+[验证方法](docs/VERIFICATION.md) 说明测试环境与命令，[验收矩阵](docs/ACCEPTANCE_EVIDENCE.md) 说明各能力的检查项，[交付指南](ENTERPRISE_PLATFORM_HANDOFF.md) 说明启动和接入顺序。
+
+本地 Compose 使用进程内测试配置；目标部署通过 Secret Manager 或受保护的环境文件注入凭据。运行数据、实际凭据和本机生成的部署快照不包含在源码包中。

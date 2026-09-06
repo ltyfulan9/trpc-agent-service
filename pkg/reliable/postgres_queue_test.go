@@ -49,6 +49,8 @@ func TestPostgresFairClaimLocksScheduleAndMessageInOneTransaction(t *testing.T) 
 	now := time.Date(2026, 8, 28, 9, 0, 0, 0, time.UTC)
 	leaseUntil := now.Add(time.Minute)
 	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT virtual_time.*FROM inbox_fair_queue_clock.*FOR UPDATE").
+		WillReturnRows(sqlmock.NewRows([]string{"virtual_time"}).AddRow(int64(20_000_000)))
 	rows := sqlmock.NewRows([]string{
 		"id", "tenant_id", "channel_type", "channel_account_id",
 		"external_message_id", "agent_app_name", "conversation_id", "reply_to_id",
@@ -62,8 +64,12 @@ func TestPostgresFairClaimLocksScheduleAndMessageInOneTransaction(t *testing.T) 
 		int64(1), strings.Repeat("a", 64), []byte(`{"content":"hello"}`), "", InboxReceived,
 		0, 5, nil, nil, nil, int64(0), nil, "", now, now,
 	)
-	mock.ExpectQuery("(?s)WITH candidates AS.*active\\.status='PROCESSING'\\s+AND active\\.lease_until > clock_timestamp\\(\\)").WillReturnRows(rows)
-	mock.ExpectExec("UPDATE tenant_queue_schedule").WithArgs("tenant-a").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("(?s)WITH candidates AS.*active\\.status='PROCESSING'\\s+AND active\\.lease_until > clock_timestamp\\(\\)").
+		WithArgs(int64(20_000_000)).WillReturnRows(rows)
+	mock.ExpectQuery("SELECT weight, max_inflight, virtual_runtime").WithArgs("tenant-a").
+		WillReturnRows(sqlmock.NewRows([]string{"weight", "max_inflight", "virtual_runtime", "inflight"}).AddRow(int64(4), int64(2), int64(0), int64(0)))
+	mock.ExpectExec("UPDATE tenant_queue_schedule").WithArgs("tenant-a", int64(20_250_000)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE inbox_fair_queue_clock").WithArgs(int64(20_000_000)).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery("UPDATE inbox_messages").
 		WithArgs(int64(7), "consumer-a", int64(60000), false).
 		WillReturnRows(sqlmock.NewRows([]string{"attempt_count", "lease_version", "lease_until", "updated_at"}).
@@ -92,6 +98,8 @@ func TestPostgresFairClaimDoesNotResurrectCompletedStaleCandidate(t *testing.T) 
 	store := NewPostgresStore(db)
 	now := time.Date(2026, 8, 28, 9, 0, 0, 0, time.UTC)
 	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT virtual_time.*FROM inbox_fair_queue_clock.*FOR UPDATE").
+		WillReturnRows(sqlmock.NewRows([]string{"virtual_time"}).AddRow(int64(0)))
 	rows := sqlmock.NewRows([]string{
 		"id", "tenant_id", "channel_type", "channel_account_id",
 		"external_message_id", "agent_app_name", "conversation_id", "reply_to_id",
@@ -105,8 +113,11 @@ func TestPostgresFairClaimDoesNotResurrectCompletedStaleCandidate(t *testing.T) 
 		int64(1), strings.Repeat("a", 64), []byte(`{"content":"hello"}`), "", InboxReceived,
 		0, 5, nil, nil, nil, int64(0), nil, "", now, now,
 	)
-	mock.ExpectQuery("(?s)WITH candidates AS").WillReturnRows(rows)
-	mock.ExpectExec("UPDATE tenant_queue_schedule").WithArgs("tenant-a").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("(?s)WITH candidates AS").WithArgs(int64(0)).WillReturnRows(rows)
+	mock.ExpectQuery("SELECT weight, max_inflight, virtual_runtime").WithArgs("tenant-a").
+		WillReturnRows(sqlmock.NewRows([]string{"weight", "max_inflight", "virtual_runtime", "inflight"}).AddRow(int64(1), int64(0), int64(0), int64(0)))
+	mock.ExpectExec("UPDATE tenant_queue_schedule").WithArgs("tenant-a", int64(1_000_000)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE inbox_fair_queue_clock").WithArgs(int64(0)).WillReturnResult(sqlmock.NewResult(0, 1))
 	// Another transaction completed this Inbox after the candidate scan. The
 	// guarded UPDATE must affect no row, roll back the schedule increment and
 	// turn the lost race into ordinary ErrNoWork.
@@ -158,6 +169,10 @@ func TestPostgresFairQueueReadinessRequiresMigrationObjects(t *testing.T) {
 		store := NewPostgresStore(db)
 		mock.ExpectQuery("SELECT to_regclass").
 			WillReturnRows(sqlmock.NewRows([]string{"?column?"}).AddRow(ready))
+		if ready {
+			mock.ExpectQuery("SELECT virtual_time FROM inbox_fair_queue_clock").
+				WillReturnRows(sqlmock.NewRows([]string{"virtual_time"}).AddRow(int64(0)))
+		}
 		err = store.CheckFairInboxReady(context.Background())
 		if ready && err != nil {
 			t.Fatalf("ready schema error=%v", err)

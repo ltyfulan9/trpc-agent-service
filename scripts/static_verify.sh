@@ -44,5 +44,7 @@ while IFS= read -r -d '' source_file; do
     exit "$grep_status"
   fi
 done < <(find cmd pkg -type f -name '*.go' ! -name '*_test.go' -print0)
-bash -n scripts/*.sh
+for shell_script in scripts/*.sh; do
+  bash -n "$shell_script"
+done
 echo "static verification passed (this is not a compile/test result)"

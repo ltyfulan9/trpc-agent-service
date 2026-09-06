@@ -22,6 +22,7 @@ type MemoryStore struct {
 	outboxByInbox   map[int64]int64
 	sessionSequence map[sessionPartition]int64
 	queueSchedule   map[string]*tenantQueueSchedule
+	fairVirtualTime int64
 	replayAudit     []ReplayAuditRecord
 }
 
@@ -183,8 +184,6 @@ func (s *MemoryStore) DeleteTenantQueuePolicy(_ context.Context, tenantID string
 		s.queueSchedule[tenantID] = state
 	}
 	state.policy = policy
-	state.virtualRuntime = 0
-	state.lastClaimedAt = time.Time{}
 	return nil
 }
 
@@ -214,6 +213,7 @@ func (s *MemoryStore) ClaimInboxFair(_ context.Context, owner string, leaseDurat
 		msg      *InboxMessage
 		inflight int64
 		schedule *tenantQueueSchedule
+		runtime  int64
 	}
 	candidates := make(map[string]candidate)
 	for _, msg := range s.inbox {
@@ -241,7 +241,10 @@ func (s *MemoryStore) ClaimInboxFair(_ context.Context, owner string, leaseDurat
 		current, ok := candidates[msg.TenantID]
 		if !ok || msg.SessionSequence < current.msg.SessionSequence ||
 			(msg.SessionSequence == current.msg.SessionSequence && msg.ID < current.msg.ID) {
-			candidates[msg.TenantID] = candidate{msg: msg, inflight: inflight, schedule: state}
+			candidates[msg.TenantID] = candidate{
+				msg: msg, inflight: inflight, schedule: state,
+				runtime: max(state.virtualRuntime, s.fairVirtualTime),
+			}
 		}
 	}
 	if len(candidates) == 0 {
@@ -250,8 +253,8 @@ func (s *MemoryStore) ClaimInboxFair(_ context.Context, owner string, leaseDurat
 	var selected candidate
 	var selectedTenant string
 	for tenantID, item := range candidates {
-		if selected.msg == nil || item.schedule.virtualRuntime < selected.schedule.virtualRuntime ||
-			(item.schedule.virtualRuntime == selected.schedule.virtualRuntime && fairScheduleBefore(item.schedule, selected.schedule, tenantID, selectedTenant)) {
+		if selected.msg == nil || item.runtime < selected.runtime ||
+			(item.runtime == selected.runtime && fairScheduleBefore(item.schedule, selected.schedule, tenantID, selectedTenant)) {
 			selected, selectedTenant = item, tenantID
 		}
 	}
@@ -267,7 +270,10 @@ func (s *MemoryStore) ClaimInboxFair(_ context.Context, owner string, leaseDurat
 	msg.Lease.Fence++
 	msg.Lease.Until = now.Add(leaseDuration)
 	msg.UpdatedAt = now
-	selected.schedule.virtualRuntime = saturatingAdd(selected.schedule.virtualRuntime, fairQueueServiceCost(selected.schedule.policy.Weight))
+	// New and idle tenants enter at the current service start, not at time zero.
+	// Advancing the clock to the finish instead would erase weighted fairness.
+	s.fairVirtualTime = selected.runtime
+	selected.schedule.virtualRuntime = saturatingAdd(selected.runtime, fairQueueServiceCost(selected.schedule.policy.Weight))
 	selected.schedule.lastClaimedAt = now
 	return cloneInbox(msg), nil
 }

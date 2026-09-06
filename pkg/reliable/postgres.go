@@ -328,20 +328,20 @@ func (s *PostgresStore) DeleteTenantQueuePolicy(ctx context.Context, tenantID st
 	}
 	ctx = nonNilContext(ctx)
 	// "Delete" resets the operator override to the documented default. Keep
-	// the row present so existing fair-queue backlog remains claimable.
+	// service debt and tie-break history so resetting policy cannot buy priority.
 	if _, err := db.ExecContext(ctx, `
-		INSERT INTO tenant_queue_schedule (tenant_id, weight, max_queued, max_inflight, virtual_runtime, last_claimed_at, updated_at)
-		VALUES ($1, 1, 0, 0, 0, NULL, clock_timestamp())
+		INSERT INTO tenant_queue_schedule (tenant_id, weight, max_queued, max_inflight, updated_at)
+		VALUES ($1, 1, 0, 0, clock_timestamp())
 		ON CONFLICT (tenant_id) DO UPDATE
 		SET weight=1, max_queued=0, max_inflight=0,
-		    virtual_runtime=0, last_claimed_at=NULL, updated_at=clock_timestamp()`, tenantID); err != nil {
+		    updated_at=clock_timestamp()`, tenantID); err != nil {
 		return fmt.Errorf("reset tenant queue policy: %w", err)
 	}
 	return nil
 }
 
-// CheckFairInboxReady verifies the table and partial index installed by
-// migration 035. It is intentionally a startup probe rather than a claim-path
+// CheckFairInboxReady verifies the schedule, index and durable dispatch clock.
+// It is intentionally a startup probe rather than a claim-path
 // fallback: enabling fair scheduling against an older schema must fail closed
 // before any consumer acknowledges or claims work.
 func (s *PostgresStore) CheckFairInboxReady(ctx context.Context) error {
@@ -353,19 +353,27 @@ func (s *PostgresStore) CheckFairInboxReady(ctx context.Context) error {
 	var ready bool
 	if err := db.QueryRowContext(ctx, `
 		SELECT to_regclass('tenant_queue_schedule') IS NOT NULL
-		   AND to_regclass('idx_inbox_fair_tenant_head') IS NOT NULL`).Scan(&ready); err != nil {
+		   AND to_regclass('idx_inbox_fair_tenant_head') IS NOT NULL
+		   AND to_regclass('inbox_fair_queue_clock') IS NOT NULL`).Scan(&ready); err != nil {
 		return fmt.Errorf("check fair queue schema: %w", err)
 	}
 	if !ready {
-		return fmt.Errorf("%w: migration 035_tenant_queue_schedule is required", ErrFairQueueNotReady)
+		return fmt.Errorf("%w: queue schedule and dispatch clock migrations are required", ErrFairQueueNotReady)
+	}
+	var virtualTime int64
+	if err := db.QueryRowContext(ctx, `SELECT virtual_time FROM inbox_fair_queue_clock WHERE singleton=TRUE`).Scan(&virtualTime); err != nil {
+		return fmt.Errorf("%w: dispatch clock is unavailable: %v", ErrFairQueueNotReady, err)
+	}
+	if virtualTime < 0 {
+		return fmt.Errorf("%w: dispatch clock is invalid", ErrFairQueueNotReady)
 	}
 	return nil
 }
 
 // ClaimInboxFair applies weighted virtual-runtime scheduling over one eligible
-// session head per tenant. The schedule row and message row are locked in the
-// same transaction, so MaxInflight and the fence cannot be bypassed by a
-// competing Consumer replica.
+// session head per tenant. A durable virtual clock serializes only short claim
+// transactions; execution remains concurrent. Schedule/message locks and a
+// fresh quota read keep MaxInflight and fencing inside that same boundary.
 func (s *PostgresStore) ClaimInboxFair(ctx context.Context, owner string, leaseDuration time.Duration) (*InboxMessage, error) {
 	if err := ValidateLeaseOwner(owner); err != nil {
 		return nil, fmt.Errorf("claim inbox fair: %w", err)
@@ -378,11 +386,19 @@ func (s *PostgresStore) ClaimInboxFair(ctx context.Context, owner string, leaseD
 		return nil, err
 	}
 	ctx = nonNilContext(ctx)
-	tx, err := db.BeginTx(ctx, nil)
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return nil, fmt.Errorf("claim inbox fair begin: %w", err)
 	}
 	defer tx.Rollback()
+	var virtualTime int64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT virtual_time FROM inbox_fair_queue_clock WHERE singleton=TRUE FOR UPDATE`).Scan(&virtualTime); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("%w: dispatch clock is missing", ErrFairQueueNotReady)
+		}
+		return nil, fmt.Errorf("claim inbox fair lock clock: %w", err)
+	}
 
 	const selectQuery = `
 		WITH candidates AS (
@@ -430,11 +446,11 @@ func (s *PostgresStore) ClaimInboxFair(ctx context.Context, owner string, leaseD
 		JOIN inbox_messages i ON i.id=s.id
 		JOIN tenant_queue_schedule schedule ON schedule.tenant_id=s.tenant_id
 		WHERE s.max_inflight=0 OR s.inflight < s.max_inflight
-		ORDER BY s.virtual_runtime ASC,
+		ORDER BY GREATEST(s.virtual_runtime, $1) ASC,
 		         s.last_claimed_at NULLS FIRST, s.tenant_id, i.id
 		LIMIT 1
 		FOR UPDATE OF i, schedule SKIP LOCKED`
-	msg, err := scanInbox(tx.QueryRowContext(ctx, selectQuery))
+	msg, err := scanInbox(tx.QueryRowContext(ctx, selectQuery, virtualTime))
 	if errors.Is(err, sql.ErrNoRows) {
 		if err := tx.Commit(); err != nil {
 			return nil, fmt.Errorf("claim inbox fair commit: %w", err)
@@ -445,16 +461,34 @@ func (s *PostgresStore) ClaimInboxFair(ctx context.Context, owner string, leaseD
 		return nil, fmt.Errorf("claim inbox fair select: %w", err)
 	}
 
+	// Read after obtaining the schedule lock, using a fresh Read Committed
+	// snapshot rather than the earlier candidate count after a possible lock wait.
+	var weight, maxInflight, tenantRuntime, inflight int64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT weight, max_inflight, virtual_runtime,
+		       (SELECT COUNT(*) FROM inbox_messages
+		        WHERE tenant_id=$1 AND status='PROCESSING'
+		          AND lease_until > clock_timestamp())
+		FROM tenant_queue_schedule WHERE tenant_id=$1`, msg.TenantID).
+		Scan(&weight, &maxInflight, &tenantRuntime, &inflight); err != nil {
+		return nil, fmt.Errorf("claim inbox fair read locked policy: %w", err)
+	}
+	if maxInflight > 0 && inflight >= maxInflight {
+		return nil, ErrNoWork
+	}
+	serviceStart := max(tenantRuntime, virtualTime)
+	serviceFinish := saturatingAdd(serviceStart, fairQueueServiceCost(weight))
 	const updateScheduleQuery = `
 		UPDATE tenant_queue_schedule
-		SET virtual_runtime=CASE WHEN virtual_runtime > 9223372036854775807 -
-		                                      ((1000000 + weight - 1) / weight)
-		                         THEN 9223372036854775807
-		                         ELSE virtual_runtime + ((1000000 + weight - 1) / weight) END,
+		SET virtual_runtime=$2,
 		    last_claimed_at=clock_timestamp(), updated_at=clock_timestamp()
 		WHERE tenant_id=$1`
-	if _, err := tx.ExecContext(ctx, updateScheduleQuery, msg.TenantID); err != nil {
+	if _, err := tx.ExecContext(ctx, updateScheduleQuery, msg.TenantID, serviceFinish); err != nil {
 		return nil, fmt.Errorf("claim inbox fair update schedule: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE inbox_fair_queue_clock SET virtual_time=$1 WHERE singleton=TRUE`, serviceStart); err != nil {
+		return nil, fmt.Errorf("claim inbox fair advance clock: %w", err)
 	}
 	approvalPending := msg.Status == InboxWaitingApproval
 	const updateQuery = `
@@ -501,11 +535,29 @@ func (s *PostgresStore) RenewInbox(ctx context.Context, id int64, lease Lease, l
 		return Lease{}, err
 	}
 	ctx = nonNilContext(ctx)
-	tx, err := beginLockedInbox(ctx, db, id)
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
-		return Lease{}, fmt.Errorf("renew inbox lock: %w", err)
+		return Lease{}, fmt.Errorf("renew inbox begin: %w", err)
 	}
 	defer tx.Rollback()
+	var tenantID string
+	if err := tx.QueryRowContext(ctx, `SELECT tenant_id FROM inbox_messages WHERE id=$1`, id).Scan(&tenantID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Lease{}, ErrStaleLease
+		}
+		return Lease{}, fmt.Errorf("renew inbox tenant: %w", err)
+	}
+	// Admission must observe a committed renewal before counting active leases.
+	// Lock schedule before Inbox, matching enqueue's duplicate-admission order.
+	if _, err := tx.ExecContext(ctx, `INSERT INTO tenant_queue_schedule(tenant_id) VALUES($1) ON CONFLICT (tenant_id) DO NOTHING`, tenantID); err != nil {
+		return Lease{}, fmt.Errorf("renew inbox ensure schedule: %w", err)
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT tenant_id FROM tenant_queue_schedule WHERE tenant_id=$1 FOR UPDATE`, tenantID).Scan(&tenantID); err != nil {
+		return Lease{}, fmt.Errorf("renew inbox schedule lock: %w", err)
+	}
+	if err := lockInboxRow(ctx, tx, id); err != nil {
+		return Lease{}, fmt.Errorf("renew inbox lock: %w", err)
+	}
 	const query = `
 		UPDATE inbox_messages
 		SET lease_until=clock_timestamp() + ($4 * interval '1 millisecond'), updated_at=now()

@@ -1,6 +1,6 @@
-# 外部测试环境低次数验收 Runbook
+# 目标环境验收 Runbook
 
-目标：把有限的真实企业微信、Telegram、Kubernetes 和 KMS/Vault 测试次数用于不可被本地模拟替代的证据。本文中的“次数预算”是项目自己的熔断上限，不是供应商官方限额。
+本手册用于企业微信、Telegram、目标 Kubernetes、密钥系统与业务容量的部署验收。每个阶段保存预期、实际结果及配置版本，失败时先定位原因再继续。
 
 ## 1. 总体顺序
 
@@ -8,47 +8,43 @@
 离线门禁 → 目标基础设施 → 公开回调空探针 → Telegram → 企业微信 → KMS/Vault 轮换 → 故障/灾备 → 正式容量
 ```
 
-先用 Telegram 验证通用 Gateway→Inbox→Consumer→Worker→Outbox→Delivery 链路，再使用更稀缺的企业微信配置保存/回调机会。若前一阶段失败，停止后续真实 Provider 调用，不通过“多试几次”掩盖确定性错误。
+先完成基础设施和回调检查，再用测试账号验证 Gateway→Inbox→Consumer→Worker→Outbox→Delivery。Telegram 与企业微信可按账号准备情况分别执行；共享依赖失败时暂停后续步骤。
 
-## 2. 资源与次数预算
+## 2. 准备条件与成功标准
 
-| 阶段 | 额外基础设施占用 | Provider/破坏性次数上限 | 成功标准 |
-|---|---:|---:|---|
-| 本包离线门禁 | 本机 CPU；无外部账号 | 0 | build/vet/unit/race/integration/releaseverify 全绿 |
-| 目标 K8s 首发 | 3 节点 × 约 2 小时 | 1 次 compatible rollout | 所有 workload Ready，migration 成功，HPA 指标有效 |
-| 目标 K8s 回滚 | 同上 | 1 次 canary + 1 次 rollback | session 绑定不漂移、旧 digest 恢复、无消息丢失 |
-| 公网 callback 空探针 | 域名/证书/Ingress | 0 个 Provider 调用 | HTTPS 证书有效，`/webhook` 无 token 返回预期 4xx |
-| Telegram 注册 | 现有 bot | `setWebhook` 最多 2 次；`getWebhookInfo` 最多 2 次 | secret token 生效、无 last error |
-| Telegram 闭环 | 1 个 private chat，可选 1 个测试群 | 入站 2 条、出站最多 2 次 | Inbox/Outbox/审计/trace 一致，群/单聊 session 隔离 |
-| 企业微信 URL 验证 | 1 个测试应用 | 控制台保存最多 2 次 | echostr 验签、解密、原文回复成功 |
-| 企业微信闭环 | 1 个白名单测试用户 | 入站 2 条、出站最多 2 次 | 加密文本入站、token 获取、应用消息回复完整 |
-| KMS/Vault identity | 目标集群 2 个短命 Pod | 正向 1、越权负向 1 | 正向最小路径成功，错误 SA 被拒绝 |
-| 双 key 轮换 | 2 个测试 key version | 1 次切换、1 次回滚窗口验证 | 旧密文可解、新写只用新 key、日志无 key/value |
-| DB/Redis 故障 | 测试实例约 2 小时 | 每类故障 1 次 | fail-closed、恢复后 backlog 清空、无 stale commit |
-| 正式容量 | 目标规格约 2–4 小时 | warm-up 1、测量 2 | p50/p95/p99、QPS、queue lag、成本和错误率齐全 |
+| 阶段 | 准备条件 | 成功标准 |
+|---|---|---|
+| 源码与后端验证 | Go、Bash、Docker、四类测试后端 | 按验证指南完成源码与 integration 检查 |
+| K8s 发布与回滚 | 目标集群、镜像 digest、兼容迁移与网络策略 | workload Ready；session 版本绑定稳定；可恢复原 digest |
+| 公网 callback | 域名或测试 Tunnel、HTTPS 证书、Ingress | 证书有效；缺少 route token 的请求返回预期 4xx |
+| Telegram | Bot token、webhook secret、白名单 private chat，可选测试群 | 注册成功；单聊/群聊隔离；收发与审计记录一致 |
+| 企业微信 | CorpID、AgentID、App Secret、Token、EncodingAESKey、测试成员 UserID | challenge 成功；加密文本入站与应用回复完整 |
+| 密钥身份与轮换 | ServiceAccount、允许路径、两个 key version | 正向读取成功；越权拒绝；旧密文可解且新写使用新 key |
+| DB/Redis 故障 | 专用测试实例、备份与恢复窗口 | 恢复后 backlog 清空；旧 fence 无法提交 |
+| 业务容量 | 目标规格、业务 payload、模型账号、配额及费用预算 | p50/p95/p99、QPS、queue lag、资源、成本和错误率齐全 |
 
-如果账号按调用或资源小时计费，应在执行前由账号管理员把本表换算为实际价格；不要把这里的资源时间当供应商报价。
+故障注入只在授权测试环境执行。账号调用、资源费用与测试窗口在运行前由部署负责人确认。
 
 ## 3. 零调用 Preflight
 
-Windows 本地企微沙箱已有一条与既有本地服务隔离、且不把秘密写入源码的固定流程：
+Windows 企微沙箱使用隔离端口和交互配置流程：
 
 ```powershell
-# 1. 启动固定 digest 的临时 HTTPS Quick Tunnel，得到 .../webhook 基础 URL
+# 1. 启动固定 digest 的临时 HTTPS Quick Tunnel，获得 HTTPS 回调基础地址
 & .\scripts\wecom_sandbox_tunnel.ps1
 
 # 2. 交互采集 CorpID/AgentID/UserID/Secret/Token/AES；输入隐藏，文件 ACL 收紧
 & .\scripts\wecom_sandbox_setup.ps1
 
-Windows setup 的 UserID 可以直接填写通讯录“账号”；如果通讯录列表不显示账号，UserID 留空，随后按提示输入该成员手机号。脚本会在本机用 App Secret 调用企业微信 `getuserid`，只保存解析结果，不输出手机号、Token 或 Secret。
-
 # 3. 在独立端口启动 trpc-platform-wecom Compose 项目，创建租户、发布版本并复检公网入口
 & .\scripts\wecom_sandbox_bootstrap.ps1
 ```
 
-第一步只启动临时 Tunnel。第二步不会调用模型 Provider；如果 UserID 留空，setup 会调用企业微信 `gettoken`/`getuserid` 仅解析一次测试成员账号。第三步会构建/启动本地服务并写本地控制面，但仍不发送模型请求。临时 Tunnel 只用于验收，URL 会随容器重建变化，不能当生产域名。三个脚本把真实值留在被 gitignore 排除的 `deploy/.env.wecom.local`；归档前必须再次确认该文件未被收集。既有本地服务可保持运行，企微沙箱使用 15432/14317/14318/18080/18081/19095/13000。
+UserID 填写企业通讯录中的成员“账号”。若留空，setup 会调用企业微信 `gettoken`/`getuserid` 按手机号查询；该查询需要相应通讯录权限，普通应用 Secret 可能没有权限，此时由管理员提供成员账号。
 
-把真实凭据通过临时进程环境或 Secret Manager 注入；不要写入 `.env`、脚本参数、PowerShell 历史、CI 日志或截图。需要的变量名：
+第一步启动临时 Tunnel；第二步采集配置；第三步构建服务并创建本地控制面。setup 与 bootstrap 不发送模型请求。Tunnel URL 会随容器重建变化，正式部署使用稳定域名。真实配置保存在被 gitignore 排除、ACL 受限的 `deploy/.env.wecom.local`。企微沙箱使用 15432/14317/14318/18080/18081/19095/13000 端口。
+
+目标部署通过进程环境或 Secret Manager 注入凭据；本地交互脚本使用上述受限环境文件。凭据不进入脚本参数、命令历史、CI 日志或截图。需要的变量名：
 
 ```text
 TRPC_WEBHOOK_ROUTE_KEY
@@ -67,36 +63,37 @@ WECOM_AGENT_ID
 只做格式、公开 URL 和可选 TLS 探针，不调用 Telegram/企业微信：
 
 ```powershell
+$callbackBaseUrl = Read-Host '公网 HTTPS 回调基础地址（不含 token 查询参数）'
 & .\scripts\external_acceptance_preflight.ps1 `
   -Channel All `
-  -CallbackBaseUrl 'https://agent-test.example.com/webhook' `
+  -CallbackBaseUrl $callbackBaseUrl `
   -ProbeEndpoint
 ```
 
-成功输出只包含检查数量和 HTTP 状态，不包含任何 secret。完整 Provider callback URL 是基础 URL加 `?token=<TRPC_WEBHOOK_ROUTE_KEY>`；只在 Provider 控制台通过密码管理器组装/粘贴，不在命令行打印。
+成功输出包含检查数量和 HTTP 状态。Provider callback URL 的 `token` 查询参数使用 `TRPC_WEBHOOK_ROUTE_KEY`；将完整地址直接填入 Provider 控制台。
 
-Windows setup 脚本会在结束时把完整 URL 临时写入剪贴板；粘贴到企业微信控制台后立即清空剪贴板。控制台保存必须等 `wecom_sandbox_bootstrap.ps1` 的 Gateway/Admin health 和公网 preflight 全部通过，否则不要消耗 URL 验证次数。
+Windows setup 会把完整 URL 临时写入剪贴板，粘贴后清空剪贴板。Gateway/Admin health 与公网 preflight 通过后，再在企业微信控制台保存回调配置。
 
-Preflight 失败时真实调用预算仍为 0，必须先修复 DNS、证书、Ingress、变量缺失或凭据格式。
+Preflight 不调用模型或 IM 消息接口；失败时按报告检查 DNS、证书、Ingress 和配置格式。
 
 ## 4. 目标 Kubernetes 一次性准备
 
 1. 锁定本次 release bundle、七个应用镜像 digest、migration schema class 和 NetworkPolicy review hash。
-2. 先运行 `releaseverify`；任何 tag 镜像、缺失 4143 mesh 路径、未证明的 mesh assertion 或 breaking migration 均停止。
-3. 使用 `scripts/k8s_apply.sh`，顺序固定为：NetworkPolicy→migration→PDB→Worker/Admin→Consumer/Delivery→Gateway。
+2. 先运行 `releaseverify` 检查镜像 digest、4143 mesh 路径和身份断言；breaking migration 需单独审批并提供排空记录。
+3. 使用 `scripts/k8s_apply.sh`，顺序为：NetworkPolicy→profile→migration→PDB→Worker/Summary Worker/Admin→Consumer/Delivery→Gateway。
 4. 记录每个 Deployment 的 generation、revision、imageID、Ready、restart count、node 分布和 Linkerd identity。
 5. 运行同请求 allow/deny：有 identity 的 client 必须到达应用鉴权，无 identity client 必须被 mesh 拒绝。
 6. HPA 必须显示 `ScalingActive=True`；使用 `ContainerResource`，不接受 `<unknown>`。
 
 阻断条件：migration 失败、任一 Pod restart 增长、旧/新 digest 混跑超时、Linkerd identity 缺失、NetworkPolicy 需要临时全放通、HPA 指标未知。
 
-## 5. Telegram（先执行）
+## 5. Telegram
 
 ### 5.1 注册
 
-1. 只调用一次 `setWebhook`，同时设置 HTTPS callback 和 `secret_token`。
-2. 调用一次 `getWebhookInfo`，保存脱敏结果：URL host/path、pending count、last error code/time；不得保存 bot token 或 route key。
-3. 若失败，先按确定性错误修复；第二次 `setWebhook` 是本阶段最后预算。
+1. 调用 `setWebhook`，同时设置 HTTPS callback 和 `secret_token`。
+2. 调用 `getWebhookInfo`，保存 URL host/path、pending count、last error code/time；遮盖 bot token 与 route key。
+3. 检查注册结果后再执行消息用例。
 
 ### 5.2 闭环用例
 
@@ -104,34 +101,34 @@ Preflight 失败时真实调用预算仍为 0，必须先修复 DNS、证书、I
 |---|---|---|
 | T-01 private | 白名单用户发送唯一短文本 | callback 2xx；1 Inbox、1 execution、1 Outbox；reply 成功 |
 | T-02 group | 测试群白名单用户发送唯一短文本 | group session 与 private session 不同；actor/owner 映射正确 |
-| T-03 duplicate | 对已捕获的同一脱敏 fixture 在内部测试入口重放，不再次发 Provider 消息 | Inbox 数量不增；payload hash 相同返回幂等成功 |
-| T-04 bad secret | 内部测试入口发送错误 webhook secret，不触发 Provider | 401/拒绝；无 Inbox、无 tenant 泄漏 |
+| T-03 duplicate | 在专用测试 Gateway 的 `/webhook` 重放同一测试消息请求，保留消息 ID 与 payload | Inbox 数量不增；payload hash 相同返回幂等成功 |
+| T-04 bad secret | 向专用测试 Gateway 发送带错误 webhook secret 的测试请求 | 签名校验拒绝；无 Inbox、无 tenant 泄漏 |
 
-不要为了制造 429 对真实 Bot 高频轰炸；429、Retry-After 和 outcome-unknown 已由本地 contract/fault 测试覆盖。真实测试只确认常规限速头/错误能被脱敏记录。
+429、Retry-After 和 outcome-unknown 使用本地 contract/fault 测试注入；账号联调确认正常发送和错误记录。
 
-## 6. 企业微信（Telegram 通过后执行）
+## 6. 企业微信
 
 ### 6.1 URL challenge
 
-1. 检查服务器时钟偏差小于 60 秒；代码接受窗口为 ±300 秒，但不要把上限当正常运维目标。
+1. 检查服务器时钟偏差小于 60 秒；请求时间戳接受窗口为 ±300 秒。
 2. 在控制台一次保存 callback URL、callback token 和 EncodingAESKey。
 3. 保存动作必须完成 `msg_signature` 校验、echostr 解密、receiver corp ID 校验并返回原文。
-4. 若失败，只查看稳定错误类和脱敏 trace；先本地复现，再使用最多一次重试保存。
+4. 若失败，查看稳定错误类和脱敏 trace，在本地复现并修正后重新保存。
 
 ### 6.2 闭环用例
 
 | 用例 | 操作 | 断言 |
 |---|---|---|
 | W-01 text | 白名单用户向测试应用发送唯一文本 | 加密 callback 验签/解密；1 Inbox；Agent 完成；应用消息回复 |
-| W-02 duplicate | 使用保存的脱敏原始密文在受控内部入口重放 | 相同 MsgId 不产生第二次 execution/outbox |
+| W-02 duplicate | 对专用测试消息保留 MsgId 与密文，在有效签名时间窗口内重放 `/webhook` 请求 | 相同 MsgId 不产生第二次 execution/outbox |
 | W-03 unsupported | 发送一个已允许的非文本测试事件 | callback 被确认但不调用 Agent，不制造 Provider 重试风暴 |
-| W-04 unauthorized | 非白名单测试身份发消息 | governance 拒绝；审计 decision 存在；无工具/模型调用 |
+| W-04 unauthorized | 非白名单测试身份发消息 | Gateway 拒绝入队并记录授权决策；无工具/模型调用 |
 
-只保留 MsgId、trace_id、状态、延迟和 hash；不得保留聊天正文、access token、corp secret、EncodingAESKey 或解密后的原始 XML。
+重放请求仅在测试进程内使用，测试结束后释放。提交记录只保留 MsgId、trace_id、状态、延迟和 hash，不收集聊天正文、access token、corp secret、EncodingAESKey 或原始 XML。
 
 ## 7. KMS/Vault 生产验收
 
-只选择目标环境实际采用的一种方案，不为“覆盖名词”同时开通多家 KMS。
+按目标环境采用的 Secret Manager 完成身份接线，并验证以下用例。
 
 1. workload identity 绑定到专用 ServiceAccount，禁止 node-wide/static access key。
 2. 正向 Pod 只读取本服务/测试租户的一条 secret；默认或其他 ServiceAccount 读取同路径必须被拒绝。
@@ -149,7 +146,7 @@ Preflight 失败时真实调用预算仍为 0，必须先修复 DNS、证书、I
 - Worker：中断一个正在处理的副本；新副本以更高 fence 接管，旧副本迟到写被拒绝，只生成一个 Outbox。
 - Delivery：在 provider 调用边界制造一次 outcome-unknown；记录必须进入 reconciliation，不自动重复发送。
 - Rollback：只回滚兼容应用版本；breaking schema 使用独立停机/排空 runbook。
-- Capacity：warm-up 不计入报告；两次测量取较差值，以业务 payload 和模型延迟运行，不能复用本地 2,200 条数字作为正式结论。
+- Capacity：warm-up 不计入报告；使用业务 payload 和模型服务完成至少两次测量，报告各轮分位数、吞吐、错误率、资源与成本。
 
 ## 9. 每次测试必须保存的证据
 
@@ -161,7 +158,7 @@ provider message ID 或其 hash / inbox ID / execution ID / outbox ID
 trace_id / decision / error_type / latency / token/cost（如有）
 Pod imageID / restart count / node / mesh identity
 DB/Redis QPS、pool wait、queue lag、p50/p95/p99
-预期、实际、PASS/FAIL、是否消耗一次外部预算
+预期、实际、PASS/FAIL、账号调用量与资源用量
 ```
 
 证据包必须经过 secret scan；聊天正文、Authorization、Cookie、Bot token、WeCom token/secret/AES key、数据库 URL、Vault token、Kubernetes projected JWT 和证书私钥均禁止收集。

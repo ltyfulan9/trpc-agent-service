@@ -1,8 +1,9 @@
 # Kubernetes rollout contract
 
-These manifests are a hardened baseline, not a cluster-independent installer.
-Apply them to a dedicated namespace with a CNI that enforces Kubernetes
-`NetworkPolicy`.
+These manifests define the application workloads, service boundaries and
+deployment policy. Use a dedicated namespace with a CNI that enforces
+Kubernetes `NetworkPolicy`, and render environment-specific configuration
+before release verification.
 
 Before enabling `network-policies.yaml`, label the namespaces that own the
 approved ingress paths:
@@ -24,24 +25,20 @@ from `platform-operators`.
 
 The Consumer defaults to `WORKER_TRANSPORT_MODE=production`. In that mode the
 startup gate accepts only an `https://` Worker endpoint and returns a stable
-configuration error before the Consumer can claim Inbox work. The Worker in
-this source snapshot still serves plain HTTP; it does not implement
-`ServeTLS` or application-level mTLS. A production deployment therefore needs
-an HTTPS terminator with certificate verification, or an operator-managed
-service mesh that provides the confidential hop.
+configuration error before the Consumer can claim Inbox work. The Worker
+serves HTTP behind an HTTPS terminator with certificate verification or an
+operator-managed service mesh that provides the confidential hop.
 
 The checked-in pipeline manifest keeps the Worker app hop at
 `http://agent-worker:9090`, sets `WORKER_TRANSPORT_MODE=mesh`, and leaves
-`WORKER_MESH_MTLS_ASSERTED=false`. This is intentionally fail-closed and is a
-source template, not a deployable release. CI must render a separate release
+`WORKER_MESH_MTLS_ASSERTED=false`. CI must render a separate release
 bundle that either uses an `https://` endpoint in `production` mode or changes
 the mesh assertion to `true` after strict peer authentication, identity
 authorization, and NetworkPolicy enforcement have been verified. A mesh
 release must also add a bounded `agent.trpc.io/mesh-mtls-evidence` annotation
-that points to the reviewed change record. The assertion is a deployment
-precondition; it does not add TLS to the Go Worker or prove that a mesh is
-installed. `WORKER_TRANSPORT_MODE=development` is reserved for the isolated
-Compose/local stack and must not be used in Kubernetes production.
+that points to the reviewed change record.
+`WORKER_TRANSPORT_MODE=development` is reserved for the isolated Compose/local
+stack; Kubernetes uses verified HTTPS or mesh transport.
 
 HMAC service authentication remains enabled in every mode, but HMAC protects
 integrity and replay resistance only. It is not a substitute for encryption:
@@ -72,8 +69,7 @@ default-deny policy block otherwise valid meshed traffic; opening it broadly
 would bypass the intended peer boundary. `network_policies_test.go` fixes this
 contract.
 
-The rollout script deliberately has no permissive fallback. It accepts only a
-rendered release bundle, not the mutable source templates. The bundle must
+The rollout script accepts a verified, rendered release bundle. The bundle must
 contain these eight files with the exact workloads represented in aggregate:
 `migration.yaml`, `profiles.yaml`, `availability-policies.yaml`, `worker.yaml`,
 `summary.yaml`, `pipeline.yaml`, `admin.yaml`, and `gateway.yaml`. Every application image, including the
@@ -91,8 +87,7 @@ only the six application Deployments, migration Job, runtime profile ConfigMap,
 three internal Services, three HPAs, and six PodDisruptionBudgets are accepted, all at the expected API
 versions and without an embedded namespace. Missing, duplicate, or extra
 objects fail verification before any cluster mutation. Ingress/Gateway API,
-RBAC, Secrets, and cluster observability remain separately operated overlays;
-they must not be smuggled into this application release bundle.
+RBAC, Secrets, and cluster observability are separately operated overlays.
 
 Build `cmd/releaseverify` in the pinned release environment, or let the script
 use its local Go toolchain with `GOTOOLCHAIN=local`. Supply the reviewed policy
@@ -100,7 +95,7 @@ and the rendered bundle explicitly:
 
 ```bash
 PLATFORM_NAMESPACE=agent-platform \
-RELEASE_MANIFEST_DIR=/secure/release/2026-08-27.1 \
+RELEASE_MANIFEST_DIR=/secure/release/current \
 NETWORK_POLICY_FILE=deploy/kubernetes/network-policies.yaml \
 RELEASE_SCHEMA_CLASS=compatible \
 ./scripts/k8s_apply.sh
@@ -158,21 +153,19 @@ service-mesh sidecar can make the aggregate utilization unknown and silently
 disable scaling. A live rollout must show `ScalingActive=True` and
 `ValidMetricFound`.
 
-The Consumer manifest explicitly enables the PostgreSQL fair queue and fixes
-`CONCURRENCY=4`. This is the locally measured safe starting profile for two
-Consumer Pods (eight claim workers total). Raising either replicas or per-Pod
-concurrency requires rerunning the fair-claim contention and durability
-scenario against the target PostgreSQL specification.
+The Consumer manifest enables the PostgreSQL fair queue with
+`CONCURRENCY=4`. Size replicas and per-Pod concurrency using the fair-claim
+contention and durability scenario against the target PostgreSQL specification.
 
 `ADMIN_API_TOKEN` is the emergency/bootstrap platform administrator. Additional
 operators come from the optional `principals-json` secret key and should be
 issued per-person, tenant-scoped credentials. In production, generate both
-secrets through an external secret operator and rotate them; the example Secret
-objects are deliberately non-deployable placeholders.
+secrets through an external secret operator and rotate them. Populate the
+Secret keys specified by the source templates before release verification.
 
 Tenant Session/Memory connections come from `tenant-storage-credentials`, not
-from Tenant JSON. Only Worker receives that Secret because it alone constructs
-the Session/Memory data plane; Gateway, Admin, Consumer and Delivery validate
+from Tenant JSON. Worker and Summary Worker receive that Secret to construct
+their Session/Memory services; Gateway, Admin, Consumer and Delivery validate
 only public profile metadata. `STORAGE_BACKEND_PROFILES` maps public profile
 IDs to secret environment variable names. Use separate least-privilege database
 roles and Redis ACL users for these profiles; do not point them at the
@@ -202,14 +195,15 @@ entries are optional at Pod startup and fail closed only when a tenant actually
 references a missing SecretRef. Replace the example Secrets with workload
 identity/external-secret projections and review each provider egress route.
 
-Migration 018 changes execution rows to append-only fenced attempts and is not
-write-compatible with an active application data plane. Prefer expand/contract
-migrations; when a genuinely breaking migration is unavoidable, first close
-public intake at the managed edge, drain queues and active leases, and stop all
-Gateway, Consumer, Worker, Delivery, and Admin replicas. This creates a full
+## Schema execution
+
+Fresh installations run the complete schema before starting application
+workloads. For breaking schema changes, first close public intake at the
+managed edge, drain queues and active leases, and stop all Gateway, Consumer,
+Worker, Summary Worker, Delivery, and Admin replicas. This creates a full
 database write-silence window: Gateway writes Inbox, Consumer advances Inbox,
 Worker writes execution/Session/Memory state, Delivery advances Outbox, and
-Admin mutates control-plane records. Run the migration Job only after all five
+Admin mutates control-plane records. Run the migration Job only after all six
 workloads have no remaining Pods, then restore the new downstream workloads
 before reopening Gateway and edge intake.
 For this class of release, call the script with
@@ -219,11 +213,10 @@ For this class of release, call the script with
 all existing application Deployments are scaled to zero with no Pods; it also
 rejects orphan Pods whose Deployment is already absent. Bootstrap migrations
 likewise require that none of these Deployments or Pods exists.
-The evidence file is an auditable operator record, not fabricated proof that a
-queue was drained; retain the real queue/lease checks with the change record.
+Retain the queue and active-lease checks in the approved change record.
 
-Rollout order is migration Job, PDBs, Worker/Admin, Consumer/Delivery, then
-Gateway. `k8s_apply.sh` waits for Worker/Admin availability before submitting
+Rollout order is migration Job, profiles, PDBs, Worker/Summary Worker/Admin,
+Consumer/Delivery, then Gateway. `k8s_apply.sh` waits for Worker/Summary Worker/Admin availability before submitting
 Consumer/Delivery, then waits for the pipeline before applying Gateway; a
 successful `kubectl apply` alone is not rollout evidence. Confirm default-deny
 does not break DNS, database, Redis or OTLP in a staging namespace before
