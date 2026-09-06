@@ -6,6 +6,8 @@
 
 比赛演示的最小可重复基准可运行：`.\scripts\benchmark_local.ps1`。该命令输出本机 MemoryStore 的入队→领取→Inbox/Outbox 原子完成基线；它用于比较代码变化，不冒充生产容量或模型 Provider 性能。
 
+故障恢复演示可运行：`go run ./cmd/demo`。它展示 lease 接管、旧 fence 拒绝、Inbox→Outbox 原子提交和未知 Provider 结果进入 reconciliation；不需要外部模型、企业微信或公网 URL。
+
 > 安全基线：当前模块最低要求 Go 1.25.14，生产 CI 与容器构建固定到官方 Go 1.26.7。此前 Go 1.21 验证记录已归档，不再构成当前兼容承诺。源码验证、真实基础设施验收和外部 Provider 验收必须严格区分；请在目标环境运行 `./scripts/validate.sh`，详见 [验证报告](docs/VERIFICATION.md)。
 
 评委建议阅读顺序：先看 [评委快速摘要](docs/JUDGE_QUICKSTART.md)，再看 [决赛架构设计](docs/COMPETITION_SUBMISSION.md)、[验收证据矩阵](docs/ACCEPTANCE_EVIDENCE.md)、[核心数据模型](docs/DATA_MODEL.md)、[风险登记册](docs/RISK_REGISTER.md)、[安全审计](docs/SECURITY_REVIEW.md) 和 [最终交接](ENTERPRISE_PLATFORM_HANDOFF.md)。每项能力明确区分本机实测、源码已闭环但待目标环境验收和外部依赖未验收，避免用单测或模拟器冒充生产证据。
