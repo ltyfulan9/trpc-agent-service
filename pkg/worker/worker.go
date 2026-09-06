@@ -1042,8 +1042,16 @@ func (w *Worker) Process(ctx context.Context, req *Request) (response *Response,
 	// as if a model or Tool had already run. Permanent policy errors are marked
 	// separately at their return sites so queue adapters can dead-letter them.
 	defer func() {
-		if err == nil || executionMayHaveStarted ||
-			errors.Is(err, ErrExecutionTimedOut) ||
+		if err == nil {
+			return
+		}
+		if executionMayHaveStarted {
+			if _, paused := AsApprovalPause(err); !paused {
+				err = errors.Join(ErrWorkerExecutionOutcomeUnknown, err)
+			}
+			return
+		}
+		if errors.Is(err, ErrExecutionTimedOut) ||
 			errors.Is(err, ErrExecutionPreflightTimedOut) ||
 			errors.Is(err, ErrApprovalResumeUnsafe) {
 			return

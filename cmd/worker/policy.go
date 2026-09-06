@@ -45,6 +45,13 @@ func classifyWorkerInitializationFailure(ctx context.Context, err error) workerP
 // semantics aligned. A preflight timeout is retryable; failures after Runner
 // entry may have side effects and therefore require reconciliation.
 func classifyWorkerProcessFailure(err error) workerProcessFailure {
+	if errors.Is(err, worker.ErrWorkerExecutionOutcomeUnknown) {
+		code := "execution_outcome_unknown"
+		if errors.Is(err, worker.ErrExecutionTimedOut) {
+			code = "execution_timeout"
+		}
+		return classifyWorkerPostRunnerFailure(code)
+	}
 	switch {
 	case errors.Is(err, worker.ErrExecutionPreflightPermanent):
 		return workerProcessFailure{code: "execution_preflight_rejected", safeToRetry: false, statusCode: http.StatusBadRequest, message: "Execution request was rejected"}

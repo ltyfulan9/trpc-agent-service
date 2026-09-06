@@ -63,10 +63,10 @@ var (
 	// capability response, an unsafe Consumer timeout, or configuration drift
 	// between the Consumer and the Worker it reached.
 	ErrWorkerExecutionBudgetInvalid = errors.New("worker execution budget is invalid")
-	// ErrWorkerExecutionOutcomeUnknown identifies a successful HTTP response
-	// whose versioned execution proof could not be validated. The Worker may
-	// already have run a model or Tool before a proxy removed the proof
-	// headers, so callers must reconcile instead of automatically retrying.
+	// ErrWorkerExecutionOutcomeUnknown identifies an error after Runner entry
+	// or a response whose execution proof could not be validated. A model or
+	// Tool may already have run, so every transport must require reconciliation
+	// instead of automatically retrying.
 	ErrWorkerExecutionOutcomeUnknown = errors.New("worker execution outcome is unknown")
 )
 

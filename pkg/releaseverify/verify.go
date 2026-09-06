@@ -436,9 +436,11 @@ func validEvidence(value string) bool {
 }
 
 type networkPolicy struct {
-	Kind     string `yaml:"kind"`
-	Metadata struct {
-		Name string `yaml:"name"`
+	APIVersion string `yaml:"apiVersion"`
+	Kind       string `yaml:"kind"`
+	Metadata   struct {
+		Name      string `yaml:"name"`
+		Namespace string `yaml:"namespace"`
 	} `yaml:"metadata"`
 	Spec struct {
 		PodSelector labelSelector    `yaml:"podSelector"`
@@ -464,31 +466,98 @@ type ipBlock struct {
 }
 
 type labelSelector struct {
-	MatchLabels map[string]string `yaml:"matchLabels"`
+	MatchLabels      map[string]string          `yaml:"matchLabels"`
+	MatchExpressions []labelSelectorRequirement `yaml:"matchExpressions"`
+}
+
+type labelSelectorRequirement struct {
+	Key      string   `yaml:"key"`
+	Operator string   `yaml:"operator"`
+	Values   []string `yaml:"values"`
+}
+
+func loadNetworkPolicies(data []byte) ([]networkPolicy, error) {
+	var policies []networkPolicy
+	resources := 0
+	var visit func(*yaml.Node, int) error
+	visit = func(node *yaml.Node, depth int) error {
+		if depth > 8 || resources >= 1000 {
+			return fmt.Errorf("production NetworkPolicy exceeds resource or list nesting limits")
+		}
+		resources++
+		var resource struct {
+			APIVersion string      `yaml:"apiVersion"`
+			Kind       string      `yaml:"kind"`
+			Items      []yaml.Node `yaml:"items"`
+		}
+		if err := node.Decode(&resource); err != nil {
+			return fmt.Errorf("decode production NetworkPolicy resource: %w", err)
+		}
+		switch resource.Kind {
+		case "List", "NetworkPolicyList":
+			wantVersion := "v1"
+			if resource.Kind == "NetworkPolicyList" {
+				wantVersion = "networking.k8s.io/v1"
+			}
+			if resource.APIVersion != wantVersion {
+				return fmt.Errorf("production NetworkPolicy list %q has unsupported apiVersion %q", resource.Kind, resource.APIVersion)
+			}
+			for index := range resource.Items {
+				if err := visit(&resource.Items[index], depth+1); err != nil {
+					return err
+				}
+			}
+		case "NetworkPolicy":
+			if resource.APIVersion != "networking.k8s.io/v1" {
+				return fmt.Errorf("production NetworkPolicy has unsupported apiVersion %q", resource.APIVersion)
+			}
+			var policy networkPolicy
+			if err := node.Decode(&policy); err != nil {
+				return fmt.Errorf("decode production NetworkPolicy: %w", err)
+			}
+			if policy.Metadata.Name == "" || policy.Metadata.Namespace != "" {
+				return fmt.Errorf("production NetworkPolicy must be named and must not override the rollout namespace")
+			}
+			policies = append(policies, policy)
+		default:
+			return fmt.Errorf("production NetworkPolicy contains unsupported resource kind %q", resource.Kind)
+		}
+		return nil
+	}
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	for document := 1; ; document++ {
+		var node yaml.Node
+		if err := decoder.Decode(&node); err == io.EOF {
+			break
+		} else if err != nil {
+			return nil, fmt.Errorf("decode production NetworkPolicy document %d: %w", document, err)
+		}
+		if len(node.Content) == 0 || node.Content[0].Tag == "!!null" {
+			continue
+		}
+		if err := visit(&node, 0); err != nil {
+			return nil, err
+		}
+	}
+	return policies, nil
 }
 
 func validateNetworkPolicy(data []byte) error {
 	if len(bytes.TrimSpace(data)) == 0 {
 		return fmt.Errorf("production NetworkPolicy is required")
 	}
-	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	policies, err := loadNetworkPolicies(data)
+	if err != nil {
+		return err
+	}
 	foundDefaultDeny := false
 	foundControlledEgress := map[string]bool{}
-	for document := 1; ; document++ {
-		var policy networkPolicy
-		err := decoder.Decode(&policy)
-		if err == io.EOF {
-			break
+	seen := make(map[string]bool)
+	for _, policy := range policies {
+		if seen[policy.Metadata.Name] {
+			return fmt.Errorf("production NetworkPolicy has duplicate resource %q", policy.Metadata.Name)
 		}
-		if err != nil {
-			return fmt.Errorf("decode production NetworkPolicy document %d: %w", document, err)
-		}
-		if policy.Kind == "" {
-			continue
-		}
-		if policy.Kind != "NetworkPolicy" {
-			continue
-		}
+		seen[policy.Metadata.Name] = true
 		if policy.Metadata.Name == "default-deny" {
 			if !isDefaultDeny(policy) {
 				return fmt.Errorf("production NetworkPolicy %q must select every Pod and deny both ingress and egress", policy.Metadata.Name)
@@ -526,6 +595,7 @@ func validateNetworkPolicy(data []byte) error {
 
 func isDefaultDeny(policy networkPolicy) bool {
 	if len(policy.Spec.PodSelector.MatchLabels) != 0 ||
+		len(policy.Spec.PodSelector.MatchExpressions) != 0 ||
 		len(policy.Spec.Ingress) != 0 || len(policy.Spec.Egress) != 0 {
 		return false
 	}

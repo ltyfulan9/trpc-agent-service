@@ -76,6 +76,14 @@ func TestClassifyWorkerProcessFailurePreservesSideEffectBoundary(t *testing.T) {
 			name: "ordinary worker error remains conservative", err: errors.New("worker failed"),
 			code: "execution_outcome_unknown", retrySafe: false, status: http.StatusLocked,
 		},
+		{
+			name: "dispatched execution overrides nested preflight marker", err: errors.Join(worker.ErrWorkerExecutionOutcomeUnknown, worker.ErrExecutionPreflight),
+			code: "execution_outcome_unknown", retrySafe: false, status: http.StatusLocked,
+		},
+		{
+			name: "dispatched deadline preserves timeout diagnosis", err: errors.Join(worker.ErrWorkerExecutionOutcomeUnknown, worker.ErrExecutionTimedOut),
+			code: "execution_timeout", retrySafe: false, status: http.StatusLocked,
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
