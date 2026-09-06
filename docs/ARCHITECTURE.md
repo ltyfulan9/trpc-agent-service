@@ -8,33 +8,83 @@
 
 平台接入企业微信应用单聊文本与 Telegram 私聊、群聊文本，运行 LLM、Chain、Graph、Parallel 和 Cycle。生产准入检查实际安装的运行时能力、模型目录和数据后端，禁止静默替换执行实现。代码验证、真实后端集成与目标环境验收各自保留证据；正式账号、网络身份、容量、容灾和业务效果按部署环境验收。
 
-## 2. 系统架构
+<a id="2-系统架构"></a>
+## 2. 系统架构图
 
 ```mermaid
-flowchart LR
-    IM["企业微信 / Telegram"] --> GW["Gateway<br/>Channel Adapter"]
-    GW -->|提交后确认| IN[("PostgreSQL Inbox<br/>幂等 / 会话顺序")]
-    IN --> C["Consumer<br/>领取 / 租约 / fence"]
-    C --> W["无状态 Worker Pool<br/>tRPC Runner<br/>Plugin / Guardrail"]
-    W --> MODEL["模型 / Tool / MCP"]
-    W --> ADAPT["进程内数据适配<br/>Storage Adapter<br/>Runtime Data Plane"]
-    ADAPT --> SM[("Redis / PostgreSQL<br/>Session / Memory")]
-    ADAPT --> Q[("Qdrant<br/>Knowledge")]
-    ADAPT --> S3[("S3 / MinIO<br/>Artifact 正文")]
-    C -->|完成事务| OUT[("PostgreSQL Outbox<br/>分段 cursor")]
-    OUT --> D["Delivery<br/>投递 / 核对"]
-    D --> IM
-    C -->|同一完成事务| SJ[("Summary job")]
-    SJ --> SW["独立 Summary Worker"]
-    SW --> SM
-    SW --> CP[("PostgreSQL<br/>版本 / checkpoint<br/>Artifact 元数据 / 审计")]
-    ADMIN["Admin API<br/>Tenant / App / Version"] --> CP
-    CP -.->|配置与摘要| W
-    W -.->|trace / metrics| OT["Telemetry<br/>OTel / Prometheus"]
-    GW -.-> OT
-    C -.-> OT
-    D -.-> OT
-    SW -.-> OT
+%%{init: {"theme":"neutral","themeVariables":{"fontSize":"16px"},"flowchart":{"curve":"linear","nodeSpacing":24,"rankSpacing":44,"padding":12}}}%%
+flowchart TB
+  subgraph EXT["外部入口"]
+    direction LR
+    WX["企业微信回调"]
+    TG["Telegram 回调"]
+  end
+  subgraph EDGE["接入层"]
+    CA["Channel Adapter<br/>Gateway 进程内<br/>验签 / 解密 / 规范化"]
+    GW["Agent Gateway<br/>租户路由 / 限流<br/>幂等入队"]
+  end
+  subgraph CTRL["控制面"]
+    PROF["Storage Profile Catalog<br/>运维实例 / 租户授权<br/>公开声明 / SecretRef"]
+    A["Admin API<br/>Tenant / App / Version<br/>灰度 / 回滚 / 审批"]
+    MIG["data-migrate<br/>复制 / 校验<br/>切换 / 回滚"]
+  end
+  subgraph EXEC["执行层 / 独立扩缩容"]
+    C["Consumer Pool<br/>公平调度 / FIFO / fence"]
+    W["Agent Worker Pool<br/>tRPC Runner<br/>Plugin / Guardrail"]
+    SW["Summary Worker Pool<br/>生成 / 预算 / CAS<br/>取消与排空"]
+    D["Delivery Pool<br/>进程内 Channel Adapter<br/>分段 / 限流 / 发送核对"]
+  end
+  subgraph ADAPT["数据适配 / 执行进程内"]
+    SM["Storage Adapter<br/>Session / Memory<br/>Worker、Summary Worker 各自装配"]
+    DP["Runtime Data Plane Resolver<br/>Knowledge / Artifact<br/>Worker 装配"]
+  end
+  subgraph DATA["共享数据层 / 租户作用域"]
+    PG[("PostgreSQL<br/>Inbox / Outbox / 执行 fence<br/>配置 / Audit / Summary<br/>Artifact 版本 / 迁移记录")]
+    R[("协调 Redis<br/>lease / nonce<br/>token 预算")]
+    SD[("Session / Memory<br/>两域独立选 Redis 或 PostgreSQL<br/>共享或专用实例")]
+    Q[("Qdrant<br/>Knowledge 向量")]
+    S3[("S3 / MinIO<br/>Artifact 正文")]
+  end
+  subgraph PROVIDERS["渠道、模型与工具依赖"]
+    REPLY["企业微信 / Telegram API<br/>文本回复"]
+    MODEL["模型 Provider"]
+    TOOL["Tool / MCP<br/>受控业务系统"]
+  end
+  subgraph OBS["监控与追踪 / 全部应用进程"]
+    direction LR
+    PM["Prometheus"]
+    TEL["Gateway / Consumer / Worker<br/>Summary Worker / Delivery / Admin"]
+    OT["OTel Collector"]
+    AM["Alertmanager<br/>目标环境告警路由"]
+    PM -.->|抓取 /metrics| TEL
+    TEL -.->|OTLP| OT
+    PM -->|告警规则| AM
+  end
+
+  WX & TG --> CA --> GW
+  GW -->|Inbox 提交后确认| PG
+  GW ~~~ C
+  C <-->|HMAC / nonce / traceparent<br/>结果 / 摘要回执| W
+  C <-->|领取 / 原子完成<br/>Outbox 与 Summary 入队| PG
+  D <-->|Outbox / 发送状态| PG
+  D --> REPLY
+  W <-->|固定版本 / 摘要<br/>执行结果 / 审计| PG
+  SW <-->|Summary job<br/>checkpoint / CAS| PG
+  W --> SM & DP
+  SW --> SM
+  SM -->|独立后端配置| SD
+  SM <-->|迁移捕获 / 路由| PG
+  DP <-->|版本与哈希<br/>迁移捕获 / 路由| PG
+  DP --> Q & S3
+  W -->|lease / nonce / 预算| R
+  SW -->|lease / 预算| R
+  W --> MODEL & TOOL
+  SW --> MODEL
+  A -->|配置 / 版本 / 审计| PG
+  MIG <-->|intent / journal<br/>迁移路由 CAS| PG
+  PROF -.->|公开准入| A
+  PROF -.->|作用域 / 凭据| SM & DP
+  DATA ~~~ OBS
 ```
 
 Gateway 处理通道认证、租户路由与入口限制，在数据库提交 Inbox 后确认回调。Consumer 竞争持久化消息的处理权，调用 Worker，再把业务完成状态、回复和摘要任务一并提交。Worker 解析固定版本、读取共享上下文、执行模型与工具，并保存结果。Delivery 独立处理分段、限流、重试和未知发送结果，使慢模型与慢通道具有不同的扩容及故障边界。

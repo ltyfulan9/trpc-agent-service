@@ -33,7 +33,7 @@ Windows 服务栈入口为 `scripts/run_c_local_stack.ps1 -ProjectName agent-pla
 
 ## 2. 系统架构图
 
-包含 Channel Adapter、无状态 Worker、Storage Adapter、Plugin/Guardrail、Telemetry 与四类后端的 [系统总览图](ARCHITECTURE.md#2-系统架构) 展示完整关系，以下分图展开消息、数据和治理职责。租户配置样例与实际 SDK 调用路径见 [多后端适配方案](MULTI_BACKEND_DESIGN.md)。
+包含 Channel Adapter、无状态 Worker、Storage Adapter、Plugin/Guardrail、Telemetry 与四类后端的[系统架构总图](ARCHITECTURE.md#2-系统架构图)展示完整分层关系，以下分图展开消息、数据和治理职责。租户配置样例与实际 SDK 调用路径见[多后端适配方案](MULTI_BACKEND_DESIGN.md)。
 
 ### 总体数据流
 
@@ -202,7 +202,7 @@ flowchart LR
 
 #### 2.5.4 观测与审计
 
-每类观测信号只画一次来源，避免把所有进程的指标与 trace 连到消息主链上。`traceparent` 随 Inbox/Outbox 持久化并由下游恢复；审计与普通遥测有不同的持久化和失败语义。
+观测链路分为运行指标、请求追踪和持久化审计。`traceparent` 随 Inbox/Outbox 持久化并由下游恢复；审计与普通遥测分别定义持久化和失败语义。
 
 ```mermaid
 flowchart LR
@@ -469,7 +469,7 @@ Consumer→Worker 默认 `WORKER_TRANSPORT_MODE=production`，启动时只接受
 - `outbox_growth/s = agent_success_rate - delivery_success_rate`
 - `daily_tokens = daily_requests × (p50_prompt + p50_completion)`，同时用 p95 做预算压力测试。
 
-压测覆盖正常、模型变慢、IM 429、Redis 抖动、PostgreSQL checkpoint、20% retry amplification 和热点单 session。输出 p50/p95/p99、吞吐、错误率、queue lag、DB/Redis QPS、连接池等待、CPU/内存和成本，并记录命令、环境与原始结果。本地回归基准见 [BENCHMARK.md](BENCHMARK.md)。
+压测覆盖正常、模型变慢、IM 429、Redis 抖动、PostgreSQL checkpoint、20% retry amplification 和热点单 session。输出 p50/p95/p99、吞吐、错误率、queue lag、DB/Redis QPS、连接池等待、CPU/内存和成本，并记录命令、环境与原始结果。本地回归基准见[验证方法](VERIFICATION.md#5-演示与基准)。
 
 ### 8.3 最小部署与生产部署
 

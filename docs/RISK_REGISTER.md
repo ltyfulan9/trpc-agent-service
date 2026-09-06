@@ -1,6 +1,6 @@
 # 生产风险与控制措施
 
-评分格式为影响/概率（1–5），用于风险优先级排序。下表记录失效模式、观测信号、控制措施和责任模块；业务服务与基础设施的部署检查按 [EXTERNAL_ACCEPTANCE_RUNBOOK.md](EXTERNAL_ACCEPTANCE_RUNBOOK.md) 执行。
+评分为影响/概率（1–5）。下表按失效模式明确观测信号、恢复措施与责任；部署检查按[目标环境验收手册](EXTERNAL_ACCEPTANCE_RUNBOOK.md)执行。
 
 | ID | 风险 | 评分 | 观测信号 | 缓解与恢复 | 责任模块及部署检查 |
 |---|---|---:|---|---|---|
@@ -36,8 +36,8 @@
 
 ## 发布准入
 
-发布准入检查不可变镜像、进程级 Secret 范围、支持的数据库连接池模式、最小网络策略、单调 Summary checkpoint 和未知副作用恢复策略。真实 IM、KMS、OTLP TLS、告警接收端与备份恢复按部署验收运行手册保存证据；任一关键控制失败时暂停发布。
+发布须检查不可变镜像、进程级 Secret 范围、数据库连接池模式、最小网络策略、单调 Summary checkpoint 和未知副作用恢复策略，并保存真实 IM、KMS、OTLP TLS、告警接收端与备份恢复证据；任一关键控制失败即暂停发布。
 
-在线迁移入口为 `cmd/data-migrate`，Worker/Summary Worker 装饰器负责捕获和动态路由。迁移前统一写入副本版本与不可变 profile，所有写入经过平台入口；持久化存储身份与兼容性用于检测跨节点 profile 漂移。`cmd/migrate` 负责 schema 迁移。
+在线迁移须满足[支持矩阵](ONLINE_MIGRATION.md#支持矩阵)和[部署前置条件](ONLINE_MIGRATION.md#部署前置条件)：统一写入副本版本与不可变 profile，以持久化存储身份检测跨节点漂移；全部写入经过装饰器。Session shared state/native summary/TTL 或达到安全上限时拒绝迁移，Memory 在线迁移未实现。
 
-活跃迁移串行化该租户数据域的操作，全量 inventory/规范记录比对和切换扫描可能暂时阻塞请求；同步镜像将目标延迟与故障带入调用路径，错误返回时源端可能已提交。READ_SHADOW 校验规范记录，不覆盖真实查询流量和检索排名抽样，检索质量需单独验收。Session shared state/native summary/TTL 及达到安全上限的数据不满足迁移准入，Memory 在线迁移尚未实现。回滚窗口保留源写、目标读，完成后停止镜像并保留源数据；准入条件、支持的数据域、恢复命令与保留策略见 [ONLINE_MIGRATION.md](ONLINE_MIGRATION.md)，执行记录见 [ACCEPTANCE_EVIDENCE.md](ACCEPTANCE_EVIDENCE.md)。
+活跃迁移按 tenant/domain 串行化，全量 inventory/规范记录比对和切换扫描可能阻塞请求；同步镜像引入目标延迟与故障，报错时源端可能已提交。`READ_SHADOW` 只校验规范记录，真实查询与检索排名需另验。回滚窗口源写、目标读；完成后停止镜像并保留源数据。阶段约束见[校验与切换](ONLINE_MIGRATION.md#复制校验与切换)，操作与保留策略见[故障恢复](ONLINE_MIGRATION.md#运维操作与故障恢复)，执行记录见[验收证据](ACCEPTANCE_EVIDENCE.md)。

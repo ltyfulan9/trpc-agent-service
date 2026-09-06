@@ -96,7 +96,7 @@ go run -buildvcs=false ./cmd/demo
 .\scripts\benchmark_local.ps1 -Count 5
 ```
 
-演示使用 MemoryStore，展示 lease 接管、陈旧提交拒绝、Inbox/Outbox 状态转换和未知投递结果核对。基准输出该内存实现的 ns/op、B/op、allocs/op。详细步骤见 [演示说明](docs/DEMO.md) 和 [基准说明](docs/BENCHMARK.md)。
+演示使用 MemoryStore，展示 lease 接管、陈旧提交拒绝、Inbox/Outbox 状态转换和未知投递结果核对。基准输出该内存实现的 ns/op、B/op、allocs/op。详细步骤见[故障演示](docs/JUDGE_QUICKSTART.md#2-两分钟故障演示)和[本地基准](docs/VERIFICATION.md#5-演示与基准)。
 
 ### 完整服务栈
 
@@ -174,4 +174,4 @@ bash ./scripts/static_verify.sh
 bash ./scripts/validate.sh
 ```
 
-完整门禁包含构建、测试、race、容器和真实后端集成，运行条件见 [验证方法](docs/VERIFICATION.md)。交付包包含当前源码、测试、文档、验证记录和文件校验清单，内容索引见 [Package Manifest](PACKAGE_MANIFEST.md)。
+完整门禁包含构建、测试、race、容器和真实后端集成，运行条件见[验证方法](docs/VERIFICATION.md)。交付包包含源码、测试、文档、验证记录和文件校验清单，内容索引见[交付内容索引](PACKAGE_MANIFEST.md)。

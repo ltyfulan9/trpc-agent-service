@@ -1,24 +1,10 @@
 # 评委快速入门
 
-Enterprise Multi-Tenant Agent Platform 基于 tRPC-Agent-Go，将租户的数据后端选择、Agent 版本发布和跨节点执行组织为可恢复的服务链路。建议从三个场景理解设计：两个租户使用不同 Session/Memory 组合；已有会话在 Worker 接管后继续执行；租户迁移存储时保留增量并支持切换回滚。
+本指南提供 Enterprise Multi-Tenant Agent Platform 的演示、源码核验和阅读入口。评审重点是租户独立选择数据后端、Worker 接管恢复，以及存储迁移的增量捕获与切换回滚。
 
 ## 1. 先看整体链路
 
-```text
-企业微信 / Telegram
-  → Gateway 验签与规范化
-  → PostgreSQL Inbox
-  → Consumer 公平调度、Session FIFO、lease/fence
-  → Worker 固定版本执行 tRPC Runner
-  → Session / Memory / Knowledge / Artifact / Tool
-  → Worker 返回结果；Consumer 事务完成 Inbox + 创建 Outbox/摘要任务
-  → Delivery 分段发送、重试或结果核对
-  → IM 回复
-```
-
-PostgreSQL 持有队列、版本、执行、审计和 fence；Session/Memory 使用共享 Redis 或 PostgreSQL；Knowledge 使用 Qdrant；Artifact 使用对象存储及 PostgreSQL 元数据。系统采用 at-least-once 处理，外部副作用结果未知时进入 reconciliation。
-
-Summary Worker 独立领取摘要任务、读取已提交 Session 并发布 checkpoint，下一轮 Worker 再读取摘要；它不处于单次 IM 回复的同步路径。
+消息路径为 IM→Gateway→Inbox→Consumer→Worker→Outbox→Delivery→IM。Summary Worker 异步发布 checkpoint，下一轮 Worker 读取摘要。组件接线、存储所有权与 at-least-once 恢复边界见[架构设计](ARCHITECTURE.md)。
 
 ## 2. 两分钟故障演示
 
@@ -28,9 +14,16 @@ Summary Worker 独立领取摘要任务、读取已提交 Session 并发布 chec
 go run -buildvcs=false ./cmd/demo
 ```
 
-该演示使用 `MemoryStore`，依次展示消息入队、租约过期接管、旧 fence 被拒绝、Inbox/Outbox 完成，以及发送结果未知后进入核对状态。演示无需账号或公网地址；PostgreSQL 持久化验证使用独立集成测试。
+程序使用 `pkg/reliable.MemoryStore`，输出 JSON 事件，断言失败时返回非零退出码；无需模型账号、IM 凭据或公网回调。
 
-演示说明见 [DEMO.md](DEMO.md)。
+| 步骤 | 操作 | 观察结果 |
+|---|---|---|
+| 消息入队 | 创建带租户、会话和消息标识的 Inbox | 分配消息 ID 与 Session sequence |
+| 租约接管 | 首个 owner 的短租约到期，新 owner 重新领取 | 旧 owner 使用旧 fence 完成消息时得到 `ErrStaleLease` |
+| 完成衔接 | 新 owner 完成 Inbox 并创建回复 | 生成关联 Outbox |
+| 未知结果 | 标记发送开始后让租约过期，再执行 reap | Outbox 转入 reconciliation，停止自动重发 |
+
+演示只验证内存状态机，不启动 PostgreSQL 或独立 Worker 进程。持久化、数据库事务和真实后端接管见[后端集成与部署检查](VERIFICATION.md#4-后端集成与部署检查)。
 
 ## 3. 核验实现
 
@@ -53,9 +46,7 @@ go vet -p 1 ./...
 | 长会话 | 冻结摘要边界、fenced checkpoint、下轮请求裁剪已覆盖历史 | `pkg/summary`、`pkg/summaryruntime` |
 | 在线迁移与多后端投影 | 生产写入捕获、intent 恢复、snapshot/catch-up、完整记录比对、配置 CAS 和回滚；旧缓存随持久化路由切换 | `cmd/data-migrate`、`pkg/migrationruntime`、`pkg/datamigration`、`test/integration/online_session_migration_test.go`、`online_dataplane_migration_test.go` |
 
-在线迁移通过 `cmd/data-migrate` 和 Worker/Summary Worker 的生产装饰器运行，`cmd/migrate` 负责 schema。集成测试调用实际生产协调器与后端适配；运行方法及逐项断言见[验收证据](ACCEPTANCE_EVIDENCE.md)。
-
-迁移采用规范记录全量比对；回滚窗口保留源写、目标读和同步镜像，完成后保留源数据。支持的数据域、Session 准入条件、扫描延迟和恢复命令集中在[迁移运行指南](ONLINE_MIGRATION.md)。
+集成测试的运行范围和断言见[验收证据](ACCEPTANCE_EVIDENCE.md)。数据迁移使用 `cmd/data-migrate`，schema 迁移使用 `cmd/migrate`；支持数据域、准入条件、扫描影响和恢复命令见[迁移运行指南](ONLINE_MIGRATION.md)。
 
 ## 4. 阅读顺序
 

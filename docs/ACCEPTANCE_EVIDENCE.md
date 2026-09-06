@@ -4,8 +4,6 @@ Enterprise Multi-Tenant Agent Platform 的验收分为源码回归、后端集�
 
 ## 1. 提交包验证记录
 
-验证按环境分层：源码与协议回归检查领域规则，真实后端集成检查存储和运行时协作，部署验收检查账号、基础设施与业务负载。每层保留对应提交、运行环境和结果。
-
 交付包的 `verification-evidence/current-validation.log` 记录源码快照、工具链、执行时间、命令输出及退出码，覆盖以下检查：
 
 ```powershell
@@ -15,7 +13,7 @@ go test -buildvcs=false -race -count=1 -p 1 ./...
 go run -buildvcs=false ./cmd/demo
 ```
 
-全量常规测试覆盖未使用 `integration` 构建标签的测试；其中的本地模型、HTTP/MCP 服务和内存后端由测试创建。故障演示使用 `MemoryStore` 验证状态转换。真实后端集成、镜像构建和目标部署分别执行，结果单独记录。
+全量常规测试覆盖未使用 `integration` 构建标签的测试；本地模型、HTTP/MCP 服务和内存后端由测试创建。[故障演示](JUDGE_QUICKSTART.md#2-两分钟故障演示)使用 `MemoryStore`。真实后端、镜像与目标部署的结果分别记录，注明提交和环境。
 
 项目 CI 对提交分支执行源码、race、四后端集成、镜像及漏洞检查；Windows job 构建 ZIP，Linux job 解压该 ZIP，校验 SHA-256、Shell 执行位和 LF 行尾，再运行包内静态检查与全量常规测试。`verification-evidence/public-ci.json` 保存运行地址、提交 SHA 和各 job 的结论；本地日志中的 `source_revision` 与 CI 的 `headSha` 标识同一提交。
 
@@ -63,9 +61,7 @@ go run -buildvcs=false ./cmd/demo
 
 模型与 embedding 在这些测试中使用本地协议服务，测试对象是平台数据流和后端一致性。线上模型效果与服务额度在目标账号中验证。
 
-交叉后端场景使用生产 `StorageAdapter` 与 PostgreSQL execution fence，覆盖服务工厂、持久化访问、作用域和资源生命周期。其执行上下文由测试预置；完整 IM 回调、Runner 模型调用和回复链路在各自的纵向测试及部署验收中验证。
-
-迁移验证包含两层：`datamigration_test.go` 通过测试 hooks 检查迁移库与真实后端的交互；`online_session_migration_test.go` 和 `online_dataplane_migration_test.go` 调用生产装饰器与 `LiveCoordinator`，检查捕获、恢复、比对和路由。后者覆盖校验阶段写入、回滚窗口增量、目标不可用时回滚、已有缓存客户端切换，以及 Artifact 精确版本和删除标记传播。
+交叉后端场景使用生产 `StorageAdapter` 与 PostgreSQL execution fence，但执行上下文由测试预置；完整 IM 回调、Runner 调用和回复需结合各自纵向测试与部署验收。迁移库测试使用自建 hooks，在线迁移测试调用生产装饰器与 `LiveCoordinator`；两者的断言分别列于上表。
 
 ## 4. 存储支持范围
 
@@ -77,11 +73,9 @@ go run -buildvcs=false ./cmd/demo
 | Knowledge | Qdrant | 运维 profile，tenant/app 作用域 |
 | Artifact | PostgreSQL 元数据 + S3-compatible 对象存储 | 运维 profile，本地集成使用 MinIO |
 
-`cmd/data-migrate` 驱动 PostgreSQL 持久化协调器；Worker 装配 Session/Knowledge/Artifact 迁移装饰器，Summary Worker 装配相同 Session 装饰器。创建时开启捕获，以 intent/journal 保留完整记录与删除版本；源目标身份、兼容性、目标空命名空间和配置版本均受校验，切换后已有缓存继续服从持久化路由。`cmd/migrate` 执行 schema 迁移，`MemoryStore` 用于测试和本地状态机演示。
+数据迁移使用 `cmd/data-migrate`，schema 迁移使用 `cmd/migrate`。在线迁移支持 Redis/PostgreSQL Session、embedding 定义与维度兼容的 Qdrant Knowledge、S3/MinIO Artifact；Session 准入检查 shared state、SDK native summary、TTL 和数据规模，VALIDATE/READ_SHADOW 比较完整 inventory 与规范记录。配置矩阵见[多后端设计](MULTI_BACKEND_DESIGN.md)，准入拒绝项、Memory 迁移和查询质量抽样的扩展要求见[迁移运行指南](ONLINE_MIGRATION.md)。
 
-在线迁移的数据域为 Redis/PostgreSQL Session、兼容 embedding 定义与维度的 Qdrant Knowledge、S3/MinIO Artifact。Session 准入检查 shared state、SDK native summary、TTL 和数据规模；VALIDATE/READ_SHADOW 比较完整 inventory 与规范记录。逐域支持矩阵、准入拒绝项以及 Memory 迁移和查询质量抽样的扩展要求见 [多后端设计](MULTI_BACKEND_DESIGN.md) 与 [迁移运行指南](ONLINE_MIGRATION.md)。
-
-迁移部署要求所有写入副本使用相同版本、不可变 profiles 和平台写入入口。活跃迁移串行化租户数据域操作，全量校验期间可能阻塞请求；同步镜像将目标延迟与故障带入调用路径，源写入可能先于错误返回提交。回滚窗口读目标、写源并镜像目标；complete 最终验证后读写目标、停止镜像并保留源数据。第 5 节给出实际负载、切换和恢复的部署验收项。
+部署验收还须确认所有写入副本版本一致、profiles 不可变且均使用平台入口。活跃迁移按租户数据域串行化，需测量全量校验的 gate 阻塞与同步镜像的目标延迟、故障影响，包括源已提交但调用返回错误的情况。回滚窗口应保持读目标、写源并镜像目标；complete 最终验证后读写目标、停止镜像、保留源数据。实际负载与恢复证据按第 5 节收集。
 
 ## 5. 目标环境验收
 

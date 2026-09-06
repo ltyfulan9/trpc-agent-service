@@ -15,7 +15,7 @@ go test -buildvcs=false -race -count=1 -p 1 ./...
 go run -buildvcs=false ./cmd/demo
 ```
 
-交付包 `verification-evidence/current-validation.log` 保存上述命令的工具链、时间、输出和退出码。常规测试包含测试内启动的本地 HTTP/MCP 服务；`cmd/demo` 使用 `MemoryStore` 展示租约接管、旧 fence 拒绝、Inbox/Outbox 状态转换与未知发送结果处理。
+交付包 `verification-evidence/current-validation.log` 保存上述命令的工具链、时间、输出和退出码。常规测试包含测试内启动的本地 HTTP/MCP 服务；`cmd/demo` 的观察项与范围见[故障演示](JUDGE_QUICKSTART.md#2-两分钟故障演示)。
 
 ## 3. 完整源码门禁
 
@@ -66,9 +66,32 @@ Windows 可使用隔离环境脚本启动应用栈：
 
 ## 5. 演示与基准
 
-- [故障恢复演示](DEMO.md)：无需账号，观察内存状态机的接管与结果核对行为。
-- [本地可靠性基准](BENCHMARK.md)：测量 `MemoryStore` 操作耗时与分配，用于同条件下的实现回归比较。
-- [SLI/SLO](SLO.md)：定义目标部署中的队列延迟、处理成功率、错误预算与告警处置。
+故障恢复演示见[评委快速入门](JUDGE_QUICKSTART.md#2-两分钟故障演示)。目标部署的队列延迟、成功率、错误预算和告警处置见 [SLI/SLO](SLO.md)。
+
+### 5.1 本地可靠性基准
+
+`BenchmarkMemoryStoreInboxOutbox` 测量同一 `MemoryStore` 中的完整链路：创建唯一消息和 Session→`EnqueueInbox`→`ClaimInbox`（lease/fence）→`CompleteInbox` 并创建 Outbox。
+
+```powershell
+.\scripts\benchmark_local.ps1 -Count 5
+```
+
+`Count` 指定 Go benchmark 的目标计时秒数。跨平台等价命令：
+
+```bash
+go test -buildvcs=false ./pkg/reliable -run '^$' -bench '^BenchmarkMemoryStoreInboxOutbox$' -benchtime=5s -benchmem
+```
+
+| 输出 | 含义 |
+|---|---|
+| `ns/op` | 每次完整链路的平均耗时 |
+| `B/op` | 每次链路分配的堆内存字节数 |
+| `allocs/op` | 每次链路的堆分配次数 |
+| `N` | 该轮校准后执行的操作次数 |
+
+保存源码快照、操作系统、CPU、内存、Go 版本及完整命令。消息和 Outbox 会保留在同一 Store 中，测量包含累计队列状态的成本；比较时保持计时和运行条件一致。
+
+该基准不包含数据库 I/O、网络、模型或 IM 延迟。正式容量验证使用目标部署和业务 payload，记录吞吐、p50/p95/p99、队列积压、资源与成本，按[故障、回滚与容量](EXTERNAL_ACCEPTANCE_RUNBOOK.md#8-故障回滚与容量)执行。
 
 ## 6. 结果记录与打包
 

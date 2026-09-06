@@ -1,164 +1,80 @@
-# Enterprise Multi-Tenant Agent Platform Architecture Decisions
+# 设计决策
 
-## 1. Design Focus
+本文记录影响正确性、扩展性和运行成本的关键选择，说明替代方案、代价与准入条件。组件与数据流见[架构设计](ARCHITECTURE.md)，完整契约见[项目方案](COMPETITION_SUBMISSION.md)，状态提交与同步协议见[数据同步与幂等设计](DATA_SYNC_IDEMPOTENCY.md)。
 
-The platform separates durable coordination from stateless Agent execution:
+## 1. 以持久状态协调无状态执行
 
-```text
-Gateway -> Inbox -> Consumer -> Worker -> Runner -> Session/Memory -> Outbox -> Delivery
-```
+平台选择由 PostgreSQL 保存队列、执行栅栏、不可变版本和审计，执行节点按已提交身份恢复工作。相比入口同步调用模型并在进程内排队，这一选择增加了入站事务、持久化空间与异步排队延迟，但使回调确认后的工作能够跨进程恢复。Gateway 只有在 Inbox 提交后才确认回调；重复消息继续使用首次入队固定的权威路由，同一身份对应不同正文时通过内容哈希拒绝冲突并返回 HTTP 409。
 
-Each module owns an enforceable invariant. PostgreSQL owns queue state,
-execution fences, immutable versions and audit records; the selected tRPC
-backend owns Session/Memory; Qdrant owns Knowledge vectors; S3/MinIO owns
-Artifact content. The control plane publishes references and immutable
-configuration instead of duplicating data-plane state.
+Inbox 完成与唯一 Outbox 创建采用同一数据库事务，使执行结果和待投递回复具有共同提交边界。模型执行和渠道投递分别承担不同的超时、配额与故障，因此由 Worker 和 Delivery 独立处理。代价是需要维护持久状态转换与结果核对流程；相应事务、崩溃恢复和重复投递断言由[验收矩阵](ACCEPTANCE_EVIDENCE.md#3-真实后端集成)负责。
 
-This review explains those ownership decisions and their trade-offs. The
-system overview is documented in [架构设计](ARCHITECTURE.md), the complete sequence
-and protocols in [项目方案](COMPETITION_SUBMISSION.md#5-核心消息时序), validation
-results in [ACCEPTANCE_EVIDENCE.md](ACCEPTANCE_EVIDENCE.md), and deployment
-prerequisites in [EXTERNAL_ACCEPTANCE_RUNBOOK.md](EXTERNAL_ACCEPTANCE_RUNBOOK.md).
+会话选择严格 FIFO，而非允许后续消息越过失败前序。审批、重试、死信或结果未知会暂停该会话，其他会话仍可推进。分区键固定为 `(tenant_id, agent_app_name, session_id)`；Gateway 生成的规范会话标识包含单聊主体或群聊会话。进程内兼容调用者也必须保持主体与会话的稳定映射，否则不同主体可能产生队头阻塞。调整分区键需要配套 schema 迁移与群聊顺序验证；详细顺序契约见[身份、顺序与写入所有权](DATA_SYNC_IDEMPOTENCY.md#2-身份顺序与写入所有权)。
 
-## 2. Module Decisions
+## 2. 分开约束执行所有权与提交资格
 
-| Module | Responsibility and invariant | Design trade-off |
+Redis 会话租约覆盖完整 Runner 生命周期，失去所有权时取消执行；其 UUID 用于识别租约持有者。PostgreSQL 的单调 `lease_version` 则用于拒绝陈旧节点的持久化提交。仅依赖进程取消，无法阻止暂停后恢复的节点继续提交；仅检查数据库版本，又无法避免并发模型与工具调用。因此两个约束共同存在，并承担不同职责。
+
+完成、续租和重试必须一起检查状态、持有者、单调栅栏与到期时间。检查前可能等待行锁时，租约判定使用 PostgreSQL `clock_timestamp()`，防止事务开始时间在等待后仍把过期租约视为有效；普通审计时间可以使用事务时间。代价是租约安全依赖数据库时钟与实际锁等待，故障验证应覆盖暂停、接管及等待后提交。
+
+Session 迁移及控制面执行栅栏使用连接级 PostgreSQL advisory lock，加锁、校验、续租和解锁必须落在同一物理连接。生产准入接受直连或 PgBouncer session pooling，拒绝 transaction/statement pooling。后两种模式能提高连接复用，却不能保持该锁的所有权契约；部署前置条件见[迁移运行指南](ONLINE_MIGRATION.md#部署前置条件)。
+
+## 3. 按执行证据处理未知结果
+
+平台选择保守区分“尚未执行”和“可能已有副作用”。Consumer 在 `httptrace.GotConn` 取得连接后，把传输失败视为可能已经发送；DNS 或连接建立阶段的失败可重试。`WroteRequest` 可能晚于 `Do` 返回，缺少该回调不能证明 Worker 未执行。执行证明格式错误、Runner 启动后超时或执行心跳丢失，都需要转入结果核对。这样会增加等待核对的请求，但避免把证据不足的失败自动重放。
+
+| 超时边界 | 执行记录与响应 | 恢复选择 |
 | --- | --- | --- |
-| Gateway | Verify provider identity, normalize routing, enforce size/rate limits, and acknowledge only after Inbox commit. Duplicate source identities retain their original authoritative route. | Durable acknowledgement adds one database transaction to ingress latency; in return, acknowledged work survives process loss. |
-| Inbox | Own idempotency, per-session FIFO, lease/fence, retry, DLQ and replay. Complete Inbox and create its unique Outbox in one transaction. | A failed or uncertain predecessor pauses its session to preserve causality; unrelated sessions continue. |
-| Queue scheduling | Use weighted virtual runtime, transactional `max_inflight` checks and atomic `max_queued` admission. Maintain expiry in a bounded `SKIP LOCKED` loop outside Claim. | Fair scheduling adds schedule-row contention. Its rollout requires the same schema/capability on every Gateway and Consumer, and capacity tests must include hot tenants. |
-| Consumer | Claim durable work, validate its authoritative identity, invoke Worker over signed transport, classify the outcome, and commit completion. | Keeping execution and provider delivery outside Consumer preserves independent fault and scaling boundaries. |
-| Worker | Resolve immutable versions, hold a session lease, enforce an execution deadline, reuse bounded Runner instances, and persist result/execution records. | A timeout before Runner starts is retry-safe; after execution starts it becomes reconciliation work because external effects may already exist. |
-| Runtime registry | Bind LLM, Chain, Graph, Parallel and Cycle factories to capability identities; validate and freeze the installed registry before serving. | Publication and execution require matching capabilities. This rejects incompatible deployments before they can silently run a different implementation. |
-| Runner governance | Intercept actual Tool execution through the Runner Plugin for allowlists, audit, content policy, masking, token budgets and durable approval. | One enforcement point keeps approval and audit semantics consistent across built-in and MCP tools. |
-| Session and Memory | Use tenant-scoped backend profiles, canonical Session identity, group owner scope and actor-scoped Memory. | Shared backends remove sticky-session requirements; their availability becomes an execution prerequisite. |
-| Summary | Read authoritative committed events, generate under the pinned Agent version, publish a fenced checkpoint, and overlay it into the next Runner session. | Asynchronous generation avoids blocking the normal response; sequence and cutoff checks keep delayed work from regressing context. |
-| Knowledge and Artifact | Use tenant-scoped Qdrant IDs and immutable SQL/S3 artifact versions with hash checks and tombstones. | SQL, vector and object stores have different commit boundaries; projection journals, idempotency and validation provide recoverable convergence. |
-| Delivery | Persist `DISPATCH_STARTED` before each provider call, track a segmented cursor, classify provider errors, and reconcile uncertain sends. | Delivery is at-least-once. Explicit resume can repeat an uncertain fragment when the provider has no idempotency support. |
-| Admin | Enforce server-side Principal, role and tenant scope; publish immutable snapshots; apply configuration CAS and transactional audit. | Authentication can be supplied by an operator-owned verifier while authorization remains inside the platform. |
+| Runner 启动前 | `ErrExecutionPreflightTimedOut`，`SafeToRetry=true`，HTTP 503 | 允许 Consumer 重试 |
+| `Runner.Run` 开始后 | `ErrExecutionTimedOut`，`SafeToRetry=false`，HTTP 423 | 暂停自动重试，核对模型或工具结果 |
 
-## 3. Consistency and Recovery Decisions
+已提交的结果缓存可避免 Consumer 重试时再次调用模型，却不能撤销目标系统已经接受的工具副作用。业务工具仍须提供目标系统幂等键与结果查询。执行记录的有界超时核对只把符合条件的 `RUNNING` 标记为 `ABANDONED`，保留既有终态；`ABANDONED` 表示终态未可靠记录，不能据此断言模型或工具失败。
 
-### Authoritative Time and Ownership
+Delivery 在每次调用渠道前持久化 `DISPATCH_STARTED`，再依据相同连接证据与分段游标判断恢复方式。提供方缺少幂等支持时，外部核对后的显式继续发送仍可能重复未知片段，因此采用至少一次投递语义。具体游标、重放模式和审计条件由[回复幂等协议](DATA_SYNC_IDEMPOTENCY.md#7-im-接入与回复幂等)与[执行结果恢复判定](DATA_SYNC_IDEMPOTENCY.md#8-执行结果与恢复判定)统一定义。
 
-Lease eligibility uses PostgreSQL `clock_timestamp()` when a decision follows
-a possible row-lock wait. Ordinary audit timestamps can retain transaction
-time. Every completion, renewal and retry checks status, owner, monotonically
-increasing fence and expiry together.
+## 4. 用持久调度换取公平与可恢复维护
 
-The Redis session lease serializes the full Runner lifecycle and cancels
-execution when ownership is lost. Its UUID represents ownership, while
-PostgreSQL `lease_version` supplies the durable monotonic fence. These are
-separate contracts rather than interchangeable tokens.
+队列采用加权虚拟运行时间，在事务内检查 `max_inflight`，入队时原子检查 `max_queued`。相比由各 Consumer 独立计数，多副本共享的调度状态能够约束租户份额与配额；代价是调度行竞争。发布前所有 Gateway 与 Consumer 必须完成对应 schema 和能力校验，容量测试需要包含热点租户、配额变更与并发领取，不能只测均匀流量。
 
-### Unknown Outcomes
+过期维护独立于 Claim。Consumer 和 Delivery 每个进程各运行一个维护循环，依靠有界批次、专用部分索引与 `SKIP LOCKED` 避免空轮询反复扫描和更新全局过期行。这使单次数据库工作可控，也意味着恢复时间受扫描周期和批量上限影响，应结合积压量验收。算法与维护边界见[可靠队列协议](COMPETITION_SUBMISSION.md#511-inbox)。
 
-The Consumer conservatively marks a request as possibly dispatched when
-`httptrace.GotConn` acquires a connection. DNS or connection-setup failures can
-retry; a transport failure after connection acquisition moves work to
-reconciliation. `WroteRequest` can arrive after `Do` returns, so the absence of
-that callback does not prove that the Worker did not execute. Malformed
-execution proof, a post-Runner timeout or an execution heartbeat loss also
-requires reconciliation. Delivery uses the same connection evidence together
-with its durable pre-dispatch marker and cursor commit.
+观测保留可解释的状态语义：队列深度和最老年龄只统计自动处理状态；检查失败时保留最后有效样本并增加失败计数，因此样本可能已经过时；死信指标只统计成功状态转换，不统计尝试更新的次数。Prometheus 标签使用有界允许列表，以牺牲任意维度的即时展开换取稳定的指标规模，详细故障查询与告警见[服务目标及处置手册](SLO.md)。
 
-Result caching avoids a repeated model call after a committed response.
-Business tools still require target-system idempotency keys, because a local
-result record cannot undo an already accepted external effect.
+## 5. 用能力身份和统一治理限制扩展
 
-### Bounded Maintenance and Observability
+平台在发布与执行两侧校验运行时能力身份，服务开始前校验并封存注册表。自定义工厂必须通过 `RegisterWithCapability` 提供稳定实现身份；仅按类型注册只适用于兼容的进程内调用，严格模式的 Admin 与 Worker 拒绝无法识别实现的自定义运行时。相比运行期任意替换工厂，这一选择增加了多节点发布协调成本，但避免同一个不可变版本在不同节点运行不同实现。运行时类型与装配契约见[组件职责与数据面接线](COMPETITION_SUBMISSION.md#25-组件职责与数据面接线)。
 
-Consumer and Delivery run one expiry-maintenance loop per process, with
-bounded batches and dedicated partial indexes. Queue inspection publishes
-depth and oldest-age metrics for automatic states; a failed inspection keeps
-the last valid sample and increments its failure counter. Dead-letter metrics
-count successful state transitions rather than attempted mutations.
+Runner 实例采用有界缓存并按调用引用排空，减少重复构造与连接开销；正在使用的实例不能因容量压力被提前关闭。内置工具与 MCP 工具均通过固定装配的 Runner Plugin，在真实 `BeforeTool` 与 `AfterTool` 边界执行授权、审批、内容策略、脱敏和审计。相比各工具自行实现策略，统一入口使规则一致，但自定义执行路径必须证明没有绕过该入口，工具回归也应覆盖实际调用链。
 
-### Migration and Cutover
+硬预算采用 Redis Lua 原子预留和 UTC 日账本，而非仅在调用前读取剩余额度。未发送的过期预留可以回收，已发送且用量未知时保守结算或保留预算占用；预留、授权与结算任一步落账失败均拒绝成功放行。代价是 Redis 可用性成为执行前提，未知用量可能降低当日可用额度。详细模型目录、调用授权与用量核算规则由[治理与安全边界](COMPETITION_SUBMISSION.md#71-租户与安全边界)负责。
 
-Snapshot and catch-up use persisted cursors, monotonic watermarks, target-side
-idempotent projection and an owner fence. Cursor reset is valid only at the
-defined snapshot/dual-write/catch-up phase boundaries. Projection markers
-include migration identity, so a later migration cannot reuse another
-migration's completion proof. Cutover requires validation and a configuration
-CAS; the rollback window retains the source and incremental journal.
+## 6. 按数据域选择一致性与迁移代价
 
-Session migration uses connection-level PostgreSQL advisory locks. Supported
-connections are direct PostgreSQL or PgBouncer session pooling; transaction
-and statement pooling do not preserve that ownership contract.
+Session 与 Memory 通过共享后端服务支持跨节点恢复，避免把请求绑定到单个 Worker。代价是后端可用性进入执行前提，身份规则必须一致：租户命名空间、规范 Session 标识、群聊所有者和按参与者隔离的 Memory 均不可由缓存自行推断。后端配置、资源借用与归还、作用域和扩展契约由[多后端适配方案](MULTI_BACKEND_DESIGN.md#请求身份客户端生命周期与数据所有权)统一维护。
 
-## 4. Security and Configuration Decisions
+Summary 选择异步派生，以减少正常回复对摘要模型延迟的依赖；代价是下一轮可能暂时使用较早的有效摘要。生成只读取权威已提交事件，并绑定已固定的 Agent 版本；序号、截止边界与带栅栏的 checkpoint 发布防止晚到任务倒退上下文，下一轮通过 Session overlay 消费。代次、`max_event_sequence` 条件更新和历史裁剪由[摘要有序派生协议](DATA_SYNC_IDEMPOTENCY.md#4-summary-的有序派生)定义。
 
-- AES-GCM `enc:v2` envelopes authenticate both tenant identity and stable
-  credential field. Unversioned and `enc:v1` envelopes remain readable for
-  stored-data compatibility; writes and rewraps use `enc:v2`.
-- Secret references are scoped by tenant, purpose, provider and model. The
-  environment resolver accepts only `env://TRPC_SECRET_*` and emits value-free
-  errors. Gateway/Delivery resolve only their selected Channel binding;
-  Worker/Summary Worker receive only their required model/data-plane secrets.
-- Tenant configuration stores operator-owned profile IDs instead of DSNs or
-  arbitrary provider URLs. Production PostgreSQL profiles require
-  `sslmode=verify-full`.
-- Admin derives authorization and audit actors from server-side Principals.
-  An injected OIDC/IAP/mTLS verifier must validate its identity proof before
-  returning a Principal; client identity headers are not trusted.
-- Approval grants bind the exact tenant, invocation, actor, owner, session,
-  tool and canonical arguments. Queue resume consumes the durable grant once;
-  HTTP responses expose challenge identifiers instead of capability tokens.
-- Consumer production transport requires HTTPS. Development HTTP and mesh
-  application hops have explicit modes; mesh mode requires verified peer
-  authentication in the deployment.
-- Attachment handling passes validated references to the model provider and
-  does not download them inside Worker. MCP addresses and headers are
-  operator-owned, with precise Tool allowlists and governed execution.
-- Prometheus labels use bounded allowlists. Durable trace context links the
-  request stages without exposing raw payloads, secrets or user identities.
+SQL、Qdrant 与对象存储采用各自原生提交，跨库变化通过幂等记录与验证恢复收敛。租户作用域的向量标识、Artifact 不可变版本、内容哈希和删除标记承担数据域内的约束；平台配置保存引用与不可变声明，避免复制一份可能漂移的数据面权威。相比跨库事务，该选择保留后端独立性，但必须处理正文与元数据部分成功，以及失败后的读回和补偿；具体提交顺序见[各后端同步策略](DATA_SYNC_IDEMPOTENCY.md#6-各后端的同步策略)。
 
-## 5. Compatibility and Operational Constraints
+在线迁移使用持久化游标、单调水位、迁移所有者栅栏及包含迁移身份的投影标记，防止后续迁移复用其他任务的完成证明。游标只允许在状态机规定的 `SNAPSHOT_COPY` 到 `DUAL_WRITE`、`DUAL_WRITE` 到 `CATCH_UP` 边界重置；进程恢复不能自行清空进度。生产写入由 intent 与 journal 捕获，目标读回和全量规范记录比对成功后，切换通过配置 CAS、路由与状态原子更新完成。
 
-The durable FIFO key is `(tenant, agent app, session_id)`. Gateway generates
-canonical session IDs containing the direct-message subject or group
-conversation. In-process compatibility callers that supply the same session
-ID for different subjects can cause head-of-line blocking; they must preserve
-the same identity rule. Changing this partition key requires a coordinated
-schema and group-ordering migration.
+相比只复制快照后直接修改连接配置，该协议需要同步镜像、额外日志和校验扫描，也会把目标延迟及故障带入源请求。回滚窗口保留源数据与增量记录，读目标、写源并镜像目标；完成后停止镜像并保留源数据。全体写入副本版本与不可变连接配置一致、写入经过平台入口、目标准入通过，是可恢复切换的必要条件。支持矩阵、暂停语义和操作步骤见[在线迁移运行指南](ONLINE_MIGRATION.md)。
 
-Custom runtime factories use `RegisterWithCapability` to supply a stable
-implementation identity. Type-only registration is restricted to compatible
-in-process use; strict Admin/Worker publication does not accept an unidentified
-custom implementation. A process-local key-ring operation is likewise distinct
-from a coordinated multi-replica key rotation: deployment operators need key
-epochs, staged rollout and resumable rewrapping.
+## 7. 把配置扩展限制在可授权范围内
 
-Tools must cooperate with cancellation. Untrusted or cancellation-ignoring
-tools require a killable process/container execution boundary. Capacity sizing
-must account for process connection pools, HPA expansion, model latency,
-provider quotas and hot-session serialization.
+租户提交运维管理的连接配置标识，平台拒绝租户自填 DSN 或任意提供方 URL。生产 PostgreSQL 配置要求 `sslmode=verify-full`。相比直接暴露连接参数，这一方式减少租户自助配置的自由度，却使凭据、实例身份、网络目标与授权能够集中审核；连接配置和密钥按各进程职责分配，具体范围见[密钥和配置隔离](SECURITY_REVIEW.md#3-密钥和配置隔离)。
 
-These operational constraints are captured as concrete failure modes and
-owners in [RISK_REGISTER.md](RISK_REGISTER.md). Environment-specific identity,
-HA/DR, network, capacity and provider checks follow the linked deployment
-runbook.
+密钥引用绑定租户、用途、提供方与模型，环境解析器仅接受 `env://TRPC_SECRET_*`，错误信息不携带密钥值。AES-GCM 的 `enc:v2` 信封认证租户身份与稳定凭据字段；读取兼容无版本和 `enc:v1` 信封，写入与重新封装使用 `enc:v2`。遮盖值回写仅在匹配既有身份时保留原密钥，不能把遮盖文本存成真实凭据。兼容读取增加了解密路径的维护责任，轮换应验证存量解密与新写入行为。
 
-## 6. 失败模式与门禁取舍
+进程内密钥环操作只改变本进程状态；多副本轮换还需要密钥代次、分阶段发布与可恢复的重新封装流程。发布期间必须保证各副本能够读取仍在使用的密文，不能把单节点调用成功当成全体轮换完成。部署身份、最小权限、轮换与审计验收见[密钥系统验收](EXTERNAL_ACCEPTANCE_RUNBOOK.md#7-kmsvault-生产验收)。
 
-| 风险 | 后果 | 缓解/验收证据 |
-|---|---|---|
-| Gateway 先回 200 后落库 | 消息丢失 | 只在 Inbox COMMIT 后 200；kill-point 集成测试 |
-| 同消息重复/ID 冲突 | 重复执行或静默丢失 | 复合唯一键 + payload hash，冲突 409 |
-| 旧 Worker 复活写 | 覆盖新结果 | lease_version + owner + expiry；stale fence 测试 |
-| Worker 成功后 Consumer 崩溃 | 重复模型/工具 | invocation result cache；工具自身幂等键 |
-| Worker 在 execution finish 前退出 | RUNNING 审计永久悬挂 | 有界 stale reconciler 标记 ABANDONED；只更新 RUNNING；终态回归测试 |
-| Runner 前 admission 超时 | 无副作用却阻塞同 session | `ErrExecutionPreflightTimedOut` → execution `SafeToRetry=true` → HTTP 503/Consumer retry |
-| `Runner.Run` 后超时 | 模型/Tool 副作用未知 | `ErrExecutionTimedOut` → execution `SafeToRetry=false` → HTTP 423/reconciliation |
-| IM 成功后 Delivery 崩溃 | 当前片段进入 `WAITING_RECONCILIATION`，等待外部核对 | provider 幂等键；审计 replay 后继续，明确 at-least-once |
-| 跨租户 session/memory 串数据 | 数据泄露 | tenant appName/session namespace、复合约束、隔离测试 |
-| 同 session 两次 Agent 并发或乱序 | Event/工具交错、因果倒置 | 持久化 session_sequence 前序门禁；全 invocation 可续约 lease；死信暂停/重放与跨 session 回归测试 |
-| Runner Plugin 未装配或被绕过 | 危险工具绕过 | Worker 构造固定注册 Plugin，Runner BeforeTool/AfterTool 回归测试 |
-| 内部 Worker 暴露 | 未授权模型调用 | body-bound HMAC、nonce replay store、NetworkPolicy/mTLS |
-| Admin 遮盖值回写 | 永久覆盖真实密钥 | preserve masked secrets 测试 |
-| 日志/URL 泄密 | 凭据泄露 | 固定遮盖、严格凭据格式、opaque transport error、无 raw prompt 审计 |
-| Redis 故障或并发预检穿透预算 | 失控成本 | Lua 原子预留、UTC 日账本、租约回收、usage 保守结算；任一落账失败 fail-closed |
-| 摘要乱序覆盖 | 上下文倒退 | max_event_sequence CAS 与晚到任务测试 |
-| 在线迁移源目标不一致 | 切换丢记录或读取旧版本 | 持久化 intent/journal、目标读回验证、全量规范记录比对、配置 CAS 与回滚窗口 |
-| 无基准容量数据 | 峰值雪崩 | 可复现 load test + SLO/error budget gate |
+Admin 从服务端 `Principal` 派生角色、租户授权与审计操作者，再以配置 CAS 和事务审计提交变更。外接 OIDC、IAP 或 mTLS 验证器必须先验证身份凭证再返回 `Principal`，客户端身份请求头不能直接成为授权依据。这样允许运维替换认证来源，同时保留平台内部一致的授权规则。
+
+危险工具批准绑定精确的租户、调用、参与者、所有者、会话、工具与规范参数，队列恢复时一次性消费持久批准。HTTP 响应只暴露挑战标识，不返回可直接行使权限的批准令牌。相比可以反复使用的通用批准，这一选择增加了参数变化后的重新审批成本，但使批准范围与实际副作用保持一致。
+
+## 8. 把运行边界作为发布准入条件
+
+Consumer 生产传输使用 HTTPS，开发 HTTP 与服务网格内部跳转均需要显式模式；服务网格模式还要求实际验收对端身份认证。请求正文绑定的 HMAC 与 nonce 防重放解决应用身份问题，传输加密、NetworkPolicy 和 mTLS 分别承担网络边界，不能相互替代。Worker 只向模型提供方传递经验证的附件引用，不在进程内下载附件；MCP 地址和请求头由运维管理，并使用精确工具允许列表。实际出网侧仍需验收 DNS、重定向与目标限制，详见[执行与网络安全](SECURITY_REVIEW.md#5-执行与网络安全)。
+
+工具必须响应取消信号；对不可信或忽略取消的工具，部署必须提供可终止的进程或容器执行边界，单纯请求超时不能回收仍在运行的副作用。链路上下文随持久消息传播，日志和审计使用稳定错误类与脱敏标识，不保存原始提示词、请求正文、密钥或用户身份。传输错误保持无凭据细节，完整观测约束见[可观测与审计](SECURITY_REVIEW.md#6-可观测与审计)。
+
+扩容评估必须计入每进程连接池、HPA 副本增长、模型延迟、提供方配额与热点会话串行化。增加 Worker 可能同步增加数据库和模型压力，因此准入依据是可复现负载、队列恢复能力以及[服务目标和错误预算](SLO.md)，而非副本数或 CPU 单项指标。具体失效模式、观测信号和责任人归属见[风险登记册](RISK_REGISTER.md)；身份、HA/DR、网络、业务容量与真实提供方检查按[目标环境验收](EXTERNAL_ACCEPTANCE_RUNBOOK.md)记录，源码和本地集成通过不能替代这些结果。

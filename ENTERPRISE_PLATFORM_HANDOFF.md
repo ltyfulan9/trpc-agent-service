@@ -8,11 +8,11 @@
 - 项目方案、架构与数据模型、安全与风险、运行及验收文档。
 - 本地演示、基准、验证日志、包内文件清单和 SHA-256。
 
-完整目录职责见 [交付内容索引](PACKAGE_MANIFEST.md)，项目方案见 [COMPETITION_SUBMISSION](docs/COMPETITION_SUBMISSION.md)。
+完整目录职责见[交付内容索引](PACKAGE_MANIFEST.md)，题目映射与设计见[竞赛方案](docs/COMPETITION_SUBMISSION.md)。
 
 ## 启动顺序
 
-1. 在源码根目录运行 `go run -buildvcs=false ./cmd/demo`，观察 MemoryStore 的 lease 接管、陈旧提交拒绝及未知投递结果核对。
+1. 在源码根目录运行 `go run -buildvcs=false ./cmd/demo`，按[四步观察表](docs/JUDGE_QUICKSTART.md#2-两分钟故障演示)核验内存状态机。
 2. 运行 `go test -buildvcs=false -count=1 -p 1 ./...` 验证源码；完整环境命令见 [验证方法](docs/VERIFICATION.md)。
 3. 启动 Docker Linux engine，执行 `scripts/run_c_local_stack.ps1 -ProjectName agent-platform-review -Build`。
 4. 确认迁移任务完成、应用健康、Prometheus 抓取正常，随后配置租户、Agent 版本和部署。
@@ -35,18 +35,16 @@
 
 ## 消息恢复
 
-消息由 PostgreSQL Inbox 接收，Consumer 领取后调用固定版本 Worker，结果通过事务衔接至 Outbox。Delivery 在 Provider 调用前写入 dispatch fence。
-
 - 可重试错误：按照 retry policy 和 Provider 的 Retry-After 延迟重试。
 - lease 丢失：陈旧 owner/fence 提交被拒绝，由有效租约继续处理。
 - 结果未知：进入 `WAITING_RECONCILIATION`，核对外部结果后恢复。
 - 死信：记录原因及关联 trace，由操作者携带 actor/reason 重放。
 - Outbox resume：保留已确认 cursor；restart：从首段重发，操作前确认业务影响。
 
-同 Session 的阻塞前序暂停后续消息，其他 Session 独立推进。组件关系见 [架构设计](docs/ARCHITECTURE.md)，提交与恢复契约见 [数据同步与幂等设计](docs/DATA_SYNC_IDEMPOTENCY.md)，故障处理见 [风险登记册](docs/RISK_REGISTER.md)。
+同 Session 的阻塞前序暂停后续消息，其他 Session 独立推进。提交与恢复契约见[数据同步与幂等设计](docs/DATA_SYNC_IDEMPOTENCY.md)，故障处理见[风险登记册](docs/RISK_REGISTER.md)。
 
 ## 验证记录
 
 源码验证命令、退出码和环境保存在交付包 `verification-evidence/current-validation.log`。能力检查项及目标部署验收状态统一见 [验收矩阵](docs/ACCEPTANCE_EVIDENCE.md)。Kubernetes 发布步骤见 [部署指南](deploy/kubernetes/README.md)。
 
-后端集成使用独立 PostgreSQL、Redis、Qdrant 和 MinIO 测试环境，并核对持久化后状态：副本接管拒绝旧 fence 且只创建一个 Outbox；Summary 的摘要、未覆盖消息和历史裁剪进入下一轮实际模型请求；迁移目标读回内容、版本和 tombstone 与源记录一致，投影成功后才登记完成。环境变量和执行入口见 [后端集成与部署检查](docs/VERIFICATION.md#4-后端集成与部署检查)，逐项断言见 [验收矩阵](docs/ACCEPTANCE_EVIDENCE.md)。
+后端集成使用独立 PostgreSQL、Redis、Qdrant 和 MinIO 环境，按[验收矩阵](docs/ACCEPTANCE_EVIDENCE.md#3-真实后端集成)核对持久化后状态。环境变量和命令见[后端集成与部署检查](docs/VERIFICATION.md#4-后端集成与部署检查)，本地耗时与分配比较见[可靠性基准](docs/VERIFICATION.md#51-本地可靠性基准)。

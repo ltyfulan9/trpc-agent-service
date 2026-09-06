@@ -1,57 +1,57 @@
 # 安全架构与审计设计
 
-范围：Go 源码、migrations、Compose/Kubernetes 模板和发布校验。本文说明租户隔离、消息 fence、治理、密钥最小暴露和专用数据面的安全控制及信任边界；验证记录见 [ACCEPTANCE_EVIDENCE.md](ACCEPTANCE_EVIDENCE.md)。
+范围：Go 源码、migrations、Compose/Kubernetes 模板和发布校验。本文定义安全控制与信任边界，验证记录见[验收证据](ACCEPTANCE_EVIDENCE.md)。
 
 ## 1. 威胁模型与信任边界
 
-不可信输入包括 IM webhook、消息正文/附件 URL、Tool 参数、模型输出、租户管理员提交的配置和第三方 Provider 响应。受信边界分为公网 Gateway、内部 Consumer/Worker、Admin 控制面、共享 PostgreSQL/Redis、Qdrant/S3 数据面以及 Telemetry 出口。主要攻击目标是跨租户读取、伪造回调/内部请求、重复副作用、权限提升、秘密泄露、SSRF、队列/预算耗尽和供应链替换。
+不可信输入包括 IM webhook、正文/附件 URL、Tool 参数、模型输出、租户管理员配置和第三方 Provider 响应。信任边界分为公网 Gateway、内部 Consumer/Worker、Admin、PostgreSQL/Redis、Qdrant/S3 和 Telemetry 出口。主要威胁是跨租户读取、伪造请求、重复副作用、提权、秘密泄露、SSRF、队列/预算耗尽和供应链替换。
 
 ## 2. 安全控制
 
 | 领域 | 控制 | 证据入口 |
 |---|---|---|
-| Webhook authenticity | Telegram secret header；WeCom SHA1、AES-CBC、CorpID 和 URL verify | `pkg/channel`, Gateway tests |
-| Internal authenticity | Consumer→Worker HMAC-SHA256 绑定 method/path/body/traceparent；Redis nonce 防重放 | `pkg/auth/service.go`, `pkg/auth/service_test.go` |
-| Admin authorization | bearer→Principal；role/action/tenant allowlist；不信任 `X-Admin-Actor` | `pkg/adminauth`, `cmd/admin` |
-| Tenant data scope | SQL 复合键/查询带 tenant；scoped reader；缺能力 fail-closed | `pkg/tenant`, `pkg/reliable`, `pkg/controlplane` |
-| Knowledge scope | Qdrant 物理 ID=`SHA256(tenant\0app\0logicalID)`；保留 metadata 不可覆盖 | `pkg/knowledgeplane` |
-| Artifact scope/integrity | tenant-scoped object key；不可变版本；最大 16 MiB；MIME/标识校验；SHA-256 load verify | `pkg/artifactplane` |
-| Secret handling | profile manifest 只存 env 名；JSON unknown fields/raw secret 拒绝；仅 Worker 解析；字段私有不可序列化 | `pkg/runtimeplane`, `pkg/releaseverify` |
-| Tool authorization | Runner BeforeTool 统一授权接口；tenant+version 双白名单；危险工具持久审批一次性消费 | `pkg/governance/plugin.go`, `pkg/governance/approval_postgres.go` |
-| MCP boundary | operator-owned HTTPS profile；精确远端 Tool allowlist；Worker-only Header SecretRef；禁用 stdio/危险 Header | `pkg/platformtool/mcp.go`, MCP vertical-slice tests |
-| Cost control | Redis Lua 原子 token reservation/dispatch/settlement；未知 usage 保守计费 | `pkg/governance/budget.go`, `pkg/summaryruntime/budget_model.go` |
-| Idempotency/fencing | Inbox/Outbox unique+hash；owner/lease_version/expiry；结果未知进 reconciliation | `pkg/reliable`, `pkg/controlplane/session_fence.go`, `pkg/resultcache/postgres.go` |
-| Output/log safety | 工具结果和最终模型输出递归脱敏；错误稳定分类；用户 ID 租户 HMAC 假名 | `pkg/governance`, `pkg/telemetry` |
-| Deployment | non-root、read-only rootfs、drop ALL、no-new-privileges、seccomp、default-deny、digest gate | `deploy`, `pkg/releaseverify` |
+| 回调认证 | Telegram secret header；WeCom SHA1、AES-CBC、CorpID+AppID/AgentID 绑定和 URL 验证 | `pkg/channel`、Gateway 测试 |
+| 内部认证 | Consumer→Worker HMAC-SHA256 绑定 method/path/body/traceparent；Redis nonce 防重放 | `pkg/auth/service.go`、`pkg/auth/service_test.go` |
+| 管理授权 | bearer→Principal；role/action/tenant 白名单；不信任 `X-Admin-Actor` | `pkg/adminauth`、`cmd/admin` |
+| 租户作用域 | SQL 复合键/查询带 tenant；scoped reader；能力缺失时拒绝访问 | `pkg/tenant`、`pkg/reliable`、`pkg/controlplane` |
+| 知识隔离 | Qdrant 物理 ID=`SHA256(tenant\0app\0logicalID)`；保留 metadata 不可覆盖 | `pkg/knowledgeplane` |
+| 文件隔离与完整性 | tenant-scoped object key；不可变版本；最大 16 MiB；MIME/标识校验；加载时验证 SHA-256 | `pkg/artifactplane` |
+| 密钥处理 | Knowledge/Artifact/MCP profile 只存 env 名，凭据仅 Worker 解析；拒绝 JSON 未知字段/原始秘密；秘密字段私有、不可序列化 | `pkg/runtimeplane`、`pkg/releaseverify` |
+| 工具授权 | Runner BeforeTool 统一授权；tenant+version 双白名单；危险工具持久审批一次性消费 | `pkg/governance/plugin.go`、`pkg/governance/approval_postgres.go` |
+| MCP 边界 | 运维管理 HTTPS profile；精确远端 Tool 白名单；仅 Worker 接收 Header SecretRef；禁用 stdio/危险 Header | `pkg/platformtool/mcp.go`、MCP 纵向集成测试 |
+| 成本控制 | Redis Lua 原子预留、dispatch 和结算；未知 usage 保守计费 | `pkg/governance/budget.go`、`pkg/summaryruntime/budget_model.go` |
+| 幂等与 fence | Inbox/Outbox unique+hash；owner/lease_version/expiry；结果未知进入 reconciliation | `pkg/reliable`、`pkg/controlplane/session_fence.go`、`pkg/resultcache/postgres.go` |
+| 输出安全 | 工具结果和最终模型输出递归脱敏；错误稳定分类；用户 ID 使用租户 HMAC 假名 | `pkg/governance`、`pkg/telemetry` |
+| 部署防护 | non-root、read-only rootfs、drop ALL、no-new-privileges、seccomp、default-deny、digest 门禁 | `deploy`、`pkg/releaseverify` |
 
 ## 3. 密钥和配置隔离
 
-租户模型/API/IM 密钥以 AES-GCM envelope 保存，也可引用 operator-owned `env://TRPC_SECRET_*`；读 API 返回遮盖值，更新时只有匹配既有 identity 的 `***REDACTED***` 可表示“保持不变”。Session/Memory 只引用 operator-owned profile，禁止租户写 DSN/URL。Knowledge/Artifact 与 MCP profile 都是无秘密 JSON：Admin 得到公开 profile 做准入，只有 Worker 得到数据面/MCP Header Secret；模型 Key 只进入 Worker/Summary Worker，Channel Secret 只进入 Gateway/Delivery，Consumer/Admin 均不得获得这些值。
+租户模型/API/IM 密钥使用 AES-GCM envelope 或运维管理的 `env://TRPC_SECRET_*`。读 API 返回遮盖值；更新时，`***REDACTED***` 只有匹配既有 identity 才表示保持不变。Session/Memory 只引用运维 profile，禁止租户写 DSN/URL。Admin 仅获取 Knowledge/Artifact/MCP 的公开 profile；数据面/MCP Header Secret 仅给 Worker，模型 Key 仅给 Worker/Summary Worker，Channel Secret 仅给 Gateway/Delivery；Consumer/Admin 不接收这些秘密。
 
-Kubernetes `runtime-data-plane-profiles` ConfigMap 的 `profiles.json` 与 `mcp-profiles.json` 只存无秘密声明；`runtime-data-plane-credentials` 的四个 key 只可在 Worker 主容器各引用一次，releaseverify 拒绝非 Worker、sidecar 或重复暴露。清单回归同时锁定 MCP、模型与 Channel Secret 的进程范围。内置 resolver 从受限环境变量读取；生产 Secret 来源通过 workload identity 接入 KMS/Vault，配置和验证步骤见部署验收运行手册。
+Kubernetes `runtime-data-plane-profiles` 中的 `profiles.json`、`mcp-profiles.json` 只存无秘密声明；`runtime-data-plane-credentials` 的四个 key 仅可在 Worker 主容器各引用一次。releaseverify 拒绝非 Worker、sidecar 或重复暴露，并回归检查 MCP、模型和 Channel Secret 的进程范围。内置 resolver 读取受限环境变量；生产通过 workload identity 接入 KMS/Vault，按[密钥系统验收](EXTERNAL_ACCEPTANCE_RUNBOOK.md#7-kmsvault-生产验收)配置与验证。
 
 ## 4. 数据面安全
 
-Qdrant profile 校验 endpoint、TLS、dimension、collection、embedding endpoint 和 tenant allowlist；HTTP embedding 仅允许显式本地 `allowInsecure` 且 host 为 loopback。S3 profile 校验 endpoint、bucket、region、object 大小和 credential refs；生产要求 TLS。Artifact 文件名拒绝路径分隔符、控制字符和格式字符，object key 对每段 base64url 编码；PostgreSQL advisory lock 使用固定 digest，避免用户文本进入锁/活动查询。
+Qdrant profile 校验 endpoint、TLS、dimension、collection、embedding endpoint 和 tenant allowlist；HTTP embedding 须显式启用本地 `allowInsecure` 且 host 为 loopback。S3 profile 校验 endpoint、bucket、region、object 大小和 credential refs，生产要求 TLS。Artifact 文件名拒绝路径分隔符、控制字符和格式字符，object key 各段使用 base64url；advisory lock 使用固定 digest，避免用户文本进入锁/活动查询。
 
-Knowledge/Artifact migration 在副作用前后读取 lease fence，过期执行者不能写 projection marker。Artifact 同版本异内容拒绝；相同内容重放读取已保存的对象 key 并修复正文。删除先提交 tombstone，再清理对象；失败重试继续清理已 tombstone 的正文。每次新写入使用独立对象标识，提交未知时保留正文，清理前在作用域锁下核对元数据引用。
+Knowledge/Artifact 投影在副作用前后检查 lease fence，过期执行者不得写完成标记，见[同步策略](DATA_SYNC_IDEMPOTENCY.md#6-各后端的同步策略)。Artifact 同版本异内容拒绝，同内容重放复用已保存 key 并修复正文；新写入使用独立对象标识。删除先提交 tombstone，清理失败可重试；提交未知时保留正文，清理前在作用域锁内核对元数据引用。迁移恢复顺序见[持久化写入协议](ONLINE_MIGRATION.md#持久化写入协议)。
 
 ## 5. 执行与网络安全
 
-Gateway 必须在 durable commit 后 ack。Consumer→Worker 的 HMAC 不替代传输加密：生产只接受 HTTPS，或在已验收严格 peer authentication 的 mesh 中显式开启 mesh 模式。Worker 对模型/Tool 调用设置 deadline；Consumer 与 IM Adapter 仅把 DNS/连接建立阶段的传输失败判为可重试，`GotConn` 后的错误保守视为可能已发送。`WroteRequest` 回调缺失或晚到不能证明没有执行，未知结果进入 reconciliation。危险 Tool 的批准绑定 tenant、actor、owner、session、tool、canonical args 和 invocation，raw approval token 不进入 Inbox、Session 或 HTTP 响应。
+Gateway 在 durable commit 后确认回调。Consumer→Worker 除 HMAC 外，生产还须使用 HTTPS，或显式启用已验收严格 peer authentication 的 mesh 模式。模型/Tool 调用设置 deadline；Consumer 与 IM Adapter 仅将 DNS/连接建立阶段的传输失败视为可重试。`GotConn` 后按可能已发送处理；`WroteRequest` 缺失或晚到不能证明未执行，未知结果进入 reconciliation，判定见[执行恢复协议](DATA_SYNC_IDEMPOTENCY.md#8-执行结果与恢复判定)。危险 Tool 批准绑定 tenant、actor、owner、session、tool、canonical args 和 invocation；raw approval token 不进入 Inbox、Session 或 HTTP 响应。
 
-Worker 通用请求中的附件 URL 以经验证的引用传给模型 Provider，Worker 不下载；生产请求校验拒绝 userinfo、fragment、localhost 和字面量私网/链路本地地址。出网地址与凭据由平台运维管理，模型使用已安装 Provider；MCP profile 采用 HTTPS、精确 Tool allowlist 和受控 Header。目标网络通过 egress allowlist、DNS 与重定向策略约束实际连接；各 MCP profile 按目标系统认证、权限和配额独立验收。
+Worker 只向已安装模型 Provider 传递经验证的附件引用，不下载正文；生产拒绝 userinfo、fragment、localhost 和字面量私网/链路本地地址。运维管理出网地址与凭据，以域名/IP allowlist、DNS 和重定向策略约束实际连接；各 MCP profile 的目标系统认证、权限和配额独立验收。
 
 ## 6. 可观测与审计
 
-公网回调创建可信 root span，外部提供的 trace header 不直接成为父；内部 traceparent 纳入 HMAC。日志/trace 不允许记录 webhook token、模型 key、数据库密码、Authorization、完整 payload 或原始用户标识。审计包含 tenant/channel/pseudonymous user/session/agent version/tool/decision/latency/error/cost/trace，并与控制面变更、审批、DLQ replay 分离保存。
+公网回调创建可信 root span，不直接采用外部 trace header 为父；内部 traceparent 纳入 HMAC。日志/trace 禁止记录 webhook token、模型 key、数据库密码、Authorization、完整 payload 或原始用户标识。执行审计包含 tenant/channel/pseudonymous user/session/agent version/tool/decision/latency/error/cost/trace，与控制面变更、审批、DLQ replay 分离保存。
 
-Prometheus `/metrics` 生产默认需要 bearer；只有 loopback Compose 使用 unauthenticated 开关。tenant/model/agent 动态标签采用严格 allowlist，其余合并，避免攻击者制造无界 series。OTLP 在目标环境必须启用 TLS、服务身份和 attribute processor 二次清洗。
+生产 `/metrics` 需要 bearer，仅 loopback Compose 可启用 unauthenticated。tenant/model/agent 标签按[SLO 标签限制](SLO.md#服务目标)有界聚合。OTLP 必须启用 TLS、服务身份和 attribute processor 二次清洗。
 
 ## 7. 供应链和运行时
 
-生产 Dockerfile 固定 Go 1.26.7 基础镜像 digest，最终镜像非 root、只读、无 shell 依赖的最小权限运行。Kubernetes releaseverify 拒绝 tag-only image、缺失 workload、错误 Worker transport、profile/secret 泄露和未受控 egress。发布流程按部署组织策略配置构建 provenance、SBOM、镜像签名、admission verification、依赖漏洞扫描、分支保护和双人 release approval。
+生产 Dockerfile 固定 Go 1.26.7 基础镜像 digest，最终镜像无 shell 依赖并按上述最小权限运行。Kubernetes releaseverify 拒绝 tag-only image、缺失 workload、错误 Worker transport、profile/secret 泄露和未受控 egress。生产发布配置构建 provenance、SBOM、镜像签名、准入验证、依赖漏洞扫描、分支保护和双人批准。
 
 ## 8. 安全运行与验收
 
-真实 IM 接入、密钥系统、传输身份、云数据面、HA/DR 与业务 Tool/MCP 的配置前提、验证步骤和证据要求统一见 [EXTERNAL_ACCEPTANCE_RUNBOOK.md](EXTERNAL_ACCEPTANCE_RUNBOOK.md)。具体失效模式、观测信号、恢复方法与责任边界见 [RISK_REGISTER.md](RISK_REGISTER.md)。
+真实 IM、密钥系统、传输身份、云数据面、HA/DR 和业务 Tool/MCP 按[目标环境验收手册](EXTERNAL_ACCEPTANCE_RUNBOOK.md)配置、验证并留存证据；失效信号、恢复措施和责任见[风险登记表](RISK_REGISTER.md)。
