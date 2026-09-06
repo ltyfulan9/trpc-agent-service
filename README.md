@@ -121,7 +121,7 @@ Worker 要求 Agent App 存在 active stable deployment。版本快照保存无�
 - Consumer→Worker 生产连接使用验证证书的 HTTPS，或具有身份认证的 service mesh；HMAC 负责请求完整性和 nonce 防重放。
 - `STORAGE_BACKEND_PROFILES` 与 `DATA_PLANE_PROFILES` 保存公开配置，SecretRef 绑定租户、用途、provider 和 model，实际秘密仅授予消费它的进程。
 - 工具同时受版本与租户白名单约束；危险工具按 tenant/actor/session/tool/args/invocation 一次性审批。
-- token 预算按 UTC 日账本原子预留；已 dispatch 但 usage 未知的调用保留预算占用。`maxCostPerDay` 需要 operator price catalog。
+- token 预算按 UTC 日账本原子预留；已 dispatch 但 usage 未知的调用保留预算占用。金额预算尚未接入，当前拒绝 `maxCostPerDay > 0` 的配置。
 - 公平调度使用 `FAIR_QUEUE_ENABLED`、权重、`max_inflight` 与 `max_queued`。外部 Store 需提供公平领取、原子准入及 Outbox dispatch fence 能力。
 - `/metrics` 使用 bearer 认证；tenant、agent 和 model 标签由有界 allowlist 管理。
 - 重放要求 actor/reason 和可恢复状态。Outbox resume 保留已确认 cursor，restart 从第 0 段发送；操作前核对外部投递结果。
