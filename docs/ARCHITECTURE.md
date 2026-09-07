@@ -11,6 +11,11 @@
 <a id="2-系统架构"></a>
 ## 2. 系统架构图
 
+![多租户 Agent 平台系统架构](assets/system-architecture.svg)
+
+<details>
+<summary>查看完整组件依赖图与 Mermaid 源码</summary>
+
 ```mermaid
 %%{init: {"theme":"neutral","themeVariables":{"fontSize":"16px"},"flowchart":{"curve":"linear","nodeSpacing":24,"rankSpacing":44,"padding":12}}}%%
 flowchart TB
@@ -86,6 +91,8 @@ flowchart TB
   PROF -.->|作用域 / 凭据| SM & DP
   DATA ~~~ OBS
 ```
+
+</details>
 
 Gateway 处理通道认证、租户路由与入口限制，在数据库提交 Inbox 后确认回调。Consumer 竞争持久化消息的处理权，调用 Worker，再把业务完成状态、回复和摘要任务一并提交。Worker 解析固定版本、读取共享上下文、执行模型与工具，并保存结果。Delivery 独立处理分段、限流、重试和未知发送结果，使慢模型与慢通道具有不同的扩容及故障边界。
 
