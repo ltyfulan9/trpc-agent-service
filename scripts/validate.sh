@@ -116,7 +116,7 @@ TEST_QDRANT_GRPC_PORT="$qdrant_grpc_port" \
 TEST_MINIO_ENDPOINT="127.0.0.1:${minio_port}" \
 TEST_MINIO_ACCESS_KEY="$validation_minio_user" \
 TEST_MINIO_SECRET_KEY="$validation_minio_password" \
-  go test -tags=integration -count=1 -p 1 ./test/integration
+  go test -tags=integration -count=1 -p 1 ./test/integration ./cmd/queue-bench
 
 echo "[10/10] source and migration static gates"
 ./scripts/static_verify.sh

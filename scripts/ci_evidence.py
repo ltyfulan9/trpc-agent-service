@@ -23,7 +23,7 @@ JOBS = {
         ("vet", ["go", "vet", "./..."]),
         ("unit", ["go", "test", "-json", "-count=1", "./..."]),
         ("race", ["go", "test", "-json", "-race", "-count=1", "./..."]),
-        ("integration", ["go", "test", "-json", "-race", "-tags=integration", "-count=1", "./test/integration"]),
+        ("integration", ["go", "test", "-json", "-race", "-tags=integration", "-count=1", "./test/integration", "./cmd/queue-bench"]),
         ("static", ["bash", "./scripts/static_verify.sh"]),
         ("compose-config", ["docker", "compose", "-f", "deploy/docker-compose.yml", "config", "--quiet"]),
         ("compose-build", ["docker", "compose", "-f", "deploy/docker-compose.yml", "build"]),
