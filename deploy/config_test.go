@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -643,7 +644,8 @@ func TestCIPackageChecksumGateIsQuietAndFailClosed(t *testing.T) {
 	}
 	var checksumGate, regressionGate bool
 	for _, step := range job.Steps {
-		checksum := strings.Contains(step.Run, "sha256sum --check --quiet SHA256SUMS_20260906.txt")
+		checksum := strings.Contains(step.Run, "sha256sum --check --quiet SHA256SUMS_") &&
+			regexp.MustCompile(`sha256sum --check --quiet SHA256SUMS_[0-9]{8}\.txt`).MatchString(step.Run)
 		regression := strings.Contains(step.Run, "./scripts/test_checksum_output.sh")
 		if (checksum || regression) && (step.ContinueOnError || strings.Contains(step.Run, "|| true")) {
 			t.Error("package checksum gates must propagate verification failures")

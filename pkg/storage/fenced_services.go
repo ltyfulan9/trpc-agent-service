@@ -529,7 +529,12 @@ func (s *FencedMemoryService) Tools() []tool.Tool {
 
 func (s *FencedMemoryService) EnqueueAutoMemoryJob(ctx context.Context, sess *session.Session) error {
 	return s.runChecked(ctx, telemetry.OperationMemoryWrite, func(token fence.Token) error {
-		return s.scope.validateSession(token, sess)
+		if sess == nil || (s.scope.strict && sess.ID != token.SessionID) {
+			return fence.ErrScopeMismatch
+		}
+		// The Worker memory wrapper translates the direct-session owner to its
+		// provider-scoped Memory actor before handing extraction to this service.
+		return s.scope.validateUserKey(token, sess.AppName, sess.UserID)
 	}, func(ctx context.Context) error { return s.inner.EnqueueAutoMemoryJob(ctx, sess) })
 }
 
@@ -627,7 +632,11 @@ func (s fencedScope) validateUserKey(token fence.Token, appName, userID string) 
 	if err := s.validateAppName(token, appName); err != nil {
 		return err
 	}
-	if s.strict && userID != token.UserID {
+	memoryUserID := token.MemoryUserID
+	if memoryUserID == "" {
+		memoryUserID = token.UserID
+	}
+	if s.strict && userID != memoryUserID {
 		return fmt.Errorf("%w: user is outside execution scope", fence.ErrScopeMismatch)
 	}
 	return nil

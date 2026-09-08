@@ -201,6 +201,32 @@ entries are optional at Pod startup and fail closed only when a tenant actually
 references a missing SecretRef. Replace the example Secrets with workload
 identity/external-secret projections and review each provider egress route.
 
+## 数据库连接预算与关闭顺序
+
+Worker、Summary Worker 与 `cmd/data-migrate` 使用 `CONTROL_DB_MAX_CONNECTIONS`
+配置单进程的平台运行时连接总预算，取值范围为 `9..300`；非法值会阻止启动。
+各连接池使用相同的 `DATABASE_URL`，在同一 PostgreSQL 权威库上保留独立容量。
+执行围栏和迁移门禁会持有连接级锁，独立连接池保证等待锁的请求不会占满
+元数据查询所需的连接；这些连接必须直连 PostgreSQL 或使用会话池，不能使用事务池。
+
+| 运行入口 | 默认总预算 | 元数据池 | 执行围栏池 | 迁移门禁池 |
+| --- | ---: | ---: | ---: | ---: |
+| Worker | 25 | 9 | 8 | 8 |
+| Summary Worker | 25 | 17 | — | 8 |
+| `cmd/data-migrate` | 10 | 7 | — | 3 |
+
+设总预算为 `B`，迁移门禁池分配 `floor(B/3)`；Worker 的执行围栏池同样分配
+`floor(B/3)`，剩余容量分配给元数据池。这里分摊总预算，不为每个池重复分配 `B`。
+该参数只覆盖上述平台运行时池，租户配置仓库以及独立创建的 Session、Memory
+后端池另计。数据库容量规划应累加各入口的预算乘以副本数、租户后端池、其他服务
+及运维连接余量，并为滚动发布期间额外的 Pod 预留空间；不同数据库端点分别核算。
+并发数与预算应结合模型时长和热点会话分布压测，观测连接等待、占用量、队列年龄
+及取消后的连接释放，不能仅通过提高数据库连接上限扩大吞吐。
+
+连接池归运行入口所有，迁移 Runtime 的 `Close` 只释放其持有的运行时资源，
+不关闭调用方传入的数据库池。正常关闭先停止接收与领取、排空活跃执行，随后关闭
+存储客户端和迁移 Runtime，最后由入口关闭数据库池；初始化部分失败时回收已打开的池。
+
 ## Schema execution
 
 Schema `047` adds the Session incarnation to Summary job uniqueness and

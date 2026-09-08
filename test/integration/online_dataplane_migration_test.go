@@ -48,6 +48,7 @@ type onlineDataPlaneFixture struct {
 func newOnlineDataPlaneFixture(t *testing.T) *onlineDataPlaneFixture {
 	t.Helper()
 	db := openDatabase(t)
+	gateDB := openMigrationGateDatabase(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	t.Cleanup(cancel)
 	f := &onlineDataPlaneFixture{db: db, ctx: ctx, tenantID: "online-plane-" + uuid.NewString()}
@@ -139,7 +140,7 @@ func newOnlineDataPlaneFixture(t *testing.T) *onlineDataPlaneFixture {
 		_, _ = db.Exec(`DELETE FROM audit_logs WHERE tenant_id=$1`, f.tenantID)
 		_, _ = db.Exec(`DELETE FROM tenants WHERE id=$1`, f.tenantID)
 	})
-	f.runtime, err = migrationruntime.New(migrationruntime.Options{DB: db, StorageProfiles: profiles, DataPlaneProfiles: f.catalog, BatchSize: 1})
+	f.runtime, err = migrationruntime.New(migrationruntime.Options{DB: db, GateDB: gateDB, StorageProfiles: profiles, DataPlaneProfiles: f.catalog, BatchSize: 1})
 	if err != nil {
 		t.Fatal(err)
 	}

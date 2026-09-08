@@ -11,7 +11,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"io"
 	"log"
 	"net/http"
 	"os"
@@ -119,7 +118,7 @@ func main() {
 	}
 	shutdown.OnShutdown("audit-database", func(context.Context) error { return auditDB.Close() })
 	auditCollector := telemetry.NewCollectorWithAuditSinkAndIdentityKey(
-		io.MultiWriter(os.Stderr, telemetry.NewSQLAuditWriter(auditDB)),
+		telemetry.NewDurableAuditSink(telemetry.NewSQLAuditWriter(auditDB), os.Stderr),
 		[]byte(os.Getenv("AUDIT_IDENTITY_HMAC_KEY")),
 	)
 

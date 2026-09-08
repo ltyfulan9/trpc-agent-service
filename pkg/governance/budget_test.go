@@ -735,6 +735,8 @@ func TestBudgetTracker_ConcurrencySlotRenewsBeyondOriginalTTL(t *testing.T) {
 
 func TestBudgetTracker_StaleConcurrencySlotCannotReleaseNewOwner(t *testing.T) {
 	mr := setupTestRedis(t)
+	// Lease ownership test uses a fixed Redis clock; renewal timing is tested separately.
+	mr.SetTime(time.Date(2026, 9, 8, 0, 0, 0, 0, time.UTC))
 	client := createRedisClient(t, mr)
 	tracker := NewBudgetTracker(client, &tenant.Tenant{
 		ID:     "tenant-concurrency-stale-owner",
@@ -748,6 +750,7 @@ func TestBudgetTracker_StaleConcurrencySlotCannotReleaseNewOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = first.Release(context.Background()) })
 	stale := first.(*sessionSlotLease)
 	if err := client.ZRem(ctx, tracker.sessionSlotKey(), stale.token).Err(); err != nil {
 		t.Fatal(err)
@@ -766,8 +769,16 @@ func TestBudgetTracker_StaleConcurrencySlotCannotReleaseNewOwner(t *testing.T) {
 	if err := first.Release(ctx); !errors.Is(err, ErrSessionSlotLost) {
 		t.Fatalf("stale release error=%v", err)
 	}
-	if _, err := tracker.AcquireSessionSlot(ctx); !errors.Is(err, ErrBudgetExceeded) {
-		t.Fatalf("stale release removed the new owner: %v", err)
+	newOwner := second.(*sessionSlotLease)
+	if _, err := client.ZScore(ctx, tracker.sessionSlotKey(), newOwner.token).Result(); err != nil {
+		t.Fatalf("stale release removed the new owner's record: %v", err)
+	}
+	third, err := tracker.AcquireSessionSlot(ctx)
+	if third != nil {
+		t.Cleanup(func() { _ = third.Release(context.Background()) })
+	}
+	if !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("live new owner did not retain the concurrency slot: %v", err)
 	}
 }
 

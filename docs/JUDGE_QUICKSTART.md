@@ -39,6 +39,7 @@ go vet -p 1 ./...
 | 关注点 | 预期行为 | 阅读入口 |
 |---|---|---|
 | 租户数据组合 | Session 与 Memory 独立选择 Redis/PostgreSQL；Knowledge/Artifact 选择授权的实例与命名空间 | `pkg/storage/backend_factory.go`、`pkg/runtimeplane/resolver.go`、[多后端设计](MULTI_BACKEND_DESIGN.md) |
+| 企业微信完整消息链路 | 两种交叉后端组合均完成加密回调、持久入队、Runner/Memory Tool、回复投递；覆盖 token 刷新与活动请求取消 | `test/integration/wecom_callback_e2e_test.go`、[执行命令](VERIFICATION.md#4-后端集成与部署检查) |
 | 版本稳定性 | 重试继续使用已绑定 AgentVersion，运行时注册表启动后封存 | `pkg/controlplane`、`pkg/worker` |
 | 租户隔离 | 入口身份、SecretRef、存储作用域和工具授权相互一致 | `pkg/tenant`、`pkg/governance` |
 | 消息可靠性 | 同 Session FIFO；旧 lease/fence 不能提交；Inbox/Outbox 原子衔接 | `pkg/reliable`、`pkg/pipeline` |

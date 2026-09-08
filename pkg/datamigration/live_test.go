@@ -3,6 +3,7 @@ package datamigration
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"regexp"
@@ -81,13 +82,20 @@ func (b *liveTestBackend) Apply(_ context.Context, record Record) error {
 
 func newLiveTest(t *testing.T) (*LiveCoordinator, sqlmock.Sqlmock, *liveTestBackend, *liveTestBackend) {
 	t.Helper()
-	db, mock, err := sqlmock.New()
+	dsn := "live-migration-" + t.Name()
+	db, mock, err := sqlmock.NewWithDSN(dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
+	gateDB, err := sql.Open("sqlmock", dsn)
+	if err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	gateDB.SetMaxOpenConns(8)
 	source := &liveTestBackend{info: LiveBackendInfo{Backend: "redis", Identity: "source-db", Compatibility: "session/v1"}, values: map[string][]byte{}}
 	target := &liveTestBackend{info: LiveBackendInfo{Backend: "postgres", Identity: "target-db", Compatibility: "session/v1"}, values: map[string][]byte{}}
-	coordinator, err := NewLiveCoordinator(LiveOptions{DB: db, Owner: "owner", Resolve: func(_ context.Context, tenantID string, domain Domain, profile string) (LiveBackend, func(), error) {
+	coordinator, err := NewLiveCoordinator(LiveOptions{DB: db, GateDB: gateDB, Owner: "owner", Resolve: func(_ context.Context, tenantID string, domain Domain, profile string) (LiveBackend, func(), error) {
 		if tenantID != "tenant-a" || domain != DomainSession {
 			return nil, nil, ErrInvalidMigration
 		}
@@ -108,6 +116,7 @@ func newLiveTest(t *testing.T) (*LiveCoordinator, sqlmock.Sqlmock, *liveTestBack
 			t.Error(err)
 		}
 		_ = db.Close()
+		_ = gateDB.Close()
 	})
 	return coordinator, mock, source, target
 }

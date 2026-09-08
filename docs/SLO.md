@@ -22,6 +22,8 @@ SLO 按目标环境连续 30 天流量评估；验收须检查 PromQL、告警�
 
 租户指标统一使用有界标签：`METRICS_TENANT_ALLOWLIST` 最多 100 个租户，在每个 HTTP 进程启动时一致注入；非空未允许值映射为 `__other__`，缺失值为 `__unknown__`。`agent_name`、`model` 保留精确值还须分别匹配 `METRICS_AGENT_ALLOWLIST`、`METRICS_MODEL_ALLOWLIST` 中的 `tenant/name`，每类最多 200 对，否则聚合为 `__other__`。完整明细进入日志/成本仓库，发布版本和名称轮换也须遵守这些上限。
 
+Worker 结果路径报告的结算量记录为 `agent_tokens_total{type="accounted"}`：Provider 返回有效 usage 时使用实际汇总量，usage 缺失时使用保守预留量。失败或取消由预算 finalizer 保留的额度以 Redis 账本为准，不能仅靠该指标还原全部账本。该指标不拆分 prompt/completion，也不表示货币金额；金额分析须结合模型价格表和账单核对。
+
 <a id="error-budget"></a>
 
 ## 错误预算
@@ -115,6 +117,15 @@ SELECT 'outbox', count(*) FROM outbox_messages WHERE status IN ('DEAD_LETTERED',
 1. 检查 PostgreSQL 和 execution 状态，区分 Runner 启动前读取失败与执行后结果提交失败。
 2. 启动前明确标记 retry-safe 的失败按策略重试；执行后结果未知进入 reconciliation，按幂等键查询目标系统。
 3. 核对工具副作用与持久化结果后审计恢复；危险工具缺少业务幂等证据时转人工处置。
+
+<a id="audit-sink-failure"></a>
+
+### 审计写入故障
+
+1. `AgentDurableAuditWriteFailing` 对应 `agent_audit_write_failures_total{sink="durable"}`，检查 PostgreSQL、审计表写权限及连接等待。数据库为审计权威；stderr 镜像独立尝试，镜像失败不阻断数据库写入。
+2. `auditLevel=detailed` 在 Runner 启动前持久化 `execution_admitted`；失败按 preflight 释放预算预留，允许安全重试。最终结果审计失败时执行已发生，进入结果核对，禁止自动重跑模型或工具。
+3. 核对执行记录、结果缓存和工具业务幂等证据，记录事件单并补齐经确认的审计事实；不得把缺失记录直接认定为“未执行”。
+4. `AgentAuditLogMirrorFailing` 表示日志镜像故障，检查日志采集、磁盘与 stderr 输出；数据库审计成功时保持业务成功语义。恢复后分别检查持久审计和日志采集，避免用一条链路的成功替代另一条。
 
 <a id="worker-cache-saturation"></a>
 

@@ -65,7 +65,9 @@ job 唯一键和 checkpoint 主键都包含 `session_incarnation_id`。旧代次
 
 Memory 是显式长期记忆接口，支持写入、更新、删除、读取和搜索。工具来自租户实际 `memory.Service.Tools()`，同时满足租户白名单与固定 Agent 版本授权后才暴露。默认 recall 有界；平台不会无条件保存原始用户输入，也不会把一次检索结果当成已经写入的长期状态。
 
-群聊使用共享 Session owner，但 Memory 请求携带实际 actor，查询和写入限定该用户与 tenant/app 范围。一个用户在同租户的显式策略下可以复用其个人 Memory，同群另一个用户不能借共享 Session 身份访问它。适配器在访问前检查 scope，并校验返回对象，防止配置、查询和返回值三个阶段出现身份漂移。
+群聊使用共享 Session owner，但 Memory 请求携带实际 actor。Worker 以 `tenant/channel/account/external_user_id` 的长度编码计算稳定 `memory_actor_id`，SDK Memory 以该标识和租户应用范围读写；Session owner 与提供方原始 ID 保持不变。同一通道账号的同一用户可跨群或单聊复用个人记忆，不同通道或账号的相同外部 ID 不关联。严格 fence 同时保留原始 actor 与独立 Memory actor，访问前检查 scope 并复核返回对象；同群其他成员不能借共享 Session 身份访问个人记忆。
+
+原始 ID 命名的未归属 Memory 不参与运行时回退查询，避免把两个提供方的不同人员合并。身份迁移须先停止全部 Memory 写入者并备份，按经验证的账号归属清单离线搬迁和核验；不明确的归属保留在受限命名空间等待核对，不自动复制给任何新 actor。所有节点统一采用同一身份契约后恢复写入，防止并存写入规则形成两份状态。
 
 Memory 写操作成功提交后，另一个连接到相同已选后端的客户端可以按后端查询契约读到记录。它与 Session Event/State、Inbox 完成和 Summary checkpoint 没有跨数据库原子事务：后续模型失败不能自动撤销已经写入的 Memory。业务需要幂等时，应明确“创建新记忆”与“更新既有记忆”的稳定身份及目标后端行为，不能仅凭 Inbox 去重推断每次工具写入都至多发生一次。
 

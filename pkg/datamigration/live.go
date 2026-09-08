@@ -56,7 +56,10 @@ type LiveBackendTargetAdmission interface {
 type LiveBackendResolver func(context.Context, string, Domain, string) (LiveBackend, func(), error)
 
 type LiveOptions struct {
-	DB        *sql.DB
+	DB *sql.DB
+	// GateDB is a distinct, bounded pool connected to the same PostgreSQL
+	// authority. A gate holds its connection while Resolve may query DB.
+	GateDB    *sql.DB
 	Resolve   LiveBackendResolver
 	Owner     string
 	LeaseTTL  time.Duration
@@ -83,6 +86,7 @@ var (
 
 type LiveCoordinator struct {
 	db        *sql.DB
+	gateDB    *sql.DB
 	resolve   LiveBackendResolver
 	owner     string
 	leaseTTL  time.Duration
@@ -96,7 +100,8 @@ func NewLiveCoordinator(options LiveOptions) (*LiveCoordinator, error) {
 	if options.BatchSize == 0 {
 		options.BatchSize = 128
 	}
-	if options.DB == nil || options.Resolve == nil || options.BatchSize < 1 || options.BatchSize > 1000 {
+	if options.DB == nil || options.GateDB == nil || options.GateDB == options.DB ||
+		options.GateDB.Stats().MaxOpenConnections < 1 || options.Resolve == nil || options.BatchSize < 1 || options.BatchSize > 1000 {
 		return nil, ErrMigrationCapability
 	}
 	if err := validateMigrationLease(options.Owner, options.LeaseTTL); err != nil {
@@ -105,7 +110,7 @@ func NewLiveCoordinator(options LiveOptions) (*LiveCoordinator, error) {
 	if max := options.DB.Stats().MaxOpenConnections; max > 0 && max < 3 {
 		return nil, fmt.Errorf("%w: online migration requires at least three database connections", ErrMigrationCapability)
 	}
-	return &LiveCoordinator{db: options.DB, resolve: options.Resolve, owner: options.Owner,
+	return &LiveCoordinator{db: options.DB, gateDB: options.GateDB, resolve: options.Resolve, owner: options.Owner,
 		leaseTTL: options.LeaseTTL, batchSize: options.BatchSize}, nil
 }
 
@@ -157,14 +162,14 @@ type liveGate struct {
 }
 
 func (c *LiveCoordinator) gate(ctx context.Context, tenantID string, domain Domain, shared bool) (*liveGate, error) {
-	if c == nil || c.db == nil {
+	if c == nil || c.db == nil || c.gateDB == nil {
 		return nil, ErrMigrationCapability
 	}
 	scope, err := liveScope(tenantID, domain)
 	if err != nil {
 		return nil, err
 	}
-	conn, err := c.db.Conn(ctx)
+	conn, err := c.gateDB.Conn(ctx)
 	if err != nil {
 		return nil, err
 	}

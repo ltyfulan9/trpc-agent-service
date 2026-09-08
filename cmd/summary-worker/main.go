@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -138,23 +137,18 @@ func run() error {
 	}
 	cancelStartup()
 
-	db, err := sql.Open("postgres", dbURL)
+	databaseBudget, err := controlplane.ParseRuntimeDatabaseBudget(os.Getenv("CONTROL_DB_MAX_CONNECTIONS"), 25)
+	if err != nil {
+		_ = redisClient.Close()
+		return err
+	}
+	databases, err := controlplane.OpenRuntimeDatabases(context.Background(), dbURL, controlplane.RuntimeDatabaseOptions{MaxConnections: databaseBudget})
 	if err != nil {
 		_ = redisClient.Close()
 		return fmt.Errorf("open control database: %w", err)
 	}
-	db.SetMaxOpenConns(25)
-	db.SetMaxIdleConns(5)
-	db.SetConnMaxLifetime(30 * time.Minute)
-	db.SetConnMaxIdleTime(5 * time.Minute)
-	pingCtx, cancelPing := context.WithTimeout(context.Background(), 10*time.Second)
-	err = db.PingContext(pingCtx)
-	cancelPing()
-	if err != nil {
-		_ = db.Close()
-		_ = redisClient.Close()
-		return errors.New("control database is unavailable")
-	}
+	defer databases.Close()
+	db := databases.Control
 
 	tenantRepo, err := tenant.NewSQLRepository("postgres", dbURL)
 	if err != nil {
@@ -181,7 +175,7 @@ func run() error {
 		return fmt.Errorf("configure tenant service: %w", err)
 	}
 
-	migrationRuntime, err := migrationruntime.New(migrationruntime.Options{DB: db, StorageProfiles: profiles})
+	migrationRuntime, err := migrationruntime.New(migrationruntime.Options{DB: db, GateDB: databases.MigrationGate, StorageProfiles: profiles})
 	if err != nil {
 		_ = tenantRepo.Close()
 		_ = db.Close()
@@ -247,7 +241,7 @@ func run() error {
 	go func() { pollerDone <- poller.Run(runCtx) }()
 	shutdown := health.NewCoordinator()
 	shutdown.OnShutdown("redis", func(context.Context) error { return redisClient.Close() })
-	shutdown.OnShutdown("control-database", func(context.Context) error { return db.Close() })
+	shutdown.OnShutdown("control-databases", func(context.Context) error { return databases.Close() })
 	shutdown.OnShutdown("migration-runtime", func(context.Context) error { return migrationRuntime.Close() })
 	shutdown.OnShutdown("tenant-repository", func(context.Context) error { return tenantRepo.Close() })
 	shutdown.OnShutdown("storage", func(context.Context) error { return adapter.Close() })

@@ -10,15 +10,14 @@ import (
 )
 
 // SQLAuditWriter persists the same redacted JSON audit event emitted to logs.
-// It implements io.Writer so Collector can fan out with io.MultiWriter.
+// It implements io.Writer for the authoritative side of NewDurableAuditSink.
 type SQLAuditWriter struct {
 	db      *sql.DB
 	timeout time.Duration
 }
 
 // NewSQLAuditWriter creates a synchronous durability sink. Synchronous writes
-// intentionally make an audit-store failure visible to Collector; Worker logs
-// that failure without exposing message content or credentials.
+// intentionally make an audit-store failure visible before success is returned.
 func NewSQLAuditWriter(db *sql.DB) *SQLAuditWriter {
 	return &SQLAuditWriter{db: db, timeout: 2 * time.Second}
 }

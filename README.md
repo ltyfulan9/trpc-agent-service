@@ -1,6 +1,6 @@
 # Enterprise Multi-Tenant Agent Platform
 
-[![verify](https://github.com/ltyfulan9/trpc-agent-service/actions/workflows/verify.yml/badge.svg?branch=submission-online-migration-20260906)](https://github.com/ltyfulan9/trpc-agent-service/actions/workflows/verify.yml?query=branch%3Asubmission-online-migration-20260906)
+[![verify](https://github.com/ltyfulan9/trpc-agent-service/actions/workflows/verify.yml/badge.svg)](https://github.com/ltyfulan9/trpc-agent-service/actions/workflows/verify.yml)
 
 基于 tRPC-Agent-Go 的企业多租户 Agent 平台，将企业微信与 Telegram 接入、版本发布、共享数据面、治理审批和运行观测接入同一条可恢复消息链路。
 
@@ -13,6 +13,8 @@
 | 跨节点执行一致性 | 请求绑定不可变版本，副本共享 Session/Memory；FIFO、lease/fence 和结果记录约束故障接管，Consumer 事务完成 Inbox/Outbox。见[架构设计](docs/ARCHITECTURE.md)与[验收入口](docs/ACCEPTANCE_EVIDENCE.md) |
 
 平台按 PostgreSQL、Redis、Qdrant、S3-compatible 四类存储分工。profile 表达实例、命名空间与授权配置；各类状态的权威所有者和恢复协议保持明确。
+
+业务集成测试将两种交叉后端组合贯穿企业微信加密回调、持久队列、Runner、Memory Tool 与回复投递，并验证 token 刷新和活动请求取消。真实 PostgreSQL/Redis 承载状态，模型与 IM 使用本地协议服务；执行命令及目标账号验收见[验证指南](docs/VERIFICATION.md#4-后端集成与部署检查)。
 
 ## 阅读导航
 
@@ -38,8 +40,9 @@
 | Agent 运行 | LLM、Chain、Graph、Parallel、Cycle；节点提示词、工具白名单、调用预算和拓扑校验 |
 | Session / Memory | 每租户独立配置 Redis/PostgreSQL 组合与部署 profile；完整调用租约、跨节点恢复的会话和长期记忆 |
 | Summary | 独立任务、Session 代次隔离、事件边界冻结与后续目标刷新、固定版本生成、fenced checkpoint、下一轮 Runner overlay |
-| Knowledge / Artifact | Qdrant tenant/app 检索；PostgreSQL 元数据与 S3/MinIO 对象、版本、SHA-256 和 tombstone |
+| Knowledge / Artifact | Qdrant tenant/app 检索；受控知识导入支持有界分片、幂等替换和迁移装饰器；PostgreSQL 元数据与 S3/MinIO 对象、版本、SHA-256 和 tombstone |
 | 数据迁移 | Session/Knowledge/Artifact 生产写入捕获、持久化 journal、同步镜像、全量规范记录比对、配置 CAS 切换与回滚；独立 `cmd/data-migrate` 命令 |
+| 容量基线 | `cmd/queue-bench` 使用隔离 PostgreSQL 对普通/公平领取、热点会话和 1/4/8/16 Consumer 输出可复测吞吐与分位延迟；见[验证方法](docs/VERIFICATION.md#52-postgresql-公平队列容量基线) |
 | 工具与治理 | Runner Plugin、预算 reservation、危险操作审批、递归脱敏、审计及 MCP profile 白名单 |
 | 运维 | 健康与排空、Prometheus、OpenTelemetry、Compose、Kubernetes 发布门禁和默认拒绝网络策略 |
 

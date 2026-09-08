@@ -178,7 +178,9 @@ Worker cache 复用 Runner，StorageAdapter 复用后端客户端，二者都不
 
 ## 隔离与配置准入
 
-Session/Memory 的 app name 采用长度前缀：`tenant-a` 的逻辑应用 `support` 编码为 `tsa1:8:tenant-a:support`，避免 tenant/app 分隔符碰撞。严格装饰器校验 fence token、tenant、app、actor/session owner 与返回对象。群聊 Session 使用共享 owner，个人 Memory 解析到认证 actor。Knowledge 绑定 tenant/app 过滤器和物理 ID；Artifact 的元数据与对象身份包含 tenant/app/user/session/filename/version。
+Session/Memory 的 app name 采用长度前缀：`tenant-a` 的逻辑应用 `support` 编码为 `tsa1:8:tenant-a:support`，避免 tenant/app 分隔符碰撞。严格装饰器校验 fence token、tenant、app、actor/session owner 与返回对象。群聊 Session 使用共享 owner；Memory 的 SDK `user_id` 是 `channel.MemoryActorID(tenant, channel, account, externalUserID)` 派生的独立存储身份，同账号用户可跨会话复用，不同账号或提供方的同名用户不会共享。原始 ID 仍用于 IM 授权与回复，Session 身份不随 Memory 编码改变。Knowledge 绑定 tenant/app 过滤器和物理 ID；Artifact 的元数据与对象身份包含 tenant/app/user/session/filename/version。
+
+身份编码上线时先排空并停止全部 Memory 写入者，备份未归属记录，再按可验证的提供方账号归属清单离线迁移并核对。运行时不回退读取原始 ID 命名空间，也不将不明确的记录复制给多个 actor；这些记录由受限运维流程保留、核对和审计。统一所有节点的身份规则后恢复写入。
 
 公开 validator 校验 profile 存在性、类型和租户授权。租户选项只允许 `session_ttl` 与 `memory_limit`，拒绝通过选项 map 传入 DSN、endpoint、任意 SDK 参数或秘密。实际连接材料由 Worker catalog 持有；Admin/Gateway/Consumer/Delivery 使用公开 profile 元数据，Summary Worker 获取其消费的 Session/Memory 材料，迁移进程获取其清单引用的源目标材料。数据 profile 授权与 model/channel/MCP SecretRef 的用途绑定分别执行。
 

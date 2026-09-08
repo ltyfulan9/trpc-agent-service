@@ -117,6 +117,16 @@ func (c *Collector) RecordTokens(tenantID, model string, promptTokens, completio
 	tokenConsumption.WithLabelValues(label, modelLabel, "completion").Add(float64(completionTokens))
 }
 
+// RecordAccountedTokens records the Worker ledger amount. The amount can be
+// provider-reported total usage or a conservative reservation when usage is
+// unavailable. It must not be mislabeled as prompt-only or completion-only.
+func (c *Collector) RecordAccountedTokens(tenantID, model string, tokens int) {
+	if tokens <= 0 {
+		return
+	}
+	tokenConsumption.WithLabelValues(MetricTenantLabel(tenantID), MetricModelLabel(tenantID, model), "accounted").Add(float64(tokens))
+}
+
 // RecordCost records cost in USD.
 func (c *Collector) RecordCost(tenantID string, cost float64) {
 	costUSD.WithLabelValues(MetricTenantLabel(tenantID)).Add(cost)
@@ -154,8 +164,8 @@ type AuditLog struct {
 
 // LogAudit writes an audit entry as one JSON object per line, stamping it with
 // the trace ID from ctx so records correlate with the surrounding span. It
-// returns an error only when the sink write fails; callers generally log and
-// continue, since losing an audit line must not fail a user request.
+// returns an error when the authoritative sink write fails. Callers must not
+// confirm a successful operation whose required audit record was not persisted.
 func (c *Collector) LogAudit(ctx context.Context, entry *AuditLog) error {
 	if entry == nil {
 		return fmt.Errorf("telemetry: nil audit entry")

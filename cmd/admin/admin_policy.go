@@ -27,15 +27,8 @@ func preserveMaskedSecrets(current, update *tenant.Tenant) {
 	}
 	for i := range update.Models {
 		key := update.Models[i].Provider + "\x00" + update.Models[i].ModelName
-		if previous, ok := models[key]; ok && isMaskedOrOmitted(update.Models[i].APIKey) {
-			if previous.APIKey != "" {
-				update.Models[i].APIKey = previous.APIKey
-			} else if update.Models[i].APIKeyRef == "" {
-				// A reference-backed credential is not materialized by the
-				// control-plane read. Preserve its handle when a client sends
-				// back the redacted/omitted representation unchanged.
-				update.Models[i].APIKeyRef = previous.APIKeyRef
-			}
+		if previous, ok := models[key]; ok {
+			preserveCredential(previous.APIKey, previous.APIKeyRef, &update.Models[i].APIKey, &update.Models[i].APIKeyRef)
 		}
 	}
 
@@ -45,26 +38,17 @@ func preserveMaskedSecrets(current, update *tenant.Tenant) {
 	}
 	for i := range update.Channels {
 		if previous, ok := channels[channelIdentity(update.Channels[i])]; ok {
-			if isMaskedOrOmitted(update.Channels[i].Token) {
-				if previous.Token != "" {
-					update.Channels[i].Token = previous.Token
-				} else if update.Channels[i].TokenRef == "" {
-					update.Channels[i].TokenRef = previous.TokenRef
-				}
-			}
-			if isMaskedOrOmitted(update.Channels[i].Secret) {
-				if previous.Secret != "" {
-					update.Channels[i].Secret = previous.Secret
-				} else if update.Channels[i].SecretRef == "" {
-					update.Channels[i].SecretRef = previous.SecretRef
-				}
-			}
-			if isMaskedOrOmitted(update.Channels[i].EncodingAESKey) {
-				if previous.EncodingAESKey != "" {
-					update.Channels[i].EncodingAESKey = previous.EncodingAESKey
-				} else if update.Channels[i].EncodingAESKeyRef == "" {
-					update.Channels[i].EncodingAESKeyRef = previous.EncodingAESKeyRef
-				}
+			binding := &update.Channels[i]
+			preserveCredential(previous.Token, previous.TokenRef, &binding.Token, &binding.TokenRef)
+			preserveCredential(previous.Secret, previous.SecretRef, &binding.Secret, &binding.SecretRef)
+			legacyAESSelected := !isMaskedOrOmitted(binding.Config["encoding_aes_key"])
+			aesSelected := legacyAESSelected || binding.EncodingAESKeyRef != "" || !isMaskedOrOmitted(binding.EncodingAESKey)
+			if legacyAESSelected && binding.EncodingAESKeyRef == "" && isMaskedOrOmitted(binding.EncodingAESKey) {
+				// The supported config alias is also an explicit inline source.
+				// Do not resurrect the old canonical value or SecretRef over it.
+				binding.EncodingAESKey = ""
+			} else {
+				preserveCredential(previous.EncodingAESKey, previous.EncodingAESKeyRef, &binding.EncodingAESKey, &binding.EncodingAESKeyRef)
 			}
 			if update.Channels[i].WebhookKey == "" {
 				update.Channels[i].WebhookKey = previous.WebhookKey
@@ -72,10 +56,18 @@ func preserveMaskedSecrets(current, update *tenant.Tenant) {
 			if update.Channels[i].AccountID == "" {
 				update.Channels[i].AccountID = previous.AccountID
 			}
-			if update.Channels[i].Config == nil {
-				update.Channels[i].Config = cloneStringMap(previous.Config)
+			previousConfig := previous.Config
+			if aesSelected {
+				previousConfig = cloneStringMap(previous.Config)
+				delete(previousConfig, "encoding_aes_key")
+			}
+			if binding.Config == nil {
+				binding.Config = cloneStringMap(previousConfig)
 			} else {
-				preserveMapSecrets(previous.Config, update.Channels[i].Config, []string{"encoding_aes_key", "corp_secret", "token", "secret"})
+				preserveMapSecrets(previousConfig, binding.Config, []string{"encoding_aes_key", "corp_secret", "token", "secret"})
+			}
+			if aesSelected && isMaskedOrOmitted(binding.Config["encoding_aes_key"]) {
+				delete(binding.Config, "encoding_aes_key")
 			}
 		}
 	}
@@ -100,6 +92,24 @@ func preserveMaskedSecrets(current, update *tenant.Tenant) {
 		update.Storage.MemoryConfig = cloneStringMap(current.Storage.MemoryConfig)
 	} else {
 		preserveMapSecrets(current.Storage.MemoryConfig, update.Storage.MemoryConfig, storageSecretKeys())
+	}
+}
+
+// An explicit source wins over preservation; conflicting explicit sources are
+// left intact for validation. A mask is never stored as a credential value.
+func preserveCredential(previousValue, previousRef string, value, ref *string) {
+	if !isMaskedOrOmitted(*value) {
+		return
+	}
+	if *ref != "" {
+		*value = ""
+		return
+	}
+	if previousValue != "" {
+		*value = previousValue
+	} else if previousRef != "" {
+		*value = ""
+		*ref = previousRef
 	}
 }
 

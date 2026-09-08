@@ -14,6 +14,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/channel"
+	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/fence"
 	"trpc.group/trpc-go/trpc-agent-go/memory"
 	memorytool "trpc.group/trpc-go/trpc-agent-go/memory/tool"
 	"trpc.group/trpc-go/trpc-agent-go/session"
@@ -31,9 +33,11 @@ var (
 
 // ActorIdentity is the authenticated caller identity carried through one
 // Runner execution. SessionOwnerID is the framework key used by Session;
-// UserID remains the external actor key used for personal Memory.
+// UserID remains the provider ID used for authorization and audit. MemoryUserID
+// is a distinct, provider-scoped storage identity and must not be caller input.
 type ActorIdentity struct {
 	UserID         string
+	MemoryUserID   string
 	SessionOwnerID string
 	IsGroupChat    bool
 }
@@ -68,7 +72,51 @@ func validActorIdentity(identity ActorIdentity) bool {
 			return false
 		}
 	}
+	if identity.MemoryUserID != "" && (!utf8.ValidString(identity.MemoryUserID) || strings.ContainsAny(identity.MemoryUserID, "\x00\r\n")) {
+		return false
+	}
 	return true
+}
+
+func (identity ActorIdentity) memoryUserID() string {
+	if identity.MemoryUserID != "" {
+		return identity.MemoryUserID
+	}
+	// Only trusted in-process adapters using ContextWithActorIdentity directly
+	// retain the original key contract. Worker.Process always fills this field;
+	// it never searches a historical raw-ID key as a fallback.
+	return identity.UserID
+}
+
+// contextWithMemoryActor derives storage identity after the request and its
+// Session owner have been authenticated/validated. Raw provider identity stays
+// unchanged in Request, approval, audit, and Session keys.
+func contextWithMemoryActor(ctx context.Context, tenantID string, req *Request, strict bool) (context.Context, error) {
+	channelType, accountID := req.ChannelType, req.ChannelAccountID
+	if channelType == "" || accountID == "" {
+		if strict {
+			return nil, fmt.Errorf("%w: channel and account are required", ErrActorIdentityRequired)
+		}
+		// Non-production direct Go callers have no provider binding. Give that
+		// explicit local seam its own namespace, never a raw provider alias.
+		channelType, accountID = "internal", "inprocess"
+	}
+	actorID, err := channel.MemoryActorID(tenantID, channelType, accountID, req.UserID)
+	if err != nil {
+		return nil, ErrActorIdentityRequired
+	}
+	if token, tokenErr := fence.TokenFromContext(ctx); tokenErr == nil {
+		if token.TenantID != tenantID || token.UserID != req.UserID ||
+			(token.MemoryUserID != "" && token.MemoryUserID != actorID) {
+			return nil, fence.ErrScopeMismatch
+		}
+		token.MemoryUserID = actorID
+		ctx = fence.WithToken(ctx, token)
+	}
+	return ContextWithActorIdentity(ctx, ActorIdentity{
+		UserID: req.UserID, MemoryUserID: actorID,
+		SessionOwnerID: req.SessionOwnerID, IsGroupChat: req.IsGroupChat,
+	}), nil
 }
 
 // actorScopedMemoryService adapts the upstream memory.Service contract to
@@ -120,7 +168,7 @@ func (s *actorScopedMemoryService) scopedUserKey(ctx context.Context, key memory
 	if key.UserID != identity.SessionOwnerID {
 		return memory.UserKey{}, fmt.Errorf("%w: user key is not the current session owner", ErrMemoryScopeViolation)
 	}
-	key.UserID = identity.UserID
+	key.UserID = identity.memoryUserID()
 	return key, nil
 }
 
@@ -138,7 +186,7 @@ func (s *actorScopedMemoryService) scopedMemoryKey(ctx context.Context, key memo
 	if key.UserID != identity.SessionOwnerID {
 		return memory.Key{}, fmt.Errorf("%w: memory key is not the current session owner", ErrMemoryScopeViolation)
 	}
-	key.UserID = identity.UserID
+	key.UserID = identity.memoryUserID()
 	return key, nil
 }
 
@@ -284,7 +332,7 @@ func (s *actorScopedMemoryService) EnqueueAutoMemoryJob(ctx context.Context, ses
 		return nil
 	}
 	copy := sess.Clone()
-	copy.UserID = identity.UserID
+	copy.UserID = identity.memoryUserID()
 	copy.Hash = session.HashString(copy.AppName + ":" + copy.UserID + ":" + copy.ID)
 	return s.base.EnqueueAutoMemoryJob(ctx, copy)
 }

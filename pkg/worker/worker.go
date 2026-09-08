@@ -850,11 +850,12 @@ func (w *Worker) collectorStart() time.Time {
 	return time.Now()
 }
 
-// audit emits one audit record per request outcome. Audit failures are logged
-// and swallowed: losing an audit line must never fail a user request.
-func (w *Worker) audit(ctx context.Context, req *Request, decision string, start time.Time, errorType string, tokens int) {
+// audit records an outcome and returns any persistence failure. Error paths
+// retain their original execution classification; success must acknowledge a
+// durable audit record before it can be returned to the consumer.
+func (w *Worker) audit(ctx context.Context, req *Request, decision string, start time.Time, errorType string, tokens int) error {
 	if w.collector == nil {
-		return
+		return nil
 	}
 	entry := &telemetry.AuditLog{
 		TenantID:    w.tenant.ID,
@@ -868,18 +869,22 @@ func (w *Worker) audit(ctx context.Context, req *Request, decision string, start
 		TokenCount:  tokens,
 		TraceID:     traceIDFromRequest(req),
 	}
-	if err := w.collector.LogAudit(ctx, entry); err != nil {
-		log.Printf("audit write failed for tenant %s: error=%s", w.tenant.ID, telemetry.StableErrorCode(err))
+	auditErr := w.collector.LogAudit(ctx, entry)
+	if auditErr != nil {
+		log.Printf("audit write failed for tenant %s: error=%s", w.tenant.ID, telemetry.StableErrorCode(auditErr))
 	}
 	w.collector.RecordRequestDuration(w.tenant.ID, w.agentName, start)
-	if decision == "allowed" {
+	if auditErr != nil {
+		w.collector.RecordError(w.tenant.ID, req.ChannelType, "audit_write_failed")
+	} else if decision == "allowed" {
 		w.collector.RecordSuccess(w.tenant.ID, req.ChannelType)
 	} else {
 		w.collector.RecordError(w.tenant.ID, req.ChannelType, errorType)
 	}
 	if tokens > 0 {
-		w.collector.RecordTokens(w.tenant.ID, w.modelName, tokens, 0)
+		w.collector.RecordAccountedTokens(w.tenant.ID, w.modelName, tokens)
 	}
+	return auditErr
 }
 
 func traceIDFromRequest(req *Request) string {
@@ -1155,13 +1160,17 @@ func (w *Worker) Process(ctx context.Context, req *Request) (response *Response,
 		w.audit(ctx, req, "denied", start, "session_coordination_unavailable", 0)
 		return nil, fmt.Errorf("%w: worker has no session lock manager", ErrDistributedSessionCoordinationRequired)
 	}
+	memoryCtx, identityErr := contextWithMemoryActor(ctx, t.ID, req, w.strictScope)
+	if identityErr != nil {
+		return nil, permanentExecutionPreflightError(identityErr)
+	}
 	lease, err := w.sessionLocks.AcquireLease(ctx, sessionLeaseKey(t.ID, w.appName, req.SessionOwnerID, req.SessionID), storage.DefaultLockTTL)
 	if err != nil {
 		w.audit(ctx, req, "error", start, "session_lease_unavailable", 0)
 		return nil, fmt.Errorf("acquire session invocation lease: %w", err)
 	}
 	leaseReleased := false
-	runCtx, cancelRun := context.WithCancel(ctx)
+	runCtx, cancelRun := context.WithCancel(memoryCtx)
 	runCtx = storage.ContextWithSessionLease(runCtx, session.Key{AppName: w.appName, UserID: req.SessionOwnerID, SessionID: req.SessionID}, lease)
 	runCtx, fenceState := fence.WithState(runCtx)
 	approvalState := governance.NewApprovalState()
@@ -1180,11 +1189,6 @@ func (w *Worker) Process(ctx context.Context, req *Request) (response *Response,
 	// chats. Carry the authenticated actor separately so the scoped Memory
 	// service can keep personal reads/writes isolated from shared transcript
 	// state on every replica.
-	runCtx = ContextWithActorIdentity(runCtx, ActorIdentity{
-		UserID:         req.UserID,
-		SessionOwnerID: req.SessionOwnerID,
-		IsGroupChat:    req.IsGroupChat,
-	})
 	defer cancelRun()
 	var concurrencySlotDone <-chan struct{}
 	if concurrencySlot != nil {
@@ -1291,6 +1295,19 @@ func (w *Worker) Process(ctx context.Context, req *Request) (response *Response,
 		var cancelBudgetRun context.CancelFunc
 		modelRunCtx, cancelBudgetRun = context.WithDeadline(runCtx, settlementDeadline)
 		defer cancelBudgetRun()
+	}
+	if t.Governance.AuditLevel == "detailed" && w.collector != nil {
+		// The additional admission event contains identity and timing only. It
+		// precedes budget dispatch and Runner, so a failed write is safely
+		// retryable and the still-undispatched reservation can be released.
+		if auditErr := w.collector.LogAudit(ctx, &telemetry.AuditLog{
+			TenantID: t.ID, ChannelType: req.ChannelType, UserID: req.UserID,
+			SessionID: req.SessionID, AgentName: w.agentName,
+			Decision: "execution_admitted", LatencyMS: int(time.Since(start).Milliseconds()),
+			TraceID: traceIDFromRequest(req),
+		}); auditErr != nil {
+			return nil, fmt.Errorf("persist execution admission audit: %w", auditErr)
+		}
 	}
 	if tokenReservation.ID != "" {
 		if err := w.budgetTracker.DispatchTokenBudget(modelRunCtx, tokenReservation); err != nil {
@@ -1447,7 +1464,12 @@ func (w *Worker) Process(ctx context.Context, req *Request) (response *Response,
 		}
 	}
 
-	w.audit(ctx, req, "allowed", start, "", int(accountedTokens))
+	if auditErr := w.audit(ctx, req, "allowed", start, "", int(accountedTokens)); auditErr != nil {
+		// Runner may already have produced external side effects. The deferred
+		// execution classifier makes this an uncertain outcome, never a safe
+		// retry that would invoke the model or tools a second time.
+		return nil, fmt.Errorf("persist execution outcome audit: %w", auditErr)
+	}
 
 	return &Response{
 		ContentType: "text",

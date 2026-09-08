@@ -2,13 +2,12 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"io"
 	"os"
-	"time"
 
 	_ "github.com/lib/pq"
+	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/controlplane"
 	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/migrationruntime"
 	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/runtimeplane"
 	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/storage"
@@ -31,22 +30,17 @@ func runCommand(ctx context.Context, options commandOptions, output io.Writer) e
 	if err != nil {
 		return errors.New("invalid data-plane profiles")
 	}
-	db, err := sql.Open("postgres", dsn)
+	budget, err := controlplane.ParseRuntimeDatabaseBudget(os.Getenv("CONTROL_DB_MAX_CONNECTIONS"), 10)
 	if err != nil {
-		return errors.New("cannot open control database")
+		return err
 	}
-	defer db.Close()
-	db.SetMaxOpenConns(10)
-	db.SetMaxIdleConns(2)
-	db.SetConnMaxLifetime(30 * time.Minute)
-	pingCtx, cancelPing := context.WithTimeout(ctx, 10*time.Second)
-	err = db.PingContext(pingCtx)
-	cancelPing()
+	databases, err := controlplane.OpenRuntimeDatabases(ctx, dsn, controlplane.RuntimeDatabaseOptions{MaxConnections: budget})
 	if err != nil {
-		return errors.New("control database unavailable")
+		return err
 	}
+	defer databases.Close()
 	runtime, err := migrationruntime.New(migrationruntime.Options{
-		DB: db, StorageProfiles: profiles, DataPlaneProfiles: dataProfiles,
+		DB: databases.Control, GateDB: databases.MigrationGate, StorageProfiles: profiles, DataPlaneProfiles: dataProfiles,
 		Owner: options.owner, LeaseTTL: options.lease, BatchSize: options.batchSize,
 	})
 	if err != nil {

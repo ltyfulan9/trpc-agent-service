@@ -51,8 +51,13 @@ type Token struct {
 	// field and compare it with every caller-supplied key; keeping the logical
 	// name above preserves useful control-plane identity in audit/debug data.
 	ScopedAppName string
-	// UserID binds memory operations and audit identity to the admitted caller.
+	// UserID is the admitted provider identity used by Session and audit.
 	UserID string
+	// MemoryUserID is the provider-scoped storage actor derived at the trusted
+	// Worker boundary. It does not change Session identity or provider routing.
+	// Empty is retained for explicitly composed in-process adapters; production
+	// Worker processing always installs a separate Memory identity.
+	MemoryUserID string
 	// SessionOwnerID binds Session operations to the Runner user key. It is
 	// distinct from UserID for group conversations, where all actors share one
 	// Session while Memory remains scoped to the individual actor. An empty
@@ -74,7 +79,7 @@ func (t Token) Validate() error {
 		strings.ContainsAny(t.Value, "\x00\r\n") {
 		return ErrInvalidToken
 	}
-	for _, value := range []string{t.AgentAppName, t.ScopedAppName, t.UserID, t.SessionOwnerID} {
+	for _, value := range []string{t.AgentAppName, t.ScopedAppName, t.UserID, t.MemoryUserID, t.SessionOwnerID} {
 		if strings.ContainsAny(value, "\x00\r\n") {
 			return ErrInvalidToken
 		}

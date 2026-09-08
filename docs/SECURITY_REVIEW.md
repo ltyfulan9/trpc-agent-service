@@ -30,6 +30,8 @@
 
 Kubernetes `runtime-data-plane-profiles` 中的 `profiles.json`、`mcp-profiles.json` 只存无秘密声明；`runtime-data-plane-credentials` 的四个 key 仅可在 Worker 主容器各引用一次。releaseverify 拒绝非 Worker、sidecar 或重复暴露，并回归检查 MCP、模型和 Channel Secret 的进程范围。内置 resolver 读取受限环境变量；生产通过 workload identity 接入 KMS/Vault，按[密钥系统验收](EXTERNAL_ACCEPTANCE_RUNBOOK.md#7-kmsvault-生产验收)配置与验证。
 
+配置更新显式选择凭据来源：提交新的 SecretRef 时清除该字段的 inline 值，提交 inline 值时清除旧引用；同一请求同时提交两种来源则拒绝。遮罩回传只保留同一 provider/model 或 Channel account 的既有凭据。企业微信 AES Key 的两个字段别名采用一致规则，避免来源切换时回填旧密钥。
+
 ## 4. 数据面安全
 
 Qdrant profile 校验 endpoint、TLS、dimension、collection、embedding endpoint 和 tenant allowlist；HTTP embedding 须显式启用本地 `allowInsecure` 且 host 为 loopback。S3 profile 校验 endpoint、bucket、region、object 大小和 credential refs，生产要求 TLS。Artifact 文件名拒绝路径分隔符、控制字符和格式字符，object key 各段使用 base64url；advisory lock 使用固定 digest，避免用户文本进入锁/活动查询。
@@ -45,6 +47,8 @@ Worker 只向已安装模型 Provider 传递经验证的附件引用，不下载
 ## 6. 可观测与审计
 
 公网回调创建可信 root span，不直接采用外部 trace header 为父；内部 traceparent 纳入 HMAC。日志/trace 禁止记录 webhook token、模型 key、数据库密码、Authorization、完整 payload 或原始用户标识。执行审计包含 tenant/channel/pseudonymous user/session/agent version/tool/decision/latency/error/cost/trace，与控制面变更、审批、DLQ replay 分离保存。
+
+`auditLevel=basic` 保留执行结果、工具和安全决定审计；`detailed` 额外在 Runner 调用前持久化 `execution_admitted`，两种级别均不记录提示词正文。数据库审计与 stderr 镜像独立写入，数据库写失败不得确认执行成功；执行前失败可重试，执行后失败进入结果核对。故障指标与处置见[审计写入故障](SLO.md#audit-sink-failure)。
 
 生产 `/metrics` 需要 bearer，仅 loopback Compose 可启用 unauthenticated。tenant/model/agent 标签按[SLO 标签限制](SLO.md#服务目标)有界聚合。OTLP 必须启用 TLS、服务身份和 attribute processor 二次清洗。
 

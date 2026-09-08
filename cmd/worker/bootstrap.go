@@ -9,11 +9,9 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
@@ -201,34 +199,34 @@ func runWorker() {
 		log.Fatalf("configure tenant encryption: error=%s", telemetry.StableErrorCode(err))
 	}
 
-	controlDB, err := sql.Open("postgres", dbURL)
+	databaseBudget, err := controlplane.ParseRuntimeDatabaseBudget(os.Getenv("CONTROL_DB_MAX_CONNECTIONS"), 25)
+	if err != nil {
+		log.Fatal("invalid CONTROL_DB_MAX_CONNECTIONS: expected 9..300")
+	}
+	databases, err := controlplane.OpenRuntimeDatabases(context.Background(), dbURL, controlplane.RuntimeDatabaseOptions{
+		MaxConnections: databaseBudget, ExecutionFencing: true,
+	})
 	if err != nil {
 		log.Fatalf("failed to open control-plane database: error=%s", telemetry.StableErrorCode(err))
 	}
-	controlDB.SetMaxOpenConns(25)
-	controlDB.SetMaxIdleConns(5)
-	controlDB.SetConnMaxLifetime(30 * time.Minute)
-	controlDB.SetConnMaxIdleTime(5 * time.Minute)
-	if err := controlDB.PingContext(context.Background()); err != nil {
-		controlDB.Close()
-		log.Fatalf("failed to ping control-plane database: error=%s", telemetry.StableErrorCode(err))
-	}
+	defer databases.Close()
+	controlDB := databases.Control
 	migrationRuntime, err := migrationruntime.New(migrationruntime.Options{
-		DB: controlDB, StorageProfiles: backendProfiles, DataPlaneProfiles: dataPlaneProfiles,
+		DB: controlDB, GateDB: databases.MigrationGate, StorageProfiles: backendProfiles, DataPlaneProfiles: dataPlaneProfiles,
 	})
 	if err != nil {
-		controlDB.Close()
+		_ = databases.Close()
 		log.Fatalf("initialize online migration runtime: error=%s", telemetry.StableErrorCode(err))
 	}
 	dataPlaneResolver, err := runtimeplane.NewProfileResolver(dataPlaneProfiles, controlDB, migrationRuntime.DataPlaneOption())
 	if err != nil {
 		_ = migrationRuntime.Close()
-		controlDB.Close()
+		_ = databases.Close()
 		log.Fatalf("initialize runtime data plane: error=%s", telemetry.StableErrorCode(err))
 	}
 	versionResolver := controlplane.NewPostgresResolver(controlDB)
 	executionLeaseTTL := envDuration("EXECUTION_LEASE_TTL", controlplane.DefaultExecutionLeaseTTL)
-	executionRecorder, err := controlplane.NewExecutionRecorderWithLeaseTTLAndAdvisoryFencing(controlDB, executionLeaseTTL)
+	executionRecorder, err := controlplane.NewExecutionRecorderWithLeaseTTLAndAdvisoryFencing(databases.Execution, executionLeaseTTL)
 	if err != nil {
 		log.Fatalf("configure execution lease: error=%s", telemetry.StableErrorCode(err))
 	}
@@ -274,7 +272,7 @@ func runWorker() {
 	// writes through Redis.
 	shutdown := health.NewCoordinator()
 	shutdown.OnShutdown("redis", func(context.Context) error { return redisClient.Close() })
-	shutdown.OnShutdown("control-plane-database", func(context.Context) error { return controlDB.Close() })
+	shutdown.OnShutdown("control-plane-databases", func(context.Context) error { return databases.Close() })
 	shutdown.OnShutdown("migration-runtime", func(context.Context) error { return migrationRuntime.Close() })
 	// MCP sessions are process-owned and shared by immutable Worker runners.
 	// Register their cleanup before the Worker cache so reverse-order shutdown
@@ -322,7 +320,7 @@ func runWorker() {
 	baseAdapter := storage.NewMultiTenantStorageAdapterImplWithOptions(storage.StorageCacheOptions{
 		BackendProfiles:           backendProfiles,
 		SessionDecorator:          migrationRuntime.SessionDecorator(),
-		WriteFence:                controlplane.NewPostgresSessionFence(controlDB),
+		WriteFence:                controlplane.NewPostgresSessionFence(databases.Execution),
 		ConfiguredTenants:         tenantService.ListTenants,
 		RequireBackendHealthProbe: true,
 	})
@@ -418,7 +416,7 @@ func runWorker() {
 
 		options := worker.Options{
 			Collector: telemetry.NewCollectorWithAuditSinkAndIdentityKey(
-				io.MultiWriter(os.Stderr, telemetry.NewSQLAuditWriter(controlDB)),
+				telemetry.NewDurableAuditSink(telemetry.NewSQLAuditWriter(controlDB), os.Stderr),
 				auditIdentityKey,
 			),
 			ToolResolver:       toolCatalog,

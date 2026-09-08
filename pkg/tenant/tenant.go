@@ -238,7 +238,7 @@ type StorageConfig struct {
 // GovernancePolicy defines security and compliance policies.
 type GovernancePolicy struct {
 	DataMasking    []MaskingRule   `json:"dataMasking,omitempty"`
-	AuditLevel     string          `json:"auditLevel"` // basic or detailed; empty uses platform default
+	AuditLevel     string          `json:"auditLevel"` // basic: outcomes/tool decisions; detailed also persists pre-Runner admission; empty is basic
 	ContentFilters []ContentFilter `json:"contentFilters,omitempty"`
 }
 

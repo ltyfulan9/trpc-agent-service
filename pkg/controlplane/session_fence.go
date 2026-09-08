@@ -26,9 +26,10 @@ type PostgresSessionFence struct {
 	maxRenewInterval time.Duration
 }
 
-// NewPostgresSessionFence creates a fence authorizer over the control-plane
-// PostgreSQL pool. The pool must point at the same PostgreSQL authority used by
-// the execution recorder and migrations.
+// NewPostgresSessionFence uses the dedicated execution pool shared with
+// ExecutionRecorder. It must point at the same PostgreSQL authority as the
+// metadata and migration gate pools, but must not share their pool capacity:
+// the delegated Session operation can need both while holding this fence.
 func NewPostgresSessionFence(db *sql.DB) *PostgresSessionFence {
 	return &PostgresSessionFence{
 		db:               db,

@@ -20,10 +20,10 @@
 
 ## 1.1 代码仓库与可复现入口
 
-[公开仓库](https://github.com/ltyfulan9/trpc-agent-service/tree/submission-online-migration-20260906)采用 Apache-2.0 许可证。从全新目录执行：
+[公开仓库](https://github.com/ltyfulan9/trpc-agent-service)采用 Apache-2.0 许可证。从全新目录执行：
 
 ```bash
-git clone --branch submission-online-migration-20260906 --single-branch https://github.com/ltyfulan9/trpc-agent-service
+git clone https://github.com/ltyfulan9/trpc-agent-service
 cd trpc-agent-service
 git rev-parse HEAD
 ./scripts/validate.sh

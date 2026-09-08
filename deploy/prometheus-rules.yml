@@ -1,6 +1,23 @@
 groups:
   - name: agent-platform-reliability
     rules:
+      - alert: AgentDurableAuditWriteFailing
+        expr: increase(agent_audit_write_failures_total{sink="durable"}[5m]) > 0
+        labels:
+          severity: page
+        annotations:
+          summary: Required audit records cannot be persisted
+          runbook_url: docs/SLO.md#audit-sink-failure
+
+      - alert: AgentAuditLogMirrorFailing
+        expr: increase(agent_audit_write_failures_total{sink="mirror"}[10m]) > 0
+        for: 5m
+        labels:
+          severity: ticket
+        annotations:
+          summary: Audit process log mirror is failing
+          runbook_url: docs/SLO.md#audit-sink-failure
+
       - alert: AgentInboxLagHigh
         expr: histogram_quantile(0.99, sum by (le) (rate(agent_pipeline_queue_lag_seconds_bucket{stage="consumer"}[10m]))) > 120
         for: 10m

@@ -348,7 +348,8 @@ SummaryCheckpoint(tenant_id, agent_app_id, session_owner_id, session_id,
 ## Memory/Knowledge/Artifact 逻辑契约
 
 ```text
-Memory: tenant_id + app_name + user_id + memory_id + content
+Memory: tenant_id + app_name + memory_actor_id + memory_id + content
+memory_actor_id = channel.MemoryActorID(tenant_id, channel_type, channel_account_id, external_user_id)
 KnowledgeDocument: tenant_id + agent_app_id + document_id + content + metadata + embedding
 ArtifactVersion: tenant_id + app_name + user_id + session_id + filename + version
                 + object_key + content_sha256 + metadata
@@ -357,6 +358,8 @@ ArtifactVersion: tenant_id + app_name + user_id + session_id + filename + versio
 - SQL 保存租户、ACL、版本和 Artifact 对象元数据；向量内容进入 Qdrant。Qdrant 物理 ID 是 tenant/app/logical document ID 的稳定 SHA-256，保留 scope metadata 不能由用户覆盖。
 - Artifact 对象存储 key 对 tenant/app/user/session/filename 分段做 base64url 编码，并包含不可变版本和独立写入标识；元数据保存实际对象 key。读取同时校验 SQL size 和 SHA-256，访问由租户和会话作用域约束。提交结果未知时保留对象，补偿清理在同作用域锁下确认该对象未被元数据引用后执行。
 - Memory 在 Redis/PostgreSQL 提交后跨节点可见，搜索语义遵循对应 backend；Knowledge 向量检索通过 Qdrant 提供，遵循最终一致性。
+- `memory_actor_id` 由可信 Worker 入口通过 `channel.MemoryActorID` 派生，带 `actor_` 前缀并写入 SDK Memory 的 `user_id`。同通道账号的同一用户跨群、跨单聊复用个人记忆；不同提供方或账号的相同外部 ID 不自动关联。原始用户 ID 继续用于通道授权、回复、审计以及已有 Session owner，Session 标识保持稳定。
+- 只有原始用户 ID 的未归属 Memory 不能自动映射到任一通道账号，也不作为读取回退。上线前排空并停止全部 Memory 写入者，备份记录；依据可验证的通道账号归属清单明确分配新 actor，再离线搬迁、核验并留审计。归属不明确的记录保留在受限原命名空间，禁止广播复制给多个候选账号。此身份归属迁移不等同于尚未实现的 Memory 在线后端迁移。
 
 ## 保留与删除
 

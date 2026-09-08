@@ -37,7 +37,7 @@ race 检查需要当前平台支持的 C 工具链。每个门禁分别记录退
 使用 Docker 启动测试所需的 PostgreSQL、Redis、Qdrant 和 MinIO，按测试配置提供连接参数，然后执行：
 
 ```bash
-go test -buildvcs=false -tags=integration -count=1 -p 1 ./test/integration
+go test -buildvcs=false -race -tags=integration -count=1 -p 1 ./test/integration
 ```
 
 集成测试覆盖队列持久化、Session 迁移、Summary→Runner、Knowledge、Artifact 和数据投影，模型及 embedding 使用本地协议服务。具体环境变量与自动启动流程以 [validate.sh](../scripts/validate.sh) 为准；该脚本同时汇总源码检查、后端集成、镜像构建和 Prometheus 规则检查：
@@ -54,6 +54,17 @@ go test -buildvcs=false -tags=integration -count=1 \
 ```
 
 该测试使用真实 Redis/PostgreSQL、两个独立生产存储适配器和 PostgreSQL execution fence。两租户分别使用 Redis Session/PostgreSQL Memory 与相反组合，检查跨客户端可见性、tenant/app/actor 隔离、未选择后端无数据以及租约释放后的资源关闭。
+
+完整业务链路可单独执行：
+
+```bash
+go test -buildvcs=false -race -tags=integration -count=1 \
+  -run '^TestWeComEncryptedCallbackRunnerDeliveryE2E$' ./test/integration
+```
+
+该测试覆盖加密企业微信回调→Gateway→PostgreSQL Inbox→Consumer→Runner→Memory Tool→Outbox→Delivery，分别运行 Redis Session/PostgreSQL Memory 与 PostgreSQL Session/Redis Memory。每种组合验证正常回复、42001 token 失效刷新及活动模型调用期间取消 context，检查重复回调、trace 关联、持久化结果与 goroutine 排空。模型和 IM 使用 loopback 协议服务，Consumer→Worker 使用 LocalClient；Worker HTTP 鉴权与 execution fence 由对应测试单独验证，真实企业微信账号按部署验收执行。
+
+连接池并发回归 `TestOnlineSessionConcurrentReadsUseIndependentGatePool` 使用真实 PostgreSQL/Redis，在迁移完成后以受限 Control/Gate 容量运行 25 并发读取，并检查连接归还与关闭。
 
 Windows 可使用隔离环境脚本启动应用栈：
 
@@ -93,8 +104,24 @@ go test -buildvcs=false ./pkg/reliable -run '^$' -bench '^BenchmarkMemoryStoreIn
 
 该基准不包含数据库 I/O、网络、模型或 IM 延迟。正式容量验证使用目标部署和业务 payload，记录吞吐、p50/p95/p99、队列积压、资源与成本，按[故障、回滚与容量](EXTERNAL_ACCEPTANCE_RUNBOOK.md#8-故障回滚与容量)执行。
 
+### 5.2 PostgreSQL 公平队列容量基线
+
+`cmd/queue-bench` 提供可复测的真实数据库队列基线。它只接受名称以 `queuebench_` 开头的独立 PostgreSQL 数据库，启动前要求 `queuebench-*` 租户命名空间为空，并持有数据库 advisory lock；不会清理其他租户数据。每个案例预加载两个租户，分别执行普通领取和公平领取，覆盖均匀、4:1 加权、热点会话三类负载及 1/4/8/16 Consumer。输出包含吞吐、领取/处理/完成时间 p50/p95/p99、租户完成量、重复领取、连接池尾态和 Inbox/Outbox 持久化核验。
+
+```powershell
+.\scripts\queue_bench.ps1 -DatabaseUrl 'postgres://agent:<password>@127.0.0.1:35432/queuebench_local?sslmode=disable' -Output work\queuebench-results.json
+```
+
+该工具的结果用于解释 `max_inflight`、公平权重和连接池预算，不把单机结果写成生产 SLO。正式验收仍需在目标规格下记录 SQL pool wait、CPU、I/O、队列清空时间和故障接管结果；JSON 中的 `verified` 必须为 `true`，否则命令失败。
+
+### 5.3 受控知识导入
+
+`pkg/knowledgeingest` 是平台层导入原语，验证入口为 `go test -buildvcs=false ./pkg/knowledgeingest`。调用方必须提供已完成租户/app 绑定并接入迁移装饰器的 `StoreProvider`，请求不允许携带 DSN、Qdrant 地址或凭据。导入限制 UTF-8、1 MiB、256 个分片和保留 metadata；source 内容或 metadata 未变化时跳过 embedding，变化时按稳定 chunk ID 更新并删除旧分片。若同一 source 已存在超过 256 个分片，入口拒绝继续并要求显式修复，避免无界扫描或删除。
+
 ## 6. 结果记录与打包
 
 结果记录包含源码快照、Go 版本、环境、开始/结束时间、命令、退出码和必要后状态。源码测试、真实后端、部署与外部账号验收分别标注运行范围。
+
+CI 的 `go`、Go 1.25 兼容性和漏洞扫描任务通过 `scripts/ci_evidence.py` 生成不可变证据，绑定 `GITHUB_SHA`、运行号、工具链、逐项日志哈希和测试结果。Windows 打包任务必须等待三个门禁任务完成，下载并核验全部证据后才生成归档；缺失、篡改、源码 SHA 或运行身份不一致时拒绝打包。
 
 [打包脚本](../scripts/package_all_materials.ps1) 生成文件清单和 SHA-256，检查新目录解包结果及秘密签名。归档包含源码、当前文档和验证证据，排除真实环境文件、运行时数据库、凭据、缓存和构建产物。交付清单中的源码身份用于对应仓库和压缩包。

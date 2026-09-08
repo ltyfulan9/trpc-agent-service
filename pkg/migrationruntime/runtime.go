@@ -15,7 +15,10 @@ import (
 )
 
 type Options struct {
-	DB                *sql.DB
+	DB *sql.DB
+	// GateDB is a separate bounded pool on DB's PostgreSQL authority. Both
+	// pools remain caller-owned and must outlive Runtime.Close.
+	GateDB            *sql.DB
 	StorageProfiles   storage.BackendProfileResolver
 	DataPlaneProfiles *runtimeplane.Catalog
 	Owner             string
@@ -45,7 +48,7 @@ func New(options Options) (*Runtime, error) {
 	}
 	runtime := &Runtime{Sessions: sessions}
 	coordinator, err := datamigration.NewLiveCoordinator(datamigration.LiveOptions{
-		DB: options.DB, Owner: options.Owner, LeaseTTL: options.LeaseTTL, BatchSize: options.BatchSize,
+		DB: options.DB, GateDB: options.GateDB, Owner: options.Owner, LeaseTTL: options.LeaseTTL, BatchSize: options.BatchSize,
 		Resolve: func(ctx context.Context, tenantID string, domain datamigration.Domain, profile string) (datamigration.LiveBackend, func(), error) {
 			if domain == datamigration.DomainSession {
 				return sessions.Resolve(ctx, tenantID, domain, profile)

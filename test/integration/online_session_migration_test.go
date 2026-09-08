@@ -24,6 +24,7 @@ import (
 
 type onlineSessionFixture struct {
 	db      *sql.DB
+	gateDB  *sql.DB
 	tenant  *tenant.Tenant
 	runtime *migrationruntime.Runtime
 	source  session.Service
@@ -36,6 +37,7 @@ type onlineSessionFixture struct {
 func newOnlineSessionFixture(t *testing.T) onlineSessionFixture {
 	t.Helper()
 	db := openDatabase(t)
+	gateDB := openMigrationGateDatabase(t)
 	ctx := context.Background()
 	tenantID := "online-session-" + uuid.NewString()
 	profiles, err := storage.LoadBackendProfiles(`[
@@ -73,7 +75,7 @@ func newOnlineSessionFixture(t *testing.T) onlineSessionFixture {
 		_, _ = db.ExecContext(context.Background(), `DELETE FROM audit_logs WHERE tenant_id=$1`, tenantID)
 		_, _ = db.ExecContext(context.Background(), `DELETE FROM tenants WHERE id=$1`, tenantID)
 	})
-	runtime, err := migrationruntime.New(migrationruntime.Options{DB: db, StorageProfiles: profiles, BatchSize: 1})
+	runtime, err := migrationruntime.New(migrationruntime.Options{DB: db, GateDB: gateDB, StorageProfiles: profiles, BatchSize: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,9 +110,64 @@ func newOnlineSessionFixture(t *testing.T) onlineSessionFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fixture := onlineSessionFixture{db: db, tenant: tenantValue, runtime: runtime, source: source, target: target, wrapped: wrapped, key: key, jobID: "live-" + uuid.NewString()}
+	fixture := onlineSessionFixture{db: db, gateDB: gateDB, tenant: tenantValue, runtime: runtime, source: source, target: target, wrapped: wrapped, key: key, jobID: "live-" + uuid.NewString()}
 	fixture.append(t, source, "before-migration")
 	return fixture
+}
+
+func TestOnlineSessionConcurrentReadsUseIndependentGatePool(t *testing.T) {
+	f := newOnlineSessionFixture(t)
+	f.create(t)
+	f.advance(t, datamigration.PhaseRollbackWindow)
+	if _, err := f.runtime.Coordinator.Complete(context.Background(), f.jobID, "operator", "verified target"); err != nil {
+		t.Fatal(err)
+	}
+	// Keep metadata capacity deliberately smaller than both the gate pool and
+	// offered load. Lock holders must finish through the independent SQL pool.
+	f.db.SetMaxOpenConns(3)
+	f.gateDB.SetMaxOpenConns(8)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	const concurrency = 25
+	start := make(chan struct{})
+	results := make(chan error, concurrency)
+	for range concurrency {
+		go func() {
+			<-start
+			for range 3 {
+				value, err := f.wrapped.GetSession(ctx, f.key)
+				if err != nil {
+					results <- err
+					return
+				}
+				if value == nil || len(value.Events) != 1 {
+					results <- errors.New("completed migration lost session history")
+					return
+				}
+			}
+			results <- nil
+		}()
+	}
+	close(start)
+	for range concurrency {
+		if err := <-results; err != nil {
+			t.Error(err)
+		}
+	}
+	if f.db.Stats().InUse != 0 || f.gateDB.Stats().InUse != 0 {
+		t.Fatal("completed Session operations retained control or gate connections")
+	}
+	// Terminating the owning runtime must close its Session handles while the
+	// caller-owned gate and metadata pools remain usable for orderly cleanup.
+	if err := f.runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.PingContext(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.gateDB.PingContext(ctx); err != nil {
+		t.Fatal(err)
+	}
 }
 
 type failingLiveSessionTarget struct {
@@ -136,7 +193,7 @@ func TestOnlineSessionRecoversFailedDeleteBeforeRecreation(t *testing.T) {
 	f.advance(t, datamigration.PhaseValidate)
 	var fail atomic.Bool
 	coordinator, err := datamigration.NewLiveCoordinator(datamigration.LiveOptions{
-		DB: f.db, Owner: "delete-recreate", BatchSize: 1,
+		DB: f.db, GateDB: f.gateDB, Owner: "delete-recreate", BatchSize: 1,
 		Resolve: func(ctx context.Context, tenantID string, domain datamigration.Domain, profile string) (datamigration.LiveBackend, func(), error) {
 			backend, release, err := f.runtime.Sessions.Resolve(ctx, tenantID, domain, profile)
 			if err == nil && profile == "online-postgres" {
@@ -175,7 +232,7 @@ func TestOnlineSessionRollbackSurvivesUnavailableTarget(t *testing.T) {
 	f.advance(t, datamigration.PhaseRollbackWindow)
 	f.append(t, f.wrapped, "latest-before-target-failure")
 	coordinator, err := datamigration.NewLiveCoordinator(datamigration.LiveOptions{
-		DB: f.db, Owner: "target-failure-recovery", BatchSize: 1,
+		DB: f.db, GateDB: f.gateDB, Owner: "target-failure-recovery", BatchSize: 1,
 		Resolve: func(ctx context.Context, tenantID string, domain datamigration.Domain, profile string) (datamigration.LiveBackend, func(), error) {
 			if profile == "online-postgres" {
 				return nil, nil, errors.New("injected target unavailable")
