@@ -3,6 +3,7 @@
 package migrations
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -54,6 +55,7 @@ func (r *Runner) Up(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("read migration %s: %w", version, err)
 		}
+		script = canonicalScript(script)
 		checksum := scriptChecksum(script)
 		tx, err := r.db.BeginTx(ctx, nil)
 		if err != nil {
@@ -67,19 +69,25 @@ func (r *Runner) Up(ctx context.Context) error {
 		err = tx.QueryRowContext(ctx, `SELECT checksum FROM schema_migrations WHERE version=$1`, version).Scan(&storedChecksum)
 		switch {
 		case err == nil:
-			// Existing installations created before checksum tracking have an
-			// empty value. Bootstrap that metadata exactly once; all subsequent
-			// runs enforce drift detection.
+			// Retain the one-time bootstrap for installations predating checksum
+			// tracking. Otherwise accept only this script's exact LF or CRLF
+			// digest; different SQL or mixed historical line endings are drift.
+			if storedChecksum != "" && !matchesScriptChecksum(script, storedChecksum) {
+				tx.Rollback()
+				return fmt.Errorf("migration %s checksum drift: database=%s embedded=%s", version, storedChecksum, checksum)
+			}
+			// Preserve accepted historical digests for the original release
+			// binary; only new migrations and untracked rows receive LF hashes.
 			if storedChecksum == "" {
-				if _, err := tx.ExecContext(ctx, `UPDATE schema_migrations SET checksum=$2 WHERE version=$1 AND checksum=''`, version, checksum); err != nil {
+				result, err := tx.ExecContext(ctx, `UPDATE schema_migrations SET checksum=$2 WHERE version=$1 AND checksum=$3`, version, checksum, storedChecksum)
+				if err != nil {
 					tx.Rollback()
 					return fmt.Errorf("bootstrap migration %s checksum: %w", version, err)
 				}
-				storedChecksum = checksum
-			}
-			if storedChecksum != checksum {
-				tx.Rollback()
-				return fmt.Errorf("migration %s checksum drift: database=%s embedded=%s", version, storedChecksum, checksum)
+				if affected, err := result.RowsAffected(); err != nil || affected != 1 {
+					tx.Rollback()
+					return fmt.Errorf("migration %s checksum changed during bootstrap", version)
+				}
 			}
 			if err := tx.Commit(); err != nil {
 				return fmt.Errorf("release migration lock %s: %w", version, err)
@@ -149,7 +157,7 @@ func (r *Runner) Down(ctx context.Context, steps int) error {
 		if err != nil {
 			return fmt.Errorf("read applied migration %s: %w", item.version, err)
 		}
-		if expected := scriptChecksum(upScript); item.checksum != expected {
+		if !matchesScriptChecksum(upScript, item.checksum) {
 			return fmt.Errorf("migration %s checksum drift blocks rollback", item.version)
 		}
 		script, err := files.ReadFile(item.version + ".down.sql")
@@ -159,7 +167,7 @@ func (r *Runner) Down(ctx context.Context, steps int) error {
 		if err := lockMigrationTables(ctx, tx, item.version); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, string(script)); err != nil {
+		if _, err := tx.ExecContext(ctx, string(canonicalScript(script))); err != nil {
 			return fmt.Errorf("apply rollback %s: %w", item.version, err)
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM schema_migrations WHERE version=$1`, item.version); err != nil {
@@ -226,6 +234,28 @@ func embeddedVersions() ([]string, error) {
 }
 
 func scriptChecksum(script []byte) string {
+	return rawScriptChecksum(canonicalScript(script))
+}
+
+// canonicalScript removes checkout-dependent CRLF sequences only. SQL content,
+// whitespace, lone CR bytes and the presence of a final newline remain material.
+// Execute these same bytes so the stored checksum identifies the applied SQL.
+func canonicalScript(script []byte) []byte {
+	return bytes.ReplaceAll(script, []byte("\r\n"), []byte("\n"))
+}
+
+func matchesScriptChecksum(script []byte, stored string) bool {
+	canonical := canonicalScript(script)
+	if stored == rawScriptChecksum(canonical) {
+		return true
+	}
+	// Before canonical checksums, Windows builds hashed full CRLF checkouts.
+	// Derive that one exact alternative; never trust arbitrary stored digests.
+	legacy := bytes.ReplaceAll(canonical, []byte("\n"), []byte("\r\n"))
+	return stored == rawScriptChecksum(legacy)
+}
+
+func rawScriptChecksum(script []byte) string {
 	digest := sha256.Sum256(script)
 	return hex.EncodeToString(digest[:])
 }

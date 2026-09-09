@@ -11,15 +11,21 @@ package worker
 import (
 	"context"
 	"fmt"
+	"os"
 
 	openaiopt "github.com/openai/openai-go/option"
+	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/modelendpoint"
 	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/tenant"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/model/openai"
 )
 
 // ModelFactory creates model instances from tenant configuration.
-type ModelFactory struct{}
+type ModelFactory struct {
+	// Internal construction seam for provider protocol tests. Production
+	// factories always use modelendpoint.New and its pinned DNS transport.
+	endpointClient func(string) (openaiopt.HTTPClient, error)
+}
 
 // NewModelFactory creates a new model factory.
 func NewModelFactory() *ModelFactory {
@@ -65,23 +71,39 @@ func (f *ModelFactory) CreateModel(config *tenant.ModelConfig) (model.Model, err
 
 // createOpenAIModel creates an OpenAI model.
 func (f *ModelFactory) createOpenAIModel(config *tenant.ModelConfig) (model.Model, error) {
+	if config.Endpoint != "" {
+		return nil, fmt.Errorf("tenant model endpoint overrides are not permitted")
+	}
 	// Hidden SDK retries would turn one bounded LLM call into multiple provider
 	// requests without additional budget reservation or invocation audit. Any
 	// retry must happen above this adapter where idempotency and accounting are
 	// explicit.
-	opts := []openai.Option{
-		openai.WithOpenAIOptions(openaiopt.WithMaxRetries(0)),
+	clientOptions := []openaiopt.RequestOption{openaiopt.WithMaxRetries(0)}
+	endpoint := "https://api.openai.com/v1"
+	operatorEndpoint := os.Getenv("TRPC_OPENAI_BASE_URL")
+	if operatorEndpoint != "" {
+		buildClient := f.endpointClient
+		if buildClient == nil {
+			buildClient = func(value string) (openaiopt.HTTPClient, error) { return modelendpoint.New(value) }
+		}
+		client, err := buildClient(operatorEndpoint)
+		if err != nil {
+			return nil, modelendpoint.ErrConfiguration
+		}
+		endpoint = operatorEndpoint
+		clientOptions = append(clientOptions, openaiopt.WithHTTPClient(client))
 	}
+	opts := []openai.Option{openai.WithOpenAIOptions(clientOptions...), openai.WithBaseURL(endpoint)}
 
 	if config.APIKey != "" {
 		opts = append(opts, openai.WithAPIKey(config.APIKey))
 	}
 
-	if config.Endpoint != "" {
-		opts = append(opts, openai.WithBaseURL(config.Endpoint))
+	base := openai.New(config.ModelName, opts...)
+	if operatorEndpoint != "" {
+		return &operatorEndpointModel{base: base}, nil
 	}
-
-	return openai.New(config.ModelName, opts...), nil
+	return base, nil
 }
 
 // BuildGenerationConfig builds a GenerationConfig from tenant ModelConfig.

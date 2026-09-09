@@ -48,11 +48,15 @@ docker compose -f deploy/docker-compose.yml config >/dev/null
 # compiler workspaces. Check available space before every serial target.
 minimum_build_free_kib="${MIN_BUILD_FREE_KIB:-8388608}"
 [[ "$minimum_build_free_kib" =~ ^[1-9][0-9]*$ ]] || { echo 'MIN_BUILD_FREE_KIB must be positive' >&2; exit 1; }
-for service in migrate data-migrate gateway worker summary-worker consumer delivery admin; do
+for service in migrate data-migrate gateway worker summary-worker consumer delivery admin telegram-poller wecom-bot; do
   available_kib="$(df -Pk "$repo_dir" | awk 'END {print $4}')"
   if [[ ! "$available_kib" =~ ^[0-9]+$ ]] || (( available_kib < minimum_build_free_kib )); then
     echo "Insufficient disk space for $service build: ${available_kib} KiB available; ${minimum_build_free_kib} required" >&2
     exit 1
+  fi
+  if [[ "$service" == telegram-poller || "$service" == wecom-bot ]]; then
+    docker build -f "deploy/Dockerfile.$service" .
+    continue
   fi
   POSTGRES_PASSWORD="$validation_password" \
   MASTER_KEY="validation-only-master-key-32-bytes-minimum" \

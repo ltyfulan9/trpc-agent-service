@@ -18,7 +18,7 @@
 | `.github/workflows/` | 自动化验证流程 |
 | `go.mod` / `go.sum` / `LICENSE` | 依赖版本、校验与许可 |
 
-数据库初始化包含 `migrations/001..047`，由嵌入式迁移器按顺序执行并校验 checksum。
+数据库初始化包含 `migrations/001..048`，由嵌入式迁移器按顺序执行并校验 checksum。
 
 ## 命令入口
 

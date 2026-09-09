@@ -17,17 +17,18 @@ import (
 
 	redisv8 "github.com/go-redis/redis/v8"
 	"github.com/google/uuid"
+	openaiopt "github.com/openai/openai-go/option"
 	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
 	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/controlplane"
 	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/storage"
 	summarycoord "trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/summary"
 	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/summaryruntime"
 	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/tenant"
-	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/worker"
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/memory"
 	memoryinmemory "trpc.group/trpc-go/trpc-agent-go/memory/inmemory"
 	"trpc.group/trpc-go/trpc-agent-go/model"
+	"trpc.group/trpc-go/trpc-agent-go/model/openai"
 	"trpc.group/trpc-go/trpc-agent-go/runner"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 	sessionredis "trpc.group/trpc-go/trpc-agent-go/session/redis"
@@ -186,10 +187,11 @@ func TestSummaryRuntimePostgresRedisEndToEnd(t *testing.T) {
 		Redis:    redisClient, Checkpoints: sink, MinEvents: 1,
 		MaxSummaryWords: 128, MaxOutputTokens: 256, SessionLockTTL: 5 * time.Second,
 		ModelBuilder: func(_ context.Context, config tenant.ModelConfig, _ *tenant.Tenant, _ tenant.SecretResolver) (model.Model, error) {
-			return worker.NewModelFactory().CreateModel(&tenant.ModelConfig{
-				Provider: config.Provider, ModelName: config.ModelName,
-				APIKey: "test-only-summary-key", Endpoint: fakeProvider.URL,
-			})
+			// Inject the external provider at the runtime's existing model
+			// boundary. Tenant endpoint policy remains unchanged.
+			return openai.New(config.ModelName, openai.WithAPIKey("test-only-summary-key"),
+				openai.WithBaseURL(fakeProvider.URL),
+				openai.WithOpenAIOptions(openaiopt.WithMaxRetries(0), openaiopt.WithHTTPClient(fakeProvider.Client()))), nil
 		},
 	})
 	if err != nil {
@@ -349,12 +351,9 @@ func TestSummaryRuntimePostgresRedisEndToEnd(t *testing.T) {
 		}`))
 	}))
 	t.Cleanup(agentProvider.Close)
-	agentModel, err := worker.NewModelFactory().CreateModel(&tenant.ModelConfig{
-		Provider: "openai", ModelName: "agent-model", APIKey: "test-only-agent-key", Endpoint: agentProvider.URL,
-	})
-	if err != nil {
-		t.Fatalf("build local capture model: %v", err)
-	}
+	agentModel := openai.New("agent-model", openai.WithAPIKey("test-only-agent-key"),
+		openai.WithBaseURL(agentProvider.URL),
+		openai.WithOpenAIOptions(openaiopt.WithMaxRetries(0), openaiopt.WithHTTPClient(agentProvider.Client())))
 	agentValue := llmagent.New("support",
 		llmagent.WithModel(agentModel),
 		llmagent.WithAddSessionSummary(true),

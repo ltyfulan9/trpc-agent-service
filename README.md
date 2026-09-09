@@ -119,6 +119,8 @@ go run -buildvcs=false ./cmd/demo
 
 ### Agent 配置与管理
 
+Admin 同源提供 `/console/` 管理控制台，支持租户选择、独立后端组合、版本发布、灰度部署和请求执行视图。运行 `scripts/run_console_lab.ps1 -Build -SeedExamples` 可建立两个交叉后端配置示例；操作与读取接口见[管理控制台](docs/OPERATIONS_CONSOLE.md)。
+
 管理 API 使用服务端 Principal 进行角色和租户授权。`ADMIN_API_TOKEN` 用于 bootstrap 管理，日常操作通过 `ADMIN_PRINCIPALS_JSON` 分配 `tenant_admin`、`release_manager`、`auditor` 及 tenant allowlist。
 
 | 操作 | API |
@@ -134,6 +136,8 @@ go run -buildvcs=false ./cmd/demo
 Worker 要求 Agent App 存在 active stable deployment。版本快照保存无密钥配置、模型目录信息和 runtime capability fingerprint；同一请求重试继续使用首次绑定版本。`canaryBps` 范围为 1–9999；不传 canary 时执行 stable 切换。
 
 当前模型工厂支持 OpenAI，模型由 operator-approved catalog 准入。租户通过 operator-owned profile 和 SecretRef 选择数据面及凭据。Admin 响应对密钥脱敏；模型、通道和 MCP 密钥按进程职责注入。
+
+运营侧可向 Worker 与 Summary Worker 注入 `TRPC_OPENAI_BASE_URL`，接入通过公网 HTTPS 提供服务的 OpenAI-compatible API；模型密钥仍通过租户 SecretRef 解析。端点使用固定目标、DNS 校验和 TLS 验证，租户不能覆盖；配置和网络边界见[模型端点](pkg/modelendpoint/README.md)。
 
 企业微信沙箱配置依次使用 `scripts/wecom_sandbox_tunnel.ps1`、`scripts/wecom_sandbox_setup.ps1`、`scripts/wecom_sandbox_bootstrap.ps1`，参数和控制台步骤见 [接入与部署验收](docs/EXTERNAL_ACCEPTANCE_RUNBOOK.md)。
 

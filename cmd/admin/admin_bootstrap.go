@@ -233,6 +233,7 @@ func runAdmin() {
 	handler.Handle("/api/v1/tool-approvals", protect("admin.tool-approvals-list", map[string]adminauth.Permission{
 		http.MethodGet: adminauth.PermissionToolApprovalRead,
 	}))
+	registerOperationsConsole(handler, controlDB, adminAuthenticator, shutdown)
 
 	// Start HTTP server
 	server := &http.Server{

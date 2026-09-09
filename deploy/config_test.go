@@ -569,8 +569,8 @@ func TestProductionDockerfilesPinSupportedBuildAndRuntimeImages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(files) != 8 {
-		t.Fatalf("production Dockerfile count = %d, want 8", len(files))
+	if len(files) != 10 {
+		t.Fatalf("production Dockerfile count = %d, want 10", len(files))
 	}
 	for _, filename := range files {
 		t.Run(filename, func(t *testing.T) {

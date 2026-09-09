@@ -44,6 +44,8 @@ type ChannelType string
 const (
 	// ChannelTypeWeWork represents WeChat Work.
 	ChannelTypeWeWork ChannelType = "wework"
+	// ChannelTypeWeComBot is the authenticated local bridge for a WeCom smart bot.
+	ChannelTypeWeComBot ChannelType = "wecom_bot"
 	// ChannelTypeTelegram represents Telegram.
 	ChannelTypeTelegram ChannelType = "telegram"
 	// ChannelTypeWeChatService represents WeChat Customer Service.

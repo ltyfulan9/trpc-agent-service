@@ -584,7 +584,7 @@ func ValidateConfig(config TenantConfig) error {
 	channelAccounts := make(map[string]struct{}, len(config.Channels))
 	webhookKeys := make(map[string]struct{}, len(config.Channels))
 	for _, binding := range config.Channels {
-		if binding.Type != "wework" && binding.Type != "telegram" {
+		if binding.Type != "wework" && binding.Type != "telegram" && binding.Type != "wecom_bot" {
 			return fmt.Errorf("channel type %q is not installed", binding.Type)
 		}
 		if _, exists := agents[binding.AgentApp]; !exists {
@@ -632,6 +632,11 @@ func ValidateConfig(config TenantConfig) error {
 		}
 		if binding.Type == "wework" {
 			if err := validateWeWorkBinding(binding); err != nil {
+				return err
+			}
+		}
+		if binding.Type == "wecom_bot" {
+			if err := ValidateWeComBotBinding(binding); err != nil {
 				return err
 			}
 		}

@@ -13,7 +13,7 @@ RUN go mod download
 COPY . .
 
 # Build gateway
-RUN CGO_ENABLED=0 GOOS=linux go build -buildvcs=false -trimpath -o /out/gateway ./cmd/gateway
+RUN --mount=type=cache,target=/root/.cache/go-build CGO_ENABLED=0 GOOS=linux go build -buildvcs=false -trimpath -o /out/gateway ./cmd/gateway
 
 FROM ${RUNTIME_IMAGE}
 

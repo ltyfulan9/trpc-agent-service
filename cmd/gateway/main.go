@@ -149,6 +149,7 @@ func main() {
 	adapterRegistry := channel.NewAdapterRegistry()
 	adapterRegistry.Register(channel.ChannelTypeWeWork, channel.NewWeWorkAdapter())
 	adapterRegistry.Register(channel.ChannelTypeTelegram, channel.NewTelegramAdapter())
+	adapterRegistry.Register(channel.ChannelTypeWeComBot, channel.NewWeComBotAdapter(""))
 
 	// Create gateway server with a drain-aware health checker, so readiness
 	// fails as soon as shutdown starts even while Redis is still reachable.

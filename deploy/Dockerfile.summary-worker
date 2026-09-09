@@ -10,7 +10,7 @@ RUN go mod download
 
 COPY . .
 
-RUN CGO_ENABLED=0 GOOS=linux go build -buildvcs=false -trimpath -o /out/summary-worker ./cmd/summary-worker
+RUN --mount=type=cache,target=/root/.cache/go-build CGO_ENABLED=0 GOOS=linux go build -buildvcs=false -trimpath -o /out/summary-worker ./cmd/summary-worker
 
 FROM ${RUNTIME_IMAGE}
 

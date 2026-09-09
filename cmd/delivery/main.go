@@ -83,6 +83,12 @@ func main() {
 	registry := channel.NewAdapterRegistry()
 	registry.Register(channel.ChannelTypeWeWork, channel.NewWeWorkAdapter())
 	registry.Register(channel.ChannelTypeTelegram, channel.NewTelegramAdapter())
+	if bridgeURL := os.Getenv("WECOM_BOT_BRIDGE_URL"); bridgeURL != "" {
+		if err := channel.ValidateWeComBotBridgeURL(bridgeURL); err != nil {
+			log.Fatal("invalid WECOM_BOT_BRIDGE_URL")
+		}
+		registry.Register(channel.ChannelTypeWeComBot, channel.NewWeComBotAdapter(bridgeURL))
+	}
 
 	delivery, err := pipeline.NewDelivery(store, tenantService, registry, pipeline.DeliveryConfig{
 		Owner:               owner,

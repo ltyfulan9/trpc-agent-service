@@ -2,6 +2,8 @@
 
 Enterprise Multi-Tenant Agent Platform 的验收分为源码回归、后端集成和目标环境三个层次。本文件将功能要求映射到测试入口与验收断言；执行方法见 [验证指南](VERIFICATION.md)。
 
+真实 Docker 后端、Telegram 与企业微信智能机器人的执行结果见 [IM 接入与部署验收报告](LIVE_IM_ACCEPTANCE.md)。
+
 ## 1. 提交包验证记录
 
 交付包的 `verification-evidence/current-validation.log` 记录源码快照、工具链、执行时间、命令输出及退出码，覆盖以下检查：

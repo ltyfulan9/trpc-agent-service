@@ -28,6 +28,8 @@ JOBS = {
         ("compose-config", ["docker", "compose", "-f", "deploy/docker-compose.yml", "config", "--quiet"]),
         ("compose-build", ["docker", "compose", "-f", "deploy/docker-compose.yml", "build"]),
         ("migration-image", ["docker", "compose", "-f", "deploy/docker-compose.yml", "--profile", "operations", "build", "data-migrate"]),
+        ("telegram-poller-image", ["docker", "build", "-f", "deploy/Dockerfile.telegram-poller", "."]),
+        ("wecom-bot-image", ["docker", "build", "-f", "deploy/Dockerfile.wecom-bot", "."]),
         ("prometheus-rules", ["docker", "run", "--rm", "--entrypoint", "/bin/promtool", "-v", "{repo}/deploy:/work:ro", "prom/prometheus:v2.54.1", "check", "rules", "/work/prometheus-rules.yml"]),
     ],
     "go-1-25-compatibility": [

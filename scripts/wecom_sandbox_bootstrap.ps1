@@ -8,6 +8,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'im_secret_bindings.ps1')
 
 function Read-DotEnv {
     param([string]$Path)
@@ -111,6 +112,7 @@ function Invoke-AdminJSON {
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $composeFile = Join-Path $repoRoot 'deploy\docker-compose.yml'
 $fullEnvFile = [IO.Path]::GetFullPath($EnvFile)
+$bindingOverride = Join-Path $repoRoot "tmp\$ProjectName-im-bindings.json"
 $values = Read-DotEnv $fullEnvFile
 
 $required = @(
@@ -130,7 +132,12 @@ foreach ($entry in $values.GetEnumerator()) {
     [Environment]::SetEnvironmentVariable($entry.Key, [string]$entry.Value, 'Process')
 }
 
-$composeArgs = @('compose', '--project-name', $ProjectName, '--env-file', $fullEnvFile, '-f', $composeFile, 'up', '-d')
+$composeArgs = @('compose', '--project-name', $ProjectName, '--env-file', $fullEnvFile, '-f', $composeFile)
+if ($values.Contains('WECOM_TENANT_ID') -and (Test-Path -LiteralPath $bindingOverride)) {
+    # Preserve scoped authorizations while rebuilding an existing sandbox.
+    $composeArgs += @('-f', $bindingOverride)
+}
+$composeArgs += @('up', '-d')
 if (-not $SkipBuild) {
     $composeArgs += '--build'
 }
@@ -150,7 +157,7 @@ $script:AdminToken = Require-Value $values 'ADMIN_API_TOKEN'
 $tenantName = 'wangzilong-wecom-sandbox'
 $tenantID = if ($values.Contains('WECOM_TENANT_ID')) { [string]$values['WECOM_TENANT_ID'] } else { '' }
 if (-not $tenantID) {
-    $existing = @(Invoke-AdminJSON -Method GET -Path '/api/v1/tenants') | Where-Object { $_.name -eq $tenantName }
+    $existing = @(Invoke-AdminJSON -Method GET -Path '/api/v1/tenants' | Where-Object { $_.name -eq $tenantName })
     if ($existing.Count -gt 1) {
         throw 'multiple sandbox tenants share the reserved name'
     }
@@ -220,6 +227,30 @@ if (-not $tenantID) {
     Write-Host 'Created the isolated WeCom tenant.' -ForegroundColor Green
 }
 
+# Creating a tenant assigns its scope ID. Install references for that exact
+# scope before version admission or any Gateway/Delivery credential read.
+# Compose --env-file provides interpolation only; it does not inject dynamic
+# TRPC_SECRET_BINDING_* names into containers without this explicit override.
+$bindingDefinition = New-IMSecretBindingsOverride -TenantId $tenantID `
+    -ModelProvider $modelProvider -ModelName $modelName `
+    -ModelSecretRef 'env://TRPC_SECRET_OPENAI_API_KEY' `
+    -ChannelType 'wework' -ChannelAccountId "wecom-$($values['WECOM_AGENT_ID'])" `
+    -ChannelTokenRef 'env://TRPC_SECRET_WECOM_TOKEN' `
+    -ChannelSecretRef 'env://TRPC_SECRET_WECOM_CORP_SECRET' `
+    -ChannelEncodingAESKeyRef 'env://TRPC_SECRET_WECOM_AES'
+$bindingOverride = Write-IMSecretBindingsOverride -Path $bindingOverride -Definition $bindingDefinition
+& docker compose --project-name $ProjectName --env-file $fullEnvFile -f $composeFile -f $bindingOverride config --quiet
+if ($LASTEXITCODE -ne 0) { throw 'Scoped credential binding Compose configuration is invalid.' }
+$bindingArgs = @('compose', '--project-name', $ProjectName, '--env-file', $fullEnvFile,
+    '-f', $composeFile, '-f', $bindingOverride, 'up', '-d', '--no-deps',
+    'admin', 'worker', 'summary-worker', 'gateway', 'delivery')
+& docker @bindingArgs
+if ($LASTEXITCODE -ne 0) { throw 'Could not load tenant credential authorization into the sandbox services.' }
+Wait-Healthy ([uri]"http://127.0.0.1:$adminPort/health") 'Admin with scoped credential bindings'
+Wait-Healthy ([uri]"http://127.0.0.1:$gatewayPort/health") 'Gateway with scoped credential bindings'
+$values['WECOM_TENANT_ID'] = $tenantID
+Save-DotEnv $values $fullEnvFile
+
 $appID = if ($values.Contains('WECOM_AGENT_APP_ID')) { [string]$values['WECOM_AGENT_APP_ID'] } else { '' }
 if (-not $appID) {
     $app = Invoke-AdminJSON -Method POST -Path '/api/v1/agent-apps' -Body ([ordered]@{
@@ -256,9 +287,27 @@ if (-not $versionID) {
     if (-not $versionID) {
         throw 'Admin created an Agent version without an ID'
     }
-    Invoke-AdminJSON -Method POST -Path "/api/v1/agent-versions/$versionID/publish" -Body @{ tenantId = $tenantID } | Out-Null
     $values['WECOM_AGENT_VERSION_ID'] = $versionID
     Save-DotEnv $values $fullEnvFile
+}
+
+# A failed publish leaves a durable draft. Keep its ID before publishing and
+# inspect its current state on every run so the same draft can be resumed.
+$versionState = $null
+$versionCursor = ''
+do {
+    $path = '/api/v1/operations/versions?tenantId=' + [uri]::EscapeDataString($tenantID) + '&limit=100'
+    if ($versionCursor) { $path += '&cursor=' + [uri]::EscapeDataString($versionCursor) }
+    $page = Invoke-AdminJSON -Method GET -Path $path
+    $matchingVersions = @($page.items | Where-Object { $_.id -eq $versionID })
+    if ($matchingVersions.Count -eq 1) { $versionState = $matchingVersions[0]; break }
+    $versionCursor = if ($page.PSObject.Properties['nextCursor']) { [string]$page.nextCursor } else { '' }
+} while ($versionCursor)
+if ($null -eq $versionState -or [string]$versionState.appId -ne $appID) { throw 'Saved sandbox version does not belong to the expected tenant application.' }
+if ($versionState.status -eq 'draft') {
+    Invoke-AdminJSON -Method POST -Path "/api/v1/agent-versions/$versionID/publish" -Body @{ tenantId = $tenantID } | Out-Null
+} elseif ($versionState.status -ne 'published') {
+    throw 'Saved sandbox version is not a draft or published version.'
 }
 
 if ((-not $values.Contains('WECOM_DEPLOYMENT_READY')) -or [string]$values['WECOM_DEPLOYMENT_READY'] -ne 'true') {

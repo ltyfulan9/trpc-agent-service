@@ -18,6 +18,7 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/go-redis/redis/v8"
+	openaiopt "github.com/openai/openai-go/option"
 	"trpc.group/trpc-go/trpc-agent-go/enterprise/pkg/tenant"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 )
@@ -32,12 +33,14 @@ func TestModelFactoryDisablesProviderSDKRetries(t *testing.T) {
 		_, _ = w.Write([]byte(`{"error":{"message":"temporary failure","type":"server_error"}}`))
 	}))
 	t.Cleanup(server.Close)
+	t.Setenv("TRPC_OPENAI_BASE_URL", server.URL)
+	factory := NewModelFactory()
+	factory.endpointClient = func(string) (openaiopt.HTTPClient, error) { return server.Client(), nil }
 
-	llm, err := NewModelFactory().CreateModel(&tenant.ModelConfig{
+	llm, err := factory.CreateModel(&tenant.ModelConfig{
 		Provider:  "openai",
 		ModelName: "gpt-4",
 		APIKey:    "test-only-key",
-		Endpoint:  server.URL,
 	})
 	if err != nil {
 		t.Fatal(err)

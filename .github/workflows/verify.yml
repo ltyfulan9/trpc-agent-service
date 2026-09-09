@@ -148,6 +148,14 @@ jobs:
     - name: Test submission packaging contracts
       shell: pwsh
       run: ./scripts/test_package_all_materials.ps1
+    - name: Test local IM bootstrap contracts
+      shell: pwsh
+      run: |
+        ./scripts/test_telegram_local_bootstrap.ps1
+        ./scripts/test_wecom_bot_local_bootstrap.ps1
+    - name: Validate merged local IM deployment configuration
+      shell: pwsh
+      run: ./scripts/test_im_compose_contracts.ps1
     - name: Build the submission archive
       shell: pwsh
       run: |
