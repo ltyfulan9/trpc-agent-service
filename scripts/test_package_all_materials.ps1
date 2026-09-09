@@ -25,6 +25,14 @@ function Expect-Failure([scriptblock]$Action, [string]$Message) {
 foreach ($path in @('go.mod','README.md','LICENSE','docs/JUDGE_QUICKSTART.md','docs/COMPETITION_SUBMISSION.md','docs/ACCEPTANCE_EVIDENCE.md','cmd/demo/main.go','pkg/example_test.go','migrations/001.sql','deploy/kubernetes/gateway.yaml','.github/workflows/ci.yml','.env.example','scripts/check.sh')) {
     Write-Fixture "source/$path" "fixture $path"
 }
+# Package the real offline provider fixture through the actual secret scanner.
+# Synthetic text-only package inputs cannot detect credential-shaped literals
+# accidentally introduced in an integration/bootstrap contract test.
+$bootstrapContracts = [ordered]@{}
+foreach ($name in @('test_telegram_local_bootstrap.ps1', 'test_wecom_bot_local_bootstrap.ps1')) {
+    $bootstrapContracts[$name] = [IO.File]::ReadAllText((Join-Path $PSScriptRoot $name))
+    Write-Fixture "source/scripts/$name" $bootstrapContracts[$name]
+}
 foreach ($path in @('docs/archive/old.md','archive/old.md','deploy/kubernetes/releases/old/gateway.yaml','deploy/kubernetes/k3d-validation-prerequisites.yaml','scripts/test_local_capacity.ps1','scripts/render_k3d_release.ps1','scripts/test_vault_dev_identity.ps1','.env','.env.private','.git/config','runtime/db/data','outputs/old.md')) {
     Write-Fixture "source/$path" 'excluded fixture'
 }
@@ -51,6 +59,12 @@ try {
     $shellReader = [IO.StreamReader]::new($shellEntry.Open())
     try { $archivedShell = $shellReader.ReadToEnd() } finally { $shellReader.Dispose() }
     if ($archivedShell -cne $portableShell) { throw 'packaging changed the shell source bytes' }
+    foreach ($contract in $bootstrapContracts.GetEnumerator()) {
+        $bootstrapEntry = @($zip.Entries | Where-Object { $_.FullName.EndsWith('/scripts/' + $contract.Key) })[0]
+        $bootstrapReader = [IO.StreamReader]::new($bootstrapEntry.Open())
+        try { $archivedBootstrap = $bootstrapReader.ReadToEnd() } finally { $bootstrapReader.Dispose() }
+        if ($archivedBootstrap -cne $contract.Value) { throw 'packaging changed or omitted the real bootstrap contract fixture' }
+    }
 } finally { $zip.Dispose() }
 if (Get-Command tar -ErrorAction SilentlyContinue) {
     $listing = @(tar -tvf $zipPath)

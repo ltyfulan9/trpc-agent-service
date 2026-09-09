@@ -19,10 +19,10 @@ The suite compiles the current `cmd/worker` and `cmd/consumer` with `-race` and
 HTTP execution contract, HMAC and Redis nonce verification, pinned published
 deployment, execution admission, PostgreSQL fencing, Runner, shared PostgreSQL
 Session and Memory, durable result cache, and atomic Inbox/Outbox completion.
-Only the OpenAI endpoint is a loopback protocol fixture, selected through the
-SDK's `OPENAI_BASE_URL` environment variable. Tenant endpoint validation is
-unchanged. The fixture requires a real `memory_add` result before returning the
-final model response, and rejects any third model call.
+A Go build overlay injects the fixture through `ModelFactory`'s private HTTP
+client seam, restricted to its loopback origin and `/v1/chat/completions`.
+Tenant endpoint validation remains enforced. The fixture requires a real
+`memory_add` result before returning, and rejects any third model call.
 
 | Fault boundary | Injected failure | Required recovery |
 | --- | --- | --- |

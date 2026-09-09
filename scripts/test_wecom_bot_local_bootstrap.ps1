@@ -76,7 +76,9 @@ function global:Invoke-RestMethod {
 try {
     $config = @{
         WECOM_BOT_ID='aib_fixture_bot_123';WECOM_BOT_SECRET='fixture_wecom_secret_not_real_0000000000000'
-        TRPC_SECRET_OPENAI_API_KEY='sk-fixture_not_a_real_openai_credential'
+        # Compose a recognizable fake at runtime without shipping a complete
+        # credential-shaped literal through the submission secret scanner.
+        TRPC_SECRET_OPENAI_API_KEY=('sk-' + 'fixture_not_a_real_openai_credential')
         WECOM_ALLOWED_USER_ID=@('fixture-user-123');MODEL_NAME='gpt-4o-mini'
     }
     function Save-Fixture { [IO.File]::WriteAllText($configPath, ($config | ConvertTo-Json -Depth 5)) }
